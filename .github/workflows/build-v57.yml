@@ -31,11 +31,11 @@ jobs:
             exit 1
           fi
 
-          echo "Source ZIP:"
+          echo "Source ZIP found:"
           ls -lh "$ZIP_NAME"
 
       # ============================================================
-      # 3. Extract
+      # 3. Extract source
       # ============================================================
       - name: Extract source
         shell: bash
@@ -49,8 +49,13 @@ jobs:
             "SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip" \
             -d extracted
 
-          echo "=== EXTRACTED PROJECTS ==="
-          find extracted -maxdepth 3 -type f | sort | head -300
+          echo "=== EXTRACTED FILES ==="
+
+          find extracted \
+            -maxdepth 3 \
+            -type f \
+            | sort \
+            | head -300
 
       # ============================================================
       # 4. Detect Android project
@@ -72,7 +77,8 @@ jobs:
 
           PROJECT_DIR=$(dirname "$SETTINGS_FILE")
 
-          echo "PROJECT_DIR=$PROJECT_DIR"
+          echo "Building from:"
+          echo "$PROJECT_DIR"
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
@@ -83,7 +89,7 @@ jobs:
           echo "$PROJECT_DIR" > project_dir.txt
 
       # ============================================================
-      # 5. Setup Java
+      # 5. Setup JDK
       # ============================================================
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -92,10 +98,20 @@ jobs:
           java-version: "17"
 
       # ============================================================
-      # 6. Setup Android
+      # 6. Android SDK
       # ============================================================
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -e
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          sdkmanager --version
+
+          echo "Installed SDK packages:"
+          sdkmanager --list_installed || true
 
       # ============================================================
       # 7. Create CI keystore
@@ -128,17 +144,17 @@ jobs:
 
           test -f "$KEYSTORE"
 
-          echo "KEYSTORE=$KEYSTORE"
-
           echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE" >> "$GITHUB_ENV"
           echo "SURVEYQUANT_KEYSTORE_ALIAS=surveyquant" >> "$GITHUB_ENV"
           echo "SURVEYQUANT_KEYSTORE_PASSWORD=surveyquant123" >> "$GITHUB_ENV"
           echo "SURVEYQUANT_KEY_PASSWORD=surveyquant123" >> "$GITHUB_ENV"
 
+          echo "CI keystore created successfully."
+
       # ============================================================
       # 8. Inspect build.gradle
       # ============================================================
-      - name: Inspect signing configuration
+      - name: Inspect build.gradle
         shell: bash
         run: |
           set -e
@@ -148,23 +164,15 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "========================================"
-          echo "APP BUILD.GRADLE"
+          echo "app/build.gradle"
           echo "========================================"
 
-          nl -ba app/build.gradle | sed -n '1,80p'
-
-          echo "========================================"
-          echo "SIGNING REFERENCES"
-          echo "========================================"
-
-          grep -n -E \
-            "SURVEYQUANT|keystore|signingConfigs|signingConfig|throw new GradleException" \
-            app/build.gradle || true
+          nl -ba app/build.gradle | sed -n '1,100p'
 
       # ============================================================
-      # 9. Patch mandatory keystore check
+      # 9. Patch mandatory keystore exception
       # ============================================================
-      - name: Patch keystore configuration
+      - name: Patch CI signing check
         shell: bash
         run: |
           set -e
@@ -180,33 +188,37 @@ jobs:
 
           text = p.read_text(encoding="utf-8")
 
-          print("Searching for mandatory keystore exception...")
-
-          old_patterns = [
+          patterns = [
               'throw new GradleException("SURVEYQUANT_KEYSTORE_FILE is not configured")',
               "throw new GradleException('SURVEYQUANT_KEYSTORE_FILE is not configured')"
           ]
 
           changed = False
 
-          for old in old_patterns:
-              if old in text:
+          for pattern in patterns:
+              if pattern in text:
                   text = text.replace(
-                      old,
-                      'println("CI BUILD: SURVEYQUANT_KEYSTORE_FILE supplied by GitHub Actions")'
+                      pattern,
+                      'println("CI BUILD: SURVEYQUANT_KEYSTORE_FILE configured")'
                   )
                   changed = True
 
           if changed:
               p.write_text(text, encoding="utf-8")
-              print("Keystore mandatory exception patched.")
+              print("CI signing check patched successfully.")
           else:
-              print("Mandatory exception string not found.")
-              print("The build file will be shown below.")
+              print("No mandatory signing exception found.")
 
-          print("===== BUILD.GRADLE AFTER PATCH =====")
+          print("========================================")
+          print("SIGNING REFERENCES")
+          print("========================================")
+
           for i, line in enumerate(text.splitlines(), 1):
-              if i <= 50:
+              if (
+                  "SURVEYQUANT" in line
+                  or "keystore" in line.lower()
+                  or "signingConfig" in line
+              ):
                   print(f"{i}: {line}")
           PY
 
@@ -231,12 +243,11 @@ jobs:
 
           chmod +x gradlew
 
-          echo "=== GRADLE VERSION ==="
-
+          echo "Gradle version:"
           ./gradlew --version
 
       # ============================================================
-      # 11. Build
+      # 11. Build APK
       # ============================================================
       - name: Build APK
         shell: bash
@@ -248,7 +259,7 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "========================================"
-          echo "BUILDING SURVEYQUANT v1.0.57"
+          echo "BUILD SURVEYQUANT v1.0.57"
           echo "========================================"
 
           echo "Project:"
@@ -275,7 +286,7 @@ jobs:
           PROJECT_DIR=$(cat project_dir.txt)
 
           echo "========================================"
-          echo "GENERATED FILES"
+          echo "APK OUTPUT"
           echo "========================================"
 
           find "$PROJECT_DIR/app/build/outputs" \
@@ -292,7 +303,7 @@ jobs:
             exit 1
           fi
 
-          echo "APK:"
+          echo "APK found:"
           echo "$APK"
 
           mkdir -p release
@@ -313,7 +324,7 @@ jobs:
           if-no-files-found: error
 
       # ============================================================
-      # 14. Upload build reports if failure
+      # 14. Upload reports
       # ============================================================
       - name: Upload build reports
         if: always()
