@@ -1,5 +1,5 @@
 
-name: Build SurveyQuant v1.0.57 Release
+name: Build SurveyQuant v1.0.58 Release
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
       SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
@@ -29,14 +30,34 @@ jobs:
           test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
           test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
 
-      - name: Extract project source
+      - name: Extract patched source archive
         shell: bash
         run: |
-          test -s SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip || { echo "Missing source ZIP"; exit 1; }
+          test -s SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip || {
+            echo "Missing source ZIP: SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
+            exit 1
+          }
+
           mkdir extracted
           unzip -q SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip -d extracted
+
           PROJECT=$(find extracted -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')
-          test -n "$PROJECT" || { echo "Android project not found"; exit 1; }
+
+          test -n "$PROJECT" || {
+            echo "Android project not found"
+            exit 1
+          }
+
+          test -f "$PROJECT/app/src/main/assets/index.html" || {
+            echo "index.html not found"
+            exit 1
+          }
+
+          grep -q "versionCode 58" "$PROJECT/app/build.gradle" || {
+            echo "Source ZIP is not the repaired v1.0.58 source"
+            exit 1
+          }
+
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
 
       - name: Setup Java 17
@@ -69,14 +90,19 @@ jobs:
         shell: bash
         run: |
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
-          test -s "$APK"
+
+          test -s "$APK" || {
+            echo "APK was not generated"
+            exit 1
+          }
+
           mkdir -p release
-          cp "$APK" release/SurveyQuant-v1.0.57-release.apk
-          ls -lh release/SurveyQuant-v1.0.57-release.apk
+          cp "$APK" release/SurveyQuant-v1.0.58-release.apk
+          ls -lh release/SurveyQuant-v1.0.58-release.apk
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.57-release
-          path: release/SurveyQuant-v1.0.57-release.apk
+          name: SurveyQuant-v1.0.58-release
+          path: release/SurveyQuant-v1.0.58-release.apk
           if-no-files-found: error
