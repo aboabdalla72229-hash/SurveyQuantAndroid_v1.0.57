@@ -89,7 +89,7 @@ jobs:
           echo "$PROJECT_DIR" > project_dir.txt
 
       # ============================================================
-      # 5. Setup Java 17
+      # 5. Setup JDK 17
       # ============================================================
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -98,7 +98,7 @@ jobs:
           java-version: "17"
 
       # ============================================================
-      # 6. Check Android SDK path only
+      # 6. Check Android SDK
       # ============================================================
       - name: Check Android SDK
         shell: bash
@@ -114,9 +114,6 @@ jobs:
             echo "ERROR: Android SDK directory not found."
             exit 1
           fi
-
-          echo "SDK directories:"
-          ls -la "$ANDROID_HOME" | head -50
 
       # ============================================================
       # 7. Create temporary CI keystore
@@ -231,7 +228,7 @@ jobs:
           PY
 
       # ============================================================
-      # 10. Generate Gradle wrapper
+      # 10. Generate Gradle wrapper 8.7
       # ============================================================
       - name: Generate Gradle wrapper
         shell: bash
@@ -242,15 +239,10 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          if [ ! -f gradlew ]; then
-            echo "gradlew not found."
-            echo "Generating Gradle wrapper..."
+          echo "Generating Gradle 8.7 wrapper..."
 
-            gradle wrapper \
-              --gradle-version 8.6
-          else
-            echo "Existing gradlew found."
-          fi
+          gradle wrapper \
+            --gradle-version 8.7
 
           chmod +x gradlew
 
@@ -261,7 +253,26 @@ jobs:
           ./gradlew --version
 
       # ============================================================
-      # 11. Build APK
+      # 11. Verify wrapper version
+      # ============================================================
+      - name: Verify Gradle 8.7
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_DIR=$(cat project_dir.txt)
+
+          cd "$PROJECT_DIR"
+
+          if ! ./gradlew --version | grep -q "Gradle 8.7"; then
+            echo "ERROR: Gradle 8.7 was not configured."
+            exit 1
+          fi
+
+          echo "Gradle 8.7 confirmed."
+
+      # ============================================================
+      # 12. Build APK
       # ============================================================
       - name: Build APK
         shell: bash
@@ -279,6 +290,9 @@ jobs:
           echo "Project:"
           pwd
 
+          echo "Gradle:"
+          ./gradlew --version | head -20
+
           echo "Keystore:"
           echo "$SURVEYQUANT_KEYSTORE_FILE"
 
@@ -293,7 +307,7 @@ jobs:
             --warning-mode all
 
       # ============================================================
-      # 12. Locate APK
+      # 13. Locate APK
       # ============================================================
       - name: Locate APK
         shell: bash
@@ -331,7 +345,7 @@ jobs:
           ls -lh release/SurveyQuant-v1.0.57.apk
 
       # ============================================================
-      # 13. Upload APK
+      # 14. Upload APK
       # ============================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -341,7 +355,7 @@ jobs:
           if-no-files-found: error
 
       # ============================================================
-      # 14. Upload build reports
+      # 15. Upload build reports
       # ============================================================
       - name: Upload build reports
         if: always()
