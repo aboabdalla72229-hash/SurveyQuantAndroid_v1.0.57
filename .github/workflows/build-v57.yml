@@ -17,8 +17,7 @@ jobs:
           SOURCE_ZIP="SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
 
           if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERROR: Source ZIP not found:"
-            echo "$SOURCE_ZIP"
+            echo "ERROR: Source ZIP not found: $SOURCE_ZIP"
             exit 1
           fi
 
@@ -27,72 +26,85 @@ jobs:
             exit 1
           fi
 
-          echo "Source ZIP found:"
-          echo "$SOURCE_ZIP"
+          echo "Source ZIP found: $SOURCE_ZIP"
 
-      - name: Prepare source
+      - name: Extract source
         shell: bash
         run: |
-          SOURCE_ZIP="SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
-
           rm -rf extracted
           mkdir -p extracted
 
-          unzip -q "$SOURCE_ZIP" -d extracted
+          unzip -q \
+            "SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip" \
+            -d extracted
 
           echo "Source extracted successfully."
-          find extracted -maxdepth 4 -type f | head -200
 
-      - name: Locate Android project
+      - name: Find Android project
         shell: bash
         run: |
-          PROJECT_DIR=""
+          echo "Searching for Android project..."
 
-          while IFS= read -r file; do
-            PROJECT_DIR="$(dirname "$file")"
-            break
-          done < <(find extracted -type f \( \
-            -name "settings.gradle" \
-            -o -name "settings.gradle.kts" \
-          ))
+          SETTINGS_FILE=$(find extracted -type f -name "settings.gradle" | head -n 1)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android project was not found."
+          if [ -z "$SETTINGS_FILE" ]; then
+            SETTINGS_FILE=$(find extracted -type f -name "settings.gradle.kts" | head -n 1)
+          fi
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle not found."
+
+            echo "Available Gradle files:"
+            find extracted -type f \
+              \( -name "gradlew" -o -name "settings.gradle" -o -name "settings.gradle.kts" -o -name "build.gradle" -o -name "build.gradle.kts" \) \
+              -print
+
             exit 1
           fi
 
-          echo "Android project:"
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo "Android project found:"
           echo "$PROJECT_DIR"
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "$PROJECT_DIR" > project_dir.txt
 
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-
-      - name: Grant Gradle permission
-        shell: bash
-        run: |
-          chmod +x "$PROJECT_DIR/gradlew"
+          java-version: "17"
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
+          PROJECT_DIR=$(cat project_dir.txt)
+
+          echo "Building from:"
+          echo "$PROJECT_DIR"
+
+          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
+            echo "ERROR: gradlew not found in project directory."
+            find "$PROJECT_DIR" -maxdepth 2 -type f -print
+            exit 1
+          fi
+
+          chmod +x "$PROJECT_DIR/gradlew"
+
+          cd "$PROJECT_DIR"
+
           ./gradlew clean assembleDebug --stacktrace
 
       - name: Collect APK
         shell: bash
         run: |
+          PROJECT_DIR=$(cat project_dir.txt)
+
           rm -rf release
           mkdir -p release
 
-          find "$PROJECT_DIR" \
-            -type f \
-            \( -name "*.apk" -o -name "*.aab" \) \
-            -exec cp {} release/ \;
+          find "$PROJECT_DIR" -type f -name "*.apk" -exec cp {} release/ \;
+          find "$PROJECT_DIR" -type f -name "*.aab" -exec cp {} release/ \;
 
           echo "Generated files:"
           find release -type f -ls
