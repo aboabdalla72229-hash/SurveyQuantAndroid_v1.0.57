@@ -11,41 +11,84 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show workflow source
+        shell: bash
+        run: |
+          echo "=== CURRENT REPOSITORY ==="
+          git remote -v
+
+          echo "=== CURRENT COMMIT ==="
+          git rev-parse HEAD
+
+          echo "=== ZIP FILES IN REPOSITORY ==="
+          find . -maxdepth 2 -type f -name "*.zip" -print
+
+          echo "=== CHECK OLD v1.0.57 REFERENCES ==="
+          if grep -R "SurveyQuantAndroid_v1.0.57_NEW_BASELINE" .github/workflows 2>/dev/null; then
+            echo "ERROR: OLD v1.0.57 SOURCE REFERENCE FOUND"
+            exit 1
+          fi
+
+          if grep -R "v1.0.57" .github/workflows 2>/dev/null; then
+            echo "ERROR: OLD v1.0.57 REFERENCE FOUND IN WORKFLOW"
+            exit 1
+          fi
+
+          echo "No old v1.0.57 source reference found."
+
       - name: Check repaired v1.0.58 source
         shell: bash
         run: |
           SOURCE_ZIP="SurveyQuantAndroid_v1.0.58_PATCH4_REPAIRED_SOURCE.zip"
 
-          test -s "$SOURCE_ZIP" || {
-            echo "Source ZIP is not the repaired v1.0.58 source: $SOURCE_ZIP"
-            exit 1
-          }
+          echo "Checking:"
+          echo "$SOURCE_ZIP"
 
-          echo "Found repaired source: $SOURCE_ZIP"
+          if [ ! -f "$SOURCE_ZIP" ]; then
+            echo "ERROR: v1.0.58 source ZIP was not found."
+            exit 1
+          fi
+
+          if [ ! -s "$SOURCE_ZIP" ]; then
+            echo "ERROR: v1.0.58 source ZIP is empty."
+            exit 1
+          fi
+
+          echo "v1.0.58 source ZIP found successfully."
 
       - name: Prepare source
         shell: bash
         run: |
+          SOURCE_ZIP="SurveyQuantAndroid_v1.0.58_PATCH4_REPAIRED_SOURCE.zip"
+
           rm -rf extracted
           mkdir -p extracted
 
-          unzip -q "SurveyQuantAndroid_v1.0.58_PATCH4_REPAIRED_SOURCE.zip" -d extracted
+          unzip -q "$SOURCE_ZIP" -d extracted
 
-          echo "Source extracted successfully."
-          find extracted -maxdepth 3 -type f | head -100
+          echo "=== EXTRACTED SOURCE ==="
+          find extracted -maxdepth 4 -type f | head -200
 
       - name: Locate Android project
         shell: bash
         run: |
-          PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -1 | xargs -r dirname)
+          PROJECT_DIR=""
+
+          while IFS= read -r file; do
+            PROJECT_DIR="$(dirname "$file")"
+            break
+          done < <(find extracted -type f \( \
+            -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+          \))
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android project was not found inside source ZIP."
+            echo "ERROR: Android project was not found inside v1.0.58 source ZIP."
             exit 1
           fi
 
+          echo "PROJECT_DIR=$PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project: $PROJECT_DIR"
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -54,17 +97,20 @@ jobs:
           java-version: '17'
 
       - name: Grant Gradle permission
+        shell: bash
         run: |
           chmod +x "$PROJECT_DIR/gradlew"
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew clean assembleDebug --stacktrace
 
       - name: Collect APK
         shell: bash
         run: |
+          rm -rf release
           mkdir -p release
 
           find "$PROJECT_DIR" \
@@ -72,7 +118,7 @@ jobs:
             \( -name "*.apk" -o -name "*.aab" \) \
             -exec cp {} release/ \;
 
-          echo "Generated files:"
+          echo "=== GENERATED FILES ==="
           find release -type f -ls
 
       - name: Upload APK
