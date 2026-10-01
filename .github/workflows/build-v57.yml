@@ -8,8 +8,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
 
       - name: Check source ZIP
         shell: bash
@@ -17,7 +19,8 @@ jobs:
           SOURCE_ZIP="SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
 
           if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERROR: Source ZIP not found: $SOURCE_ZIP"
+            echo "ERROR: Source ZIP not found:"
+            echo "$SOURCE_ZIP"
             exit 1
           fi
 
@@ -26,19 +29,25 @@ jobs:
             exit 1
           fi
 
-          echo "Source ZIP found: $SOURCE_ZIP"
+          echo "Source ZIP found:"
+          echo "$SOURCE_ZIP"
+
 
       - name: Extract source
         shell: bash
         run: |
+          SOURCE_ZIP="SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
+
           rm -rf extracted
           mkdir -p extracted
 
-          unzip -q \
-            "SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip" \
-            -d extracted
+          unzip -q "$SOURCE_ZIP" -d extracted
 
           echo "Source extracted successfully."
+
+          echo "=== EXTRACTED FILES ==="
+          find extracted -maxdepth 4 -type f | head -200
+
 
       - name: Find Android project
         shell: bash
@@ -69,11 +78,13 @@ jobs:
 
           echo "$PROJECT_DIR" > project_dir.txt
 
+
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
 
       - name: Build APK
         shell: bash
@@ -83,17 +94,22 @@ jobs:
           echo "Building from:"
           echo "$PROJECT_DIR"
 
-          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo "ERROR: gradlew not found in project directory."
-            find "$PROJECT_DIR" -maxdepth 2 -type f -print
-            exit 1
-          fi
-
-          chmod +x "$PROJECT_DIR/gradlew"
-
           cd "$PROJECT_DIR"
 
+          echo "=== PROJECT FILES ==="
+          ls -la
+
+          echo "=== GENERATE GRADLE WRAPPER ==="
+          gradle wrapper --gradle-version 8.6
+
+          chmod +x gradlew
+
+          echo "=== GRADLE VERSION ==="
+          ./gradlew --version
+
+          echo "=== BUILD APK ==="
           ./gradlew clean assembleDebug --stacktrace
+
 
       - name: Collect APK
         shell: bash
@@ -103,11 +119,29 @@ jobs:
           rm -rf release
           mkdir -p release
 
-          find "$PROJECT_DIR" -type f -name "*.apk" -exec cp {} release/ \;
-          find "$PROJECT_DIR" -type f -name "*.aab" -exec cp {} release/ \;
+          echo "Searching for APK files..."
 
-          echo "Generated files:"
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -exec cp {} release/ \;
+
+          echo "Searching for AAB files..."
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.aab" \
+            -exec cp {} release/ \;
+
+          echo "=== GENERATED FILES ==="
+
           find release -type f -ls
+
+          if [ -z "$(find release -type f -print -quit)" ]; then
+            echo "ERROR: No APK or AAB was generated."
+            exit 1
+          fi
+
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
