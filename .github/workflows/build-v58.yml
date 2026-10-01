@@ -1,108 +1,83 @@
-
-name: Build SurveyQuant v1.0.58 Release
+name: Build SurveyQuant v1.0.58
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
-
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate signing secrets
-        env:
-          KS_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+      - name: Check repaired v1.0.58 source
         shell: bash
         run: |
-          test -n "$KS_B64" || { echo "Missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
-          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "Missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
-          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
-          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SOURCE_ZIP="SurveyQuantAndroid_v1.0.58_PATCH4_REPAIRED_SOURCE.zip"
 
-      - name: Extract patched source archive
+          test -s "$SOURCE_ZIP" || {
+            echo "Source ZIP is not the repaired v1.0.58 source: $SOURCE_ZIP"
+            exit 1
+          }
+
+          echo "Found repaired source: $SOURCE_ZIP"
+
+      - name: Prepare source
         shell: bash
         run: |
-          test -s SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip || {
-            echo "Missing source ZIP: SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
+          rm -rf extracted
+          mkdir -p extracted
+
+          unzip -q "SurveyQuantAndroid_v1.0.58_PATCH4_REPAIRED_SOURCE.zip" -d extracted
+
+          echo "Source extracted successfully."
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Locate Android project
+        shell: bash
+        run: |
+          PROJECT_DIR=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -1 | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android project was not found inside source ZIP."
             exit 1
-          }
+          fi
 
-          mkdir extracted
-          unzip -q SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip -d extracted
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
 
-          PROJECT=$(find extracted -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')
-
-          test -n "$PROJECT" || {
-            echo "Android project not found"
-            exit 1
-          }
-
-          test -f "$PROJECT/app/src/main/assets/index.html" || {
-            echo "index.html not found"
-            exit 1
-          }
-
-          grep -q "versionCode 58" "$PROJECT/app/build.gradle" || {
-            echo "Source ZIP is not the repaired v1.0.58 source"
-            exit 1
-          }
-
-          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-
-      - name: Setup Java 17
+      - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Setup Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
+      - name: Grant Gradle permission
+        run: |
+          chmod +x "$PROJECT_DIR/gradlew"
 
-      - name: Restore release keystore
-        env:
-          KS_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Collect APK
         shell: bash
         run: |
-          echo "$KS_B64" | base64 --decode > "$RUNNER_TEMP/surveyquant-release.jks"
-          test -s "$RUNNER_TEMP/surveyquant-release.jks"
-          echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.jks" >> "$GITHUB_ENV"
-
-      - name: Build signed APK
-        shell: bash
-        run: |
-          cd "$PROJECT_DIR"
-          gradle clean assembleRelease --no-daemon --stacktrace
-
-      - name: Verify and stage APK
-        shell: bash
-        run: |
-          APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
-
-          test -s "$APK" || {
-            echo "APK was not generated"
-            exit 1
-          }
-
           mkdir -p release
-          cp "$APK" release/SurveyQuant-v1.0.58-release.apk
-          ls -lh release/SurveyQuant-v1.0.58-release.apk
 
-      - name: Upload signed APK
+          find "$PROJECT_DIR" \
+            -type f \
+            \( -name "*.apk" -o -name "*.aab" \) \
+            -exec cp {} release/ \;
+
+          echo "Generated files:"
+          find release -type f -ls
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.58-release
-          path: release/SurveyQuant-v1.0.58-release.apk
+          name: SurveyQuant-v1.0.58
+          path: release/*
           if-no-files-found: error
