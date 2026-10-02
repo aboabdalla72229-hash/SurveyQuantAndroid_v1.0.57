@@ -1,10 +1,10 @@
-name: Build SurveyQuant v1.0.57
+name: Build SurveyQuant v1.0.57 PATCH4
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip"
+      - "SurveyQuantAndroid_v1.0.57_PATCH4_UPDATE.zip"
       - ".github/workflows/build-v57.yml"
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
 
       - name: Verify source ZIP
         run: |
-          test -s SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip || {
+          test -s SurveyQuantAndroid_v1.0.57_PATCH4_UPDATE.zip || {
             echo "ERROR: Source ZIP not found"
             exit 1
           }
@@ -30,7 +30,7 @@ jobs:
           mkdir -p extracted
 
           unzip -q \
-            SurveyQuantAndroid_v1.0.57_NEW_BASELINE.zip \
+            SurveyQuantAndroid_v1.0.57_PATCH4_UPDATE.zip \
             -d extracted
 
           echo "Source extracted successfully."
@@ -49,6 +49,8 @@ jobs:
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: gradlew not found"
+            echo "Contents of extracted:"
+            find extracted -maxdepth 4 -type f | sort
             exit 1
           fi
 
@@ -68,7 +70,7 @@ jobs:
 
       - name: Build APK
         run: |
-          echo "Building SurveyQuant v1.0.57..."
+          echo "Building SurveyQuant v1.0.57 PATCH4..."
 
           cd "$PROJECT_DIR"
 
@@ -105,6 +107,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.57-APK
+          name: SurveyQuant-v1.0.57-PATCH4-APK
           path: output/
           if-no-files-found: error
