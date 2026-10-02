@@ -11,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,88 +23,84 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Inspect repository
+      - name: Extract v1.0.60 source
+        shell: bash
         run: |
-          echo "===== ROOT ====="
-          pwd
-          ls -la
+          set -e
 
-          echo "===== FILES ====="
-          find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" -o -name "gradlew" -o -name "AndroidManifest.xml" -o -name "index.html" \) -print | sort
+          ZIP="SurveyQuantAndroid_v1.0.60_REPAIRED_SOURCE.zip"
+
+          test -f "$ZIP"
+
+          rm -rf source
+          mkdir -p source
+
+          unzip -q "$ZIP" -d source
+
+          echo "Source extracted successfully."
 
       - name: Find Android project
+        shell: bash
         run: |
-          APP_GRADLE=$(find . -type f -path "*/app/build.gradle" -print -quit)
+          set -e
+
+          APP_GRADLE=$(find source -type f -path '*/app/build.gradle' -print -quit)
 
           if [ -z "$APP_GRADLE" ]; then
-            echo "ERROR: app/build.gradle not found"
+            echo "ERROR: app/build.gradle not found inside source ZIP"
+            echo "Files found:"
+            find source -type f | head -n 200
             exit 1
           fi
 
-          echo "Found: $APP_GRADLE"
-
           PROJECT_ROOT=$(dirname "$(dirname "$APP_GRADLE")")
+
+          test -f "$PROJECT_ROOT/gradlew"
+          test -f "$PROJECT_ROOT/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_ROOT/app/src/main/assets/index.html"
 
           echo "ANDROID_PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_APP_GRADLE=$APP_GRADLE" >> "$GITHUB_ENV"
 
-      - name: Check version
+          echo "Project root: $PROJECT_ROOT"
+          echo "Gradle file: $APP_GRADLE"
+
+      - name: Verify version 1.0.60
+        shell: bash
         run: |
-          echo "===== VERSION ====="
+          set -e
 
-          grep -n "versionCode" "$ANDROID_APP_GRADLE" || true
-          grep -n "versionName" "$ANDROID_APP_GRADLE" || true
+          grep -n "versionCode" "$ANDROID_APP_GRADLE"
+          grep -n "versionName" "$ANDROID_APP_GRADLE"
 
-          grep -qE "versionCode[[:space:]]+60" "$ANDROID_APP_GRADLE"
+          grep -qE 'versionCode[[:space:]]+60' "$ANDROID_APP_GRADLE"
+
           grep -qE "versionName[[:space:]]+['\"]1\.0\.60['\"]" "$ANDROID_APP_GRADLE"
 
-          echo "Version 1.0.60 OK"
+          echo "Version 1.0.60 verified."
 
-      - name: Check four secrets
+      - name: Check four signing secrets
+        shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
+          set -e
+
           test -n "$KEYSTORE_BASE64"
           test -n "$KEYSTORE_PASSWORD"
           test -n "$KEY_ALIAS"
           test -n "$KEY_PASSWORD"
 
-          echo "All 4 secrets are available"
+          echo "All four signing secrets are available."
 
       - name: Decode keystore
+        shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > surveyquant-ci.jks
-          test -s surveyquant-ci.jks
-          echo "Keystore OK"
+          set -e
 
-      - name: Build APK
-        working-directory: ${{ env.ANDROID_PROJECT_ROOT }}
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
-        run: |
-          chmod +x ./gradlew
-
-          ./gradlew clean assembleRelease \
-            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/surveyquant-ci.jks" \
-            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-
-      - name: Find APK
-        run: |
-          echo "===== APK ====="
-          find "$ANDROID_PROJECT_ROOT" -type f -name "*.apk" -print
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.60-release
-          path: ${{ env.ANDROID_PROJECT_ROOT }}/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE
