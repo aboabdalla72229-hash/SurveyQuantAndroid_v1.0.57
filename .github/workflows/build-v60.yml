@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.60
+name: Inspect and Build SurveyQuant v1.0.60
 
 on:
   workflow_dispatch:
@@ -11,60 +11,242 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source
+
+      # ==========================================
+      # 1. تحميل الريبو
+      # ==========================================
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ==========================================
+      # 2. Java 17
+      # ==========================================
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+
+      # ==========================================
+      # 3. Gradle
+      # ==========================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify project structure
+
+      # ==========================================
+      # 4. فحص شكل الريبو الحقيقي
+      # ==========================================
+      - name: Inspect repository structure
         shell: bash
         run: |
           set -e
 
-          test -f app/build.gradle || {
+          echo "======================================"
+          echo "CURRENT DIRECTORY"
+          echo "======================================"
+          pwd
+
+          echo "======================================"
+          echo "ROOT CONTENT"
+          echo "======================================"
+          ls -la
+
+          echo "======================================"
+          echo "DIRECTORIES"
+          echo "======================================"
+          find . -maxdepth 4 -type d | sort | head -300
+
+          echo "======================================"
+          echo "IMPORTANT FILES"
+          echo "======================================"
+
+          find . -type f \
+            -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "AndroidManifest.xml" \
+            -o -name "index.html" \
+            -o -name "gradlew" \
+          -print | sort
+
+
+      # ==========================================
+      # 5. البحث عن مشروع Android
+      # ==========================================
+      - name: Locate Android project
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "SEARCHING FOR ANDROID PROJECT"
+          echo "======================================"
+
+          GRADLE_FILE="$(find . -type f -path "*/app/build.gradle" -print -quit)"
+
+          if [ -n "$GRADLE_FILE" ]; then
+            echo "FOUND:"
+            echo "$GRADLE_FILE"
+          else
+            echo "WARNING: app/build.gradle was not found."
+            echo ""
+            echo "Available Gradle files:"
+            find . -type f \
+              -name "build.gradle" \
+              -o -name "build.gradle.kts" \
+            -print | sort
+          fi
+
+
+      # ==========================================
+      # 6. محاولة تحديد مجلد المشروع
+      # ==========================================
+      - name: Detect project root
+        shell: bash
+        run: |
+          set -e
+
+          APP_GRADLE="$(find . -type f -path "*/app/build.gradle" -print -quit)"
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "ERROR: Android app module was not found."
+            echo "The repository structure must be inspected before building."
+            exit 1
+          fi
+
+          PROJECT_ROOT="$(dirname "$(dirname "$APP_GRADLE")")"
+
+          echo "ANDROID_PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_APP_GRADLE=$APP_GRADLE" >> "$GITHUB_ENV"
+
+          echo "Project root:"
+          echo "$PROJECT_ROOT"
+
+          echo "App Gradle:"
+          echo "$APP_GRADLE"
+
+
+      # ==========================================
+      # 7. التحقق من الملفات المطلوبة
+      # ==========================================
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Project root:"
+          echo "$ANDROID_PROJECT_ROOT"
+
+          test -f "$ANDROID_APP_GRADLE" || {
             echo "ERROR: app/build.gradle not found"
             exit 1
           }
 
-          test -f app/src/main/AndroidManifest.xml || {
-            echo "ERROR: AndroidManifest.xml not found"
-            exit 1
-          }
+          MANIFEST="$ANDROID_PROJECT_ROOT/app/src/main/AndroidManifest.xml"
 
-          test -f app/src/main/assets/index.html || {
-            echo "ERROR: index.html not found"
-            exit 1
-          }
+          if [ ! -f "$MANIFEST" ]; then
+            echo "WARNING: AndroidManifest.xml not found at:"
+            echo "$MANIFEST"
 
-          echo "Project structure OK"
+            find "$ANDROID_PROJECT_ROOT" \
+              -name "AndroidManifest.xml" \
+              -print
+          fi
 
-      - name: Verify version
+          INDEX="$ANDROID_PROJECT_ROOT/app/src/main/assets/index.html"
+
+          if [ ! -f "$INDEX" ]; then
+            echo "WARNING: index.html not found at:"
+            echo "$INDEX"
+
+            find "$ANDROID_PROJECT_ROOT" \
+              -name "index.html" \
+              -print
+          fi
+
+
+      # ==========================================
+      # 8. عرض الإصدار الحالي
+      # ==========================================
+      - name: Inspect version
         shell: bash
         run: |
           set -e
 
-          grep -n "versionCode" app/build.gradle || true
-          grep -n "versionName" app/build.gradle || true
+          echo "======================================"
+          echo "CURRENT VERSION"
+          echo "======================================"
 
-          grep -qE "versionCode[[:space:]]+60" app/build.gradle || {
+          grep -n "versionCode" "$ANDROID_APP_GRADLE" || true
+          grep -n "versionName" "$ANDROID_APP_GRADLE" || true
+
+
+      # ==========================================
+      # 9. التحقق من الإصدار 1.0.60
+      # ==========================================
+      - name: Verify version 1.0.60
+        shell: bash
+        run: |
+          set -e
+
+          grep -qE "versionCode[[:space:]]+60" "$ANDROID_APP_GRADLE" || {
             echo "ERROR: versionCode 60 not found"
             exit 1
           }
 
-          grep -qE "versionName[[:space:]]+['\"]1\.0\.60['\"]" app/build.gradle || {
+          grep -qE "versionName[[:space:]]+['\"]1\.0\.60['\"]" "$ANDROID_APP_GRADLE" || {
             echo "ERROR: versionName 1.0.60 not found"
             exit 1
           }
 
-          echo "Version 1.0.60 verified"
+          echo "Version 1.0.60 verified."
 
+
+      # ==========================================
+      # 10. التحقق من الأسرار الأربعة فقط
+      # ==========================================
+      - name: Verify signing secrets
+        shell: bash
+        env:
+          SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -e
+
+          echo "Checking four signing secrets..."
+
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || {
+            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 is missing"
+            exit 1
+          }
+
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || {
+            echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD is missing"
+            exit 1
+          }
+
+          test -n "$SURVEYQUANT_KEY_ALIAS" || {
+            echo "ERROR: SURVEYQUANT_KEY_ALIAS is missing"
+            exit 1
+          }
+
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || {
+            echo "ERROR: SURVEYQUANT_KEY_PASSWORD is missing"
+            exit 1
+          }
+
+          echo "All four signing secrets are present."
+
+
+      # ==========================================
+      # 11. فك ملف التوقيع
+      # ==========================================
       - name: Decode signing keystore
         shell: bash
         env:
@@ -72,19 +254,20 @@ jobs:
         run: |
           set -e
 
-          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || {
-            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 is missing"
-            exit 1
-          }
-
-          echo "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > surveyquant-ci.jks
+          echo "$SURVEYQUANT_KEYSTORE_BASE64" \
+            | base64 --decode > surveyquant-ci.jks
 
           test -s surveyquant-ci.jks
 
-          echo "Keystore decoded successfully"
+          echo "Keystore decoded successfully."
 
-      - name: Build signed release APK
+
+      # ==========================================
+      # 12. بناء APK
+      # ==========================================
+      - name: Build release APK
         shell: bash
+        working-directory: ${{ env.ANDROID_PROJECT_ROOT }}
         env:
           SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
           SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
@@ -92,30 +275,4 @@ jobs:
         run: |
           set -e
 
-          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD"
-          test -n "$SURVEYQUANT_KEY_ALIAS"
-          test -n "$SURVEYQUANT_KEY_PASSWORD"
-
-          chmod +x ./gradlew
-
-          ./gradlew clean assembleRelease \
-            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/surveyquant-ci.jks" \
-            -Pandroid.injected.signing.store.password="$SURVEYQUANT_KEYSTORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$SURVEYQUANT_KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$SURVEYQUANT_KEY_PASSWORD"
-
-      - name: Find APK
-        shell: bash
-        run: |
-          set -e
-
-          find app/build/outputs/apk -type f -name "*.apk" -print
-
-          test -n "$(find app/build/outputs/apk -type f -name "*.apk" -print -quit)"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.60-release
-          path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          chmod +x ./grad
