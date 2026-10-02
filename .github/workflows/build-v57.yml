@@ -61,11 +61,65 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
-          echo "Installed SDK packages:"
           sdkmanager --list_installed | head -100
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 is empty or missing."
+            exit 1
+          fi
+
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD is empty or missing."
+            exit 1
+          fi
+
+          if [ -z "$KEY_ALIAS" ]; then
+            echo "ERROR: SURVEYQUANT_KEY_ALIAS is empty or missing."
+            exit 1
+          fi
+
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "ERROR: SURVEYQUANT_KEY_PASSWORD is empty or missing."
+            exit 1
+          fi
+
+          KEYSTORE_FILE="$RUNNER_TEMP/surveyquant-ci.jks"
+
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+
+          if [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "ERROR: Keystore file was not created."
+            exit 1
+          fi
+
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+          echo "Keystore prepared successfully."
+
+      - name: Verify signing configuration
+        run: |
+          echo "Checking signing configuration..."
+
+          test -f "$SURVEYQUANT_KEYSTORE_FILE" || {
+            echo "ERROR: SURVEYQUANT_KEYSTORE_FILE does not exist."
+            exit 1
+          }
+
+          echo "Keystore file exists."
+          echo "Keystore path configured."
 
       - name: Build APK
         run: |
@@ -95,6 +149,7 @@ jobs:
       - name: Generate SHA256
         run: |
           cd output
+
           sha256sum *.apk > SHA256SUMS.txt
 
           echo "SHA256:"
