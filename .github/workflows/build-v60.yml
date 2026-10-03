@@ -26,11 +26,7 @@ jobs:
 
           ZIP="SurveyQuantAndroid_v1.0.60_REPAIRED_SOURCE.zip"
 
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: Source ZIP not found"
-            ls -la
-            exit 1
-          fi
+          test -f "$ZIP"
 
           rm -rf source
           mkdir -p source
@@ -38,20 +34,124 @@ jobs:
           unzip -q "$ZIP" -d source
 
           echo "===== EXTRACTED FILES ====="
-          find source -maxdepth 8 -type f | sort
-          echo "==========================="
+          find source -maxdepth 10 -type f | sort
 
       - name: Find Android project
         run: |
           set -e
 
-          SETTINGS=$(find source -type f \
-            -name "settings.gradle" -o -name "settings.gradle.kts" \
-            -print -quit)
+          SETTINGS=$(find source -type f -name "settings.gradle" -print -quit)
+
+          if [ -z "$SETTINGS" ]; then
+            SETTINGS=$(find source -type f -name "settings.gradle.kts" -print -quit)
+          fi
 
           if [ -z "$SETTINGS" ]; then
             echo "ERROR: settings.gradle not found"
+            echo "Gradle files:"
+            find source -type f -name "build.gradle" -print
+            find source -type f -name "build.gradle.kts" -print
+            find source -type f -name "settings.gradle" -print
+            find source -type f -name "settings.gradle.kts" -print
+            exit 1
+          fi
 
-            echo "===== POSSIBLE GRADLE FILES ====="
-            find source -type f \
-              \( -name "build.gradle" -o -name "build.gradle.kts" -o -
+          PROJECT_ROOT=$(dirname "$SETTINGS")
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "PROJECT ROOT:"
+          echo "$PROJECT_ROOT"
+
+      - name: Find Android app
+        run: |
+          set -e
+
+          MANIFEST=$(find "$PROJECT_ROOT" -type f -path "*/src/main/AndroidManifest.xml" -print -quit)
+
+          if [ -z "$MANIFEST" ]; then
+            echo "ERROR: AndroidManifest.xml not found"
+            exit 1
+          fi
+
+          APP_DIR=$(dirname "$(dirname "$(dirname "$MANIFEST")")")
+
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+          echo "APP DIR:"
+          echo "$APP_DIR"
+
+      - name: Verify version
+        run: |
+          set -e
+
+          echo "===== VERSION ====="
+
+          grep -Rni "versionCode" "$PROJECT_ROOT" --include="build.gradle" --include="build.gradle.kts" || true
+
+          grep -Rni "versionName" "$PROJECT_ROOT" --include="build.gradle" --include="build.gradle.kts" || true
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -e
+
+          test -n "$KEYSTORE"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+          echo "All four signing secrets are available."
+
+      - name: Decode keystore
+        env:
+          KEYSTORE: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+        run: |
+          set -e
+
+          echo "$KEYSTORE" | base64 --decode > "$GITHUB_WORKSPACE/surveyquant-ci.jks"
+
+          test -s "$GITHUB_WORKSPACE/surveyquant-ci.jks"
+
+          echo "Keystore ready."
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        env:
+          STORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -e
+
+          gradle clean assembleRelease \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/surveyquant-ci.jks" \
+            -Pandroid.injected.signing.store.password="$STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+
+      - name: Find APK
+        run: |
+          set -e
+
+          APK=$(find "$PROJECT_ROOT" -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK not generated"
+            find "$PROJECT_ROOT" -type f -name "*.apk" -print
+            exit 1
+          fi
+
+          echo "APK:"
+          echo "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.60-release
+          path: ${{ env.PROJECT_ROOT }}/**/build/outputs/apk/release/*.apk
+          if-no-files-found: error
