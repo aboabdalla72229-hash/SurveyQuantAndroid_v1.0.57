@@ -87,9 +87,13 @@ jobs:
 
           echo "===== VERSION ====="
 
-          grep -Rni "versionCode" "$PROJECT_ROOT" --include="build.gradle" --include="build.gradle.kts" || true
+          grep -Rni "versionCode" "$PROJECT_ROOT" \
+            --include="build.gradle" \
+            --include="build.gradle.kts" || true
 
-          grep -Rni "versionName" "$PROJECT_ROOT" --include="build.gradle" --include="build.gradle.kts" || true
+          grep -Rni "versionName" "$PROJECT_ROOT" \
+            --include="build.gradle" \
+            --include="build.gradle.kts" || true
 
       - name: Check signing secrets
         env:
@@ -122,17 +126,18 @@ jobs:
       - name: Build APK
         working-directory: ${{ env.PROJECT_ROOT }}
         env:
-          STORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+          SURVEYQUANT_KEYSTORE_FILE: ${{ github.workspace }}/surveyquant-ci.jks
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
           set -e
 
-          gradle clean assembleRelease \
-            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/surveyquant-ci.jks" \
-            -Pandroid.injected.signing.store.password="$STORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          test -f "$SURVEYQUANT_KEYSTORE_FILE"
+
+          echo "Keystore file found."
+
+          gradle clean assembleRelease
 
       - name: Find APK
         run: |
@@ -142,7 +147,9 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK not generated"
+
             find "$PROJECT_ROOT" -type f -name "*.apk" -print
+
             exit 1
           fi
 
