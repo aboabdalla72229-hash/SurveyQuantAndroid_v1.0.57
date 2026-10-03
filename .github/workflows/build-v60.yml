@@ -11,7 +11,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -24,66 +24,34 @@ jobs:
         run: |
           set -e
 
-          unzip -q SurveyQuantAndroid_v1.0.60_REPAIRED_SOURCE.zip -d source
+          ZIP="SurveyQuantAndroid_v1.0.60_REPAIRED_SOURCE.zip"
 
-          echo "===== SOURCE FILES ====="
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: Source ZIP not found"
+            ls -la
+            exit 1
+          fi
+
+          rm -rf source
+          mkdir -p source
+
+          unzip -q "$ZIP" -d source
+
+          echo "===== EXTRACTED FILES ====="
           find source -maxdepth 8 -type f | sort
-          echo "========================"
+          echo "==========================="
 
       - name: Find Android project
         run: |
           set -e
 
           SETTINGS=$(find source -type f \
-            -name settings.gradle -o -name settings.gradle.kts \
+            -name "settings.gradle" -o -name "settings.gradle.kts" \
             -print -quit)
 
           if [ -z "$SETTINGS" ]; then
             echo "ERROR: settings.gradle not found"
-            exit 1
-          fi
 
-          PROJECT_ROOT=$(dirname "$SETTINGS")
-
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-
-          echo "Project root:"
-          echo "$PROJECT_ROOT"
-
-      - name: Find app module
-        run: |
-          set -e
-
-          APP_MANIFEST=$(find "$PROJECT_ROOT" -type f \
-            -path "*/src/main/AndroidManifest.xml" \
-            -print -quit)
-
-          if [ -z "$APP_MANIFEST" ]; then
-            echo "ERROR: AndroidManifest.xml not found"
-            exit 1
-          fi
-
-          APP_DIR=$(dirname "$(dirname "$(dirname "$APP_MANIFEST")")")
-
-          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
-
-          echo "App directory:"
-          echo "$APP_DIR"
-
-      - name: Check version
-        run: |
-          set -e
-
-          grep -Rni "versionCode" "$PROJECT_ROOT" \
-            --include="build.gradle" \
-            --include="build.gradle.kts" || true
-
-          grep -Rni "versionName" "$PROJECT_ROOT" \
-            --include="build.gradle" \
-            --include="build.gradle.kts" || true
-
-      - name: Check signing secrets
-        env:
-          KEYSTORE: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-          KEY
+            echo "===== POSSIBLE GRADLE FILES ====="
+            find source -type f \
+              \( -name "build.gradle" -o -name "build.gradle.kts" -o -
