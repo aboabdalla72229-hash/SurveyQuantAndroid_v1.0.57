@@ -26,41 +26,100 @@ jobs:
           set -euo pipefail
 
           ZIP="$(find . -maxdepth 3 -type f \
-            -name 'SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip' \
+            \( -name 'SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip' -o \
+               -name 'SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip' \) \
             -print -quit)"
 
           if [ -z "$ZIP" ]; then
-            echo "::error::Source ZIP not found in repository."
+            echo "::error::v1.0.62 source ZIP not found."
             exit 1
           fi
 
+          echo "Using source: $ZIP"
+
+          rm -rf source
           mkdir -p source
+
           unzip -q "$ZIP" -d source
 
           WRAPPER="$(find source -type f -name gradlew -print -quit)"
 
           if [ -z "$WRAPPER" ]; then
             echo "::error::gradlew not found in extracted source."
-            find source -maxdepth 3 -type f | head -100
+            find source -maxdepth 4 -type f | head -150
             exit 1
           fi
 
           chmod +x "$WRAPPER"
+
           echo "GRADLEW=$WRAPPER" >> "$GITHUB_ENV"
           echo "PROJECT_DIR=$(dirname "$WRAPPER")" >> "$GITHUB_ENV"
 
+      - name: Prepare release keystore
+        shell: bash
+        env:
+          SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SURVEYQUANT_KEYSTORE_BASE64" ]; then
+            echo "::error::GitHub Secret SURVEYQUANT_KEYSTORE_BASE64 is missing."
+            exit 1
+          fi
+
+          KEYSTORE_FILE="$RUNNER_TEMP/surveyquant-release.keystore"
+
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+
+          test -s "$KEYSTORE_FILE"
+
+          {
+            echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_FILE"
+            echo "SURVEYQUANT_KEYSTORE_PASSWORD=$SURVEYQUANT_KEYSTORE_PASSWORD"
+            echo "SURVEYQUANT_KEY_ALIAS=$SURVEYQUANT_KEY_ALIAS"
+            echo "SURVEYQUANT_KEY_PASSWORD=$SURVEYQUANT_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+          echo "Keystore prepared successfully."
+
       - name: Build APK
-        working-directory: .
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$PROJECT_DIR"
+
           "$GITHUB_WORKSPACE/$GRADLEW" assembleDebug --stacktrace
+
+      - name: Locate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find "$PROJECT_DIR" \
+            -type f \
+            -path '*/build/outputs/apk/**/*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::APK was not generated."
+            find "$PROJECT_DIR" \
+              -type f \
+              -path '*/build/outputs/*' | head -100
+            exit 1
+          fi
+
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+          echo "Generated: $APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SurveyQuant-v1.0.62-debug
-          path: source/**/build/outputs/apk/**/*.apk
+          path: ${{ env.APK }}
           if-no-files-found: error
           retention-days: 14
