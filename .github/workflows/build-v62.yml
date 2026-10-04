@@ -32,39 +32,76 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           ROOT=""
 
-          if [ -f "$GITHUB_WORKSPACE/app/build.gradle" ]; then
-            ROOT="$GITHUB_WORKSPACE"
+          # First: look for an extracted Android project.
+          FOUND="$(find "$GITHUB_WORKSPACE" \
+            -type f -path '*/app/build.gradle' \
+            -not -path '*/.gradle/*' \
+            -print -quit || true)"
+
+          if [ -n "$FOUND" ]; then
+            ROOT="$(dirname "$(dirname "$FOUND")")"
           else
-            FOUND="$(find "$GITHUB_WORKSPACE" -type f -path '*/app/build.gradle' -print -quit || true)"
-            if [ -n "$FOUND" ]; then
-              ROOT="$(dirname "$(dirname "$FOUND")")"
-            else
-              ZIP="$(find "$GITHUB_WORKSPACE" -type f -name 'SurveyQuantAndroid_v1.0.62_REPAIRED_SOURCE.zip' -print -quit || true)"
-              if [ -z "$ZIP" ]; then
-                echo 'ERROR: No app/build.gradle found and source ZIP is not in the repository.'
-                echo 'Upload the extracted source folder or add SurveyQuantAndroid_v1.0.62_REPAIRED_SOURCE.zip.'
-                exit 1
-              fi
-              mkdir -p "$RUNNER_TEMP/surveyquant-source"
-              unzip -q "$ZIP" -d "$RUNNER_TEMP/surveyquant-source"
-              FOUND="$(find "$RUNNER_TEMP/surveyquant-source" -type f -path '*/app/build.gradle' -print -quit || true)"
-              if [ -z "$FOUND" ]; then
-                echo 'ERROR: ZIP does not contain app/build.gradle.'
-                exit 1
-              fi
-              ROOT="$(dirname "$(dirname "$FOUND")")"
+            # Otherwise: extract the V62 source ZIP.
+            ZIP="$(find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name 'SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip' \
+              -print -quit || true)"
+
+            if [ -z "$ZIP" ]; then
+              echo "ERROR: Android source project or V62 ZIP not found."
+              echo "Expected ZIP:"
+              echo "SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip"
+              exit 1
             fi
+
+            mkdir -p "$RUNNER_TEMP/surveyquant-source"
+            unzip -q "$ZIP" -d "$RUNNER_TEMP/surveyquant-source"
+
+            FOUND="$(find "$RUNNER_TEMP/surveyquant-source" \
+              -type f -path '*/app/build.gradle' \
+              -print -quit || true)"
+
+            if [ -z "$FOUND" ]; then
+              echo "ERROR: ZIP does not contain app/build.gradle."
+              exit 1
+            fi
+
+            ROOT="$(dirname "$(dirname "$FOUND")")"
           fi
 
           test -f "$ROOT/app/build.gradle"
           test -f "$ROOT/app/src/main/AndroidManifest.xml"
           test -f "$ROOT/app/src/main/assets/index.html"
-          grep -Eq 'versionCode[[:space:]]+61' "$ROOT/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+'1\.0\.62'|versionName[[:space:]]+\"1\.0\.62\"" "$ROOT/app/build.gradle"
+
+          grep -Eq 'versionCode[[:space:]]+62' \
+            "$ROOT/app/build.gradle"
+
+          grep -Eq "versionName[[:space:]]+'1\.0\.62'|versionName[[:space:]]+\"1\.0\.62\"" \
+            "$ROOT/app/build.gradle"
+
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo "Verified source root: $ROOT"
+          echo "Verified project root: $ROOT"
+
+      - name: Find Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLEW="$(find "$PROJECT_ROOT" \
+            -type f -name gradlew -print -quit || true)"
+
+          if [ -n "$GRADLEW" ]; then
+            chmod +x "$GRADLEW"
+            echo "GRADLEW_PATH=$GRADLEW" >> "$GITHUB_ENV"
+            echo "Found Gradle Wrapper: $GRADLEW"
+          else
+            echo "Gradle Wrapper not found."
+            echo "Will use installed Gradle 8.7."
+            echo "GRADLEW_PATH=" >> "$GITHUB_ENV"
+          fi
 
       - name: Decode signing keystore
         shell: bash
@@ -72,11 +109,15 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo 'ERROR: Missing GitHub secret SURVEYQUANT_KEYSTORE_BASE64.'
+
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64 secret."
             exit 1
           fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/surveyquant.jks"
+
+          echo "$KEYSTORE_BASE64" \
+            | base64 --decode > "$RUNNER_TEMP/surveyquant.jks"
+
           test -s "$RUNNER_TEMP/surveyquant.jks"
 
       - name: Build release APK
@@ -88,11 +129,30 @@ jobs:
           SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
           cd "$PROJECT_ROOT"
-          gradle --no-daemon clean assembleRelease
+
+          if [ -n "${GRADLEW_PATH:-}" ] && [ -f "$GRADLEW_PATH" ]; then
+            chmod +x "$GRADLEW_PATH"
+            "$GRADLEW_PATH" --no-daemon clean assembleRelease
+          else
+            gradle --no-daemon clean assembleRelease
+          fi
+
           mkdir -p "$GITHUB_WORKSPACE/output"
-          cp app/build/outputs/apk/release/*.apk "$GITHUB_WORKSPACE/output/"
-          test -n "$(find "$GITHUB_WORKSPACE/output" -maxdepth 1 -name '*.apk' -print -quit)"
+
+          find app/build/outputs/apk/release \
+            -maxdepth 1 -type f -name '*.apk' \
+            -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+
+          if ! find "$GITHUB_WORKSPACE/output" \
+            -maxdepth 1 -type f -name '*.apk' \
+            -print -quit | grep -q .; then
+            echo "ERROR: Release APK was not generated."
+            exit 1
+          fi
+
+          echo "APK generated successfully."
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
