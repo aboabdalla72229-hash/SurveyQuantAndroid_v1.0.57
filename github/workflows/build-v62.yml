@@ -1,0 +1,100 @@
+name: SurveyQuant v1.0.62 - Build APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for Gradle project..."
+
+          GRADLEW="$(find . -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew not found"
+            find . -maxdepth 4 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Found: $GRADLEW"
+
+          chmod +x "$GRADLEW"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
+          test -f "$PROJECT_DIR/gradlew"
+
+          echo "Gradle files:"
+          find "$PROJECT_DIR" -maxdepth 3 -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
+            -print
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          chmod +x ./gradlew
+
+          ./gradlew clean assembleRelease --no-daemon --stacktrace
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          APK="$(find "$PROJECT_DIR" -type f \
+            \( -name "*.apk" -o -name "*.aab" \) \
+            -print | head -n 1)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK/AAB was not generated"
+            find "$PROJECT_DIR" -type f | tail -200
+            exit 1
+          fi
+
+          echo "Generated: $APK"
+
+          cp "$APK" "$GITHUB_WORKSPACE/output/SurveyQuant_v1.0.62.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.62
+          path: output/SurveyQuant_v1.0.62.apk
+          if-no-files-found: error
