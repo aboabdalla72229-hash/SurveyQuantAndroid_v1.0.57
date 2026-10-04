@@ -14,8 +14,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -23,39 +25,261 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Find and verify source project
+
+      - name: Extract V62 source
         shell: bash
         run: |
           set -euo pipefail
 
-          ROOT=""
-
           echo "========================================"
-          echo "Repository contents"
+          echo "SurveyQuant V62 Source"
           echo "========================================"
 
-          find "$GITHUB_WORKSPACE" \
-            -maxdepth 4 \
-            -type f \
-            -print | sort | head -300 || true
+          ZIP="$GITHUB_WORKSPACE/SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: V62 source ZIP not found:"
+            echo "$ZIP"
+            exit 1
+          fi
+
+          echo "Source ZIP:"
+          echo "$ZIP"
+
+          rm -rf "$RUNNER_TEMP/surveyquant-source"
+
+          mkdir -p "$RUNNER_TEMP/surveyquant-source"
+
+          unzip -q "$ZIP" \
+            -d "$RUNNER_TEMP/surveyquant-source"
 
           echo "========================================"
-          echo "Searching for Android project"
+          echo "Searching extracted project"
           echo "========================================"
 
-          FOUND="$(find "$GITHUB_WORKSPACE" \
-            -type f \
-            -path '*/app/build.gradle' -o -path '*/app/build.gradle.kts' \
-            -not -path '*/.gradle/*' \
-            -print -quit || true)"
+          PROJECT_ROOT=""
 
-          if [ -n "$FOUND" ]; then
+          while IFS= read -r BUILD_FILE; do
 
-            ROOT="$(dirname "$(dirname "$FOUND")")"
+            case "$BUILD_FILE" in
+              */app/build.gradle|*/app/build.gradle.kts)
 
-            echo "Android project found
+                PROJECT_ROOT="${BUILD_FILE%/app/build.gradle}"
+                PROJECT_ROOT="${PROJECT_ROOT%/app/build.gradle.kts}"
+
+                break
+                ;;
+            esac
+
+          done < <(
+            find "$RUNNER_TEMP/surveyquant-source" \
+              -type f \
+              \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+              -print
+          )
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "ERROR: Android app module was not found."
+
+            echo "Extracted files:"
+            find "$RUNNER_TEMP/surveyquant-source" \
+              -maxdepth 6 \
+              -type f \
+              -print | sort | head -300
+
+            exit 1
+          fi
+
+          echo "PROJECT ROOT:"
+          echo "$PROJECT_ROOT"
+
+          if [ ! -d "$PROJECT_ROOT/app" ]; then
+            echo "ERROR: app directory not found."
+            exit 1
+          fi
+
+          if [ -f "$PROJECT_ROOT/app/build.gradle" ]; then
+            echo "Found app/build.gradle"
+          elif [ -f "$PROJECT_ROOT/app/build.gradle.kts" ]; then
+            echo "Found app/build.gradle.kts"
+          else
+            echo "ERROR: app Gradle file not found."
+            exit 1
+          fi
+
+          if [ -f "$PROJECT_ROOT/app/src/main/AndroidManifest.xml" ]; then
+            echo "Found AndroidManifest.xml"
+          else
+            echo "WARNING: AndroidManifest.xml not found."
+          fi
+
+          if [ -f "$PROJECT_ROOT/app/src/main/assets/index.html" ]; then
+            echo "Found assets/index.html"
+          else
+            echo "WARNING: assets/index.html not found."
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "========================================"
+          echo "V62 SOURCE READY"
+          echo "========================================"
+
+
+      - name: Find Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLEW=""
+
+          if [ -f "$PROJECT_ROOT/gradlew" ]; then
+            GRADLEW="$PROJECT_ROOT/gradlew"
+          fi
+
+          if [ -z "$GRADLEW" ]; then
+            GRADLEW="$(find "$PROJECT_ROOT" \
+              -type f \
+              -name "gradlew" \
+              -print -quit || true)"
+          fi
+
+          if [ -n "$GRADLEW" ] && [ -f "$GRADLEW" ]; then
+
+            chmod +x "$GRADLEW"
+
+            echo "GRADLEW_PATH=$GRADLEW" >> "$GITHUB_ENV"
+
+            echo "Gradle Wrapper:"
+            echo "$GRADLEW"
+
+          else
+
+            echo "GRADLEW_PATH=" >> "$GITHUB_ENV"
+
+            echo "Gradle Wrapper not found."
+            echo "Using installed Gradle 8.7."
+
+          fi
+
+
+      - name: Decode signing keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+        run: |
+          set -euo pipefail
+
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64 secret."
+            exit 1
+          fi
+
+          echo "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > "$RUNNER_TEMP/surveyquant.jks"
+
+          if [ ! -s "$RUNNER_TEMP/surveyquant.jks" ]; then
+            echo "ERROR: Keystore file is empty."
+            exit 1
+          fi
+
+          echo "Keystore decoded successfully."
+
+
+      - name: Build release APK
+        shell: bash
+
+        env:
+          SURVEYQUANT_KEYSTORE_FILE: ${{ runner.temp }}/surveyquant.jks
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_ROOT"
+
+          echo "========================================"
+          echo "Building SurveyQuant V62"
+          echo "========================================"
+
+          if [ -n "${GRADLEW_PATH:-}" ] && [ -f "$GRADLEW_PATH" ]; then
+
+            chmod +x "$GRADLEW_PATH"
+
+            "$GRADLEW_PATH" \
+              --no-daemon \
+              --stacktrace \
+              clean \
+              assembleRelease
+
+          else
+
+            gradle \
+              --no-daemon \
+              --stacktrace \
+              clean \
+              assembleRelease
+
+          fi
+
+          echo "========================================"
+          echo "Collecting APK"
+          echo "========================================"
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          APK_DIR="$PROJECT_ROOT/app/build/outputs/apk/release"
+
+          if [ ! -d "$APK_DIR" ]; then
+            echo "ERROR: Release APK directory does not exist:"
+            echo "$APK_DIR"
+            exit 1
+          fi
+
+          APK_FOUND=""
+
+          while IFS= read -r APK; do
+            if [ -n "$APK" ]; then
+              cp "$APK" "$GITHUB_WORKSPACE/output/"
+              APK_FOUND="yes"
+              echo "APK:"
+              echo "$APK"
+            fi
+          done < <(
+            find "$APK_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name "*.apk" \
+              -print
+          )
+
+          if [ -z "$APK_FOUND" ]; then
+            echo "ERROR: No release APK was generated."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "APK GENERATED SUCCESSFULLY"
+          echo "========================================"
+
+          ls -lh "$GITHUB_WORKSPACE/output/"
+
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: SurveyQuant-v1.0.62-release
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14
