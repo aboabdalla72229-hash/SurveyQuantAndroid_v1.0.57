@@ -20,40 +20,77 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate and extract source ZIP
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Extract EXACT v1.0.62 ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="$(find . -maxdepth 3 -type f \
-            \( -name 'SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip' -o \
-               -name 'SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip' \) \
-            -print -quit)"
+          ZIP="$GITHUB_WORKSPACE/SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip"
 
-          if [ -z "$ZIP" ]; then
-            echo "::error::v1.0.62 source ZIP not found."
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Required v1.0.62 ZIP not found:"
+            echo "$ZIP"
             exit 1
           fi
 
-          echo "Using source: $ZIP"
+          echo "========================================"
+          echo "USING EXACT SOURCE ZIP:"
+          echo "$ZIP"
+          echo "========================================"
 
-          rm -rf source
-          mkdir -p source
+          rm -rf "$GITHUB_WORKSPACE/source"
 
-          unzip -q "$ZIP" -d source
+          mkdir -p "$GITHUB_WORKSPACE/source"
 
-          WRAPPER="$(find source -type f -name gradlew -print -quit)"
+          unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/source"
 
-          if [ -z "$WRAPPER" ]; then
-            echo "::error::gradlew not found in extracted source."
-            find source -maxdepth 4 -type f | head -150
+          PROJECT_DIR="$GITHUB_WORKSPACE/source/SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE"
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+            echo "::error::Expected v1.0.62 project was not found."
+            find "$GITHUB_WORKSPACE/source" -maxdepth 4 -type f | head -200
             exit 1
           fi
 
-          chmod +x "$WRAPPER"
+          if [ ! -f "$PROJECT_DIR/build.gradle" ]; then
+            echo "::error::Root build.gradle not found."
+            exit 1
+          fi
 
-          echo "GRADLEW=$WRAPPER" >> "$GITHUB_ENV"
-          echo "PROJECT_DIR=$(dirname "$WRAPPER")" >> "$GITHUB_ENV"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "::error::app/build.gradle not found."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "========================================"
+          echo "PROJECT FOUND:"
+          echo "$PROJECT_DIR"
+          echo "========================================"
+
+      - name: Generate Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if [ ! -f gradlew ]; then
+            echo "gradlew is missing."
+            echo "Generating wrapper for this exact source..."
+
+            gradle wrapper --gradle-version 8.7
+          fi
+
+          chmod +x gradlew
+
+          test -f gradlew
+
+          echo "Gradle wrapper ready."
 
       - name: Prepare release keystore
         shell: bash
@@ -66,13 +103,14 @@ jobs:
           set -euo pipefail
 
           if [ -z "$SURVEYQUANT_KEYSTORE_BASE64" ]; then
-            echo "::error::GitHub Secret SURVEYQUANT_KEYSTORE_BASE64 is missing."
+            echo "::error::SURVEYQUANT_KEYSTORE_BASE64 is missing."
             exit 1
           fi
 
           KEYSTORE_FILE="$RUNNER_TEMP/surveyquant-release.keystore"
 
-          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE_FILE"
 
           test -s "$KEYSTORE_FILE"
 
@@ -83,43 +121,44 @@ jobs:
             echo "SURVEYQUANT_KEY_PASSWORD=$SURVEYQUANT_KEY_PASSWORD"
           } >> "$GITHUB_ENV"
 
-          echo "Keystore prepared successfully."
-
-      - name: Build APK
+      - name: Build EXACT v1.0.62 source
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
 
-          "$GITHUB_WORKSPACE/$GRADLEW" assembleDebug --stacktrace
+          ./gradlew assembleDebug \
+            --stacktrace \
+            --no-daemon
 
-      - name: Locate APK
+      - name: Find APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK="$(find "$PROJECT_DIR" \
             -type f \
-            -path '*/build/outputs/apk/**/*.apk' \
+            -name '*.apk' \
+            -path '*/build/outputs/*' \
             -print -quit)"
 
           if [ -z "$APK" ]; then
             echo "::error::APK was not generated."
-            find "$PROJECT_DIR" \
-              -type f \
-              -path '*/build/outputs/*' | head -100
             exit 1
           fi
 
-          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
-          echo "Generated: $APK"
+          echo "========================================"
+          echo "APK GENERATED:"
+          echo "$APK"
+          echo "========================================"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.62-debug
-          path: ${{ env.APK }}
+          name: SurveyQuant-v1.0.62-XY-ALL-FORMATS-COMPARE-NAMING-FIX
+          path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 14
