@@ -1,0 +1,46 @@
+name: SurveyQuant v1.0.62 Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip'
+      - '.github/workflows/build-v62.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Verify source ZIP
+        run: |
+          test -f SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip
+          unzip -t SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip
+          mkdir source
+          unzip -q SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip -d source
+          find source -name gradlew -type f
+
+      - name: Build APK
+        run: |
+          chmod +x "$(find source -name gradlew -type f | head -n 1)"
+          cd "$(dirname "$(find "$GITHUB_WORKSPACE/source" -name gradlew -type f | head -n 1)")"
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.62-APK
+          path: source/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
