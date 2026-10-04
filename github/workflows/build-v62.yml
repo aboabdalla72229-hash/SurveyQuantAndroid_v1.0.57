@@ -23,35 +23,35 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Locate V62 source ZIP
+      - name: Find source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "SurveyQuant V62 Source"
+          echo "SurveyQuant V62 Source Search"
           echo "========================================"
 
-          echo "Repository root:"
+          echo "Current directory:"
           pwd
 
           echo ""
-          echo "ZIP files in repository:"
-          find . -type f -iname "*.zip" -print || true
+          echo "Searching for ZIP files..."
 
-          echo ""
+          find . -type f -iname "*.zip" -print || true
 
           ZIP=""
 
-          # 1. البحث عن V62 بأي اسم
           ZIP="$(find . -type f -iname "*v1.0.62*.zip" -print -quit || true)"
 
-          # 2. لو لم يوجد، البحث عن FINAL_CANDIDATE
+          if [ -z "$ZIP" ]; then
+            ZIP="$(find . -type f -iname "*V62*.zip" -print -quit || true)"
+          fi
+
           if [ -z "$ZIP" ]; then
             ZIP="$(find . -type f -iname "*FINAL_CANDIDATE*.zip" -print -quit || true)"
           fi
 
-          # 3. لو لم يوجد، البحث عن أي ZIP واحد
           if [ -z "$ZIP" ]; then
             COUNT="$(find . -type f -iname "*.zip" | wc -l)"
 
@@ -62,15 +62,17 @@ jobs:
 
           if [ -z "$ZIP" ]; then
             echo ""
-            echo "ERROR: No source ZIP found."
+            echo "ERROR: No source ZIP found in repository."
             echo ""
-            echo "Files available in repository:"
-            find . -maxdepth 4 -type f -print | sort | head -300
+            echo "Repository files:"
+            find . -maxdepth 5 -type f -print | sort | head -500
             exit 1
           fi
 
           echo ""
-          echo "SOURCE ZIP FOUND:"
+          echo "========================================"
+          echo "SOURCE ZIP FOUND"
+          echo "========================================"
           echo "$ZIP"
 
           echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
@@ -80,19 +82,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Extracting:"
-          echo "$SOURCE_ZIP"
-
           rm -rf source
           mkdir -p source
+
+          echo "Extracting:"
+          echo "$SOURCE_ZIP"
 
           unzip -q "$SOURCE_ZIP" -d source
 
           echo ""
-          echo "Extracted files:"
-          find source -maxdepth 4 -type f | head -300
+          echo "Source contents:"
+          find source -maxdepth 4 -type f -print | head -500
 
-      - name: Locate Android project
+      - name: Find Android project
         shell: bash
         run: |
           set -euo pipefail
@@ -100,12 +102,11 @@ jobs:
           GRADLEW="$(find source -type f -name "gradlew" -print -quit || true)"
 
           if [ -z "$GRADLEW" ]; then
-            echo "ERROR: gradlew not found inside source ZIP."
-
             echo ""
-            echo "Source tree:"
-            find source -maxdepth 6 -type f | sort | head -500
-
+            echo "ERROR: gradlew not found."
+            echo ""
+            echo "Searching project files:"
+            find source -maxdepth 7 -type f -print | sort | head -1000
             exit 1
           fi
 
@@ -116,10 +117,10 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           echo ""
-          echo "Android project:"
+          echo "Android project found:"
           echo "$PROJECT_DIR"
 
-      - name: Verify Android project
+      - name: Verify project
         shell: bash
         run: |
           set -euo pipefail
@@ -127,22 +128,21 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "========================================"
-          echo "Android Project Verification"
+          echo "PROJECT VERIFICATION"
           echo "========================================"
 
           test -f gradlew
 
-          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
-            echo "WARNING: settings.gradle not found."
-          fi
-
-          if [ ! -f build.gradle ] && [ ! -f build.gradle.kts ]; then
-            echo "WARNING: root build.gradle not found."
-          fi
-
           echo ""
-          echo "Project files:"
-          find . -maxdepth 3 -type f | sort | head -300
+          echo "Gradle files:"
+
+          find . -maxdepth 4 -type f \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "gradle.properties" \) \
+            -print
 
       - name: Build Release APK
         shell: bash
@@ -154,7 +154,7 @@ jobs:
           chmod +x ./gradlew
 
           echo "========================================"
-          echo "Building SurveyQuant V62"
+          echo "BUILDING SURVEYQUANT V62"
           echo "========================================"
 
           ./gradlew clean assembleRelease \
@@ -166,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p output
 
           APK="$(find "$PROJECT_DIR" \
             -type f \
@@ -175,22 +175,14 @@ jobs:
             | head -n 1 || true)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: Release APK was not generated."
-
-            echo ""
-            echo "Build outputs:"
-            find "$PROJECT_DIR" -type f \
-              \( -iname "*.apk" -o -iname "*.aab" \) \
-              -print || true
-
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK FOUND:"
+          echo "APK:"
           echo "$APK"
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/output/SurveyQuant_v1.0.62.apk"
+          cp "$APK" output/SurveyQuant_v1.0.62.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
