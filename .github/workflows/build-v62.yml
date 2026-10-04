@@ -31,8 +31,10 @@ jobs:
 
           ZIP="$GITHUB_WORKSPACE/SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip"
 
-          echo "Using:"
+          echo "========================================"
+          echo "Using exact source:"
           echo "$ZIP"
+          echo "========================================"
 
           if [ ! -f "$ZIP" ]; then
             echo "::error::Source ZIP not found."
@@ -45,8 +47,6 @@ jobs:
           unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/source"
 
           PROJECT_DIR="$GITHUB_WORKSPACE/source/SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE"
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
           if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
             echo "::error::settings.gradle not found."
@@ -63,29 +63,13 @@ jobs:
             exit 1
           fi
 
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
           echo "Source extracted successfully."
 
-      - name: Generate Gradle Wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          if [ ! -f gradlew ]; then
-            echo "Generating Gradle Wrapper..."
-            gradle wrapper --gradle-version 8.7
-          fi
-
-          chmod +x gradlew
-
-          if [ ! -f gradlew ]; then
-            echo "::error::Gradle Wrapper was not generated."
-            exit 1
-          fi
-
-          echo "Gradle Wrapper ready."
-
+      # IMPORTANT:
+      # This must run BEFORE Gradle Wrapper generation because
+      # app/build.gradle requires SURVEYQUANT_KEYSTORE_FILE
       - name: Prepare release keystore
         shell: bash
         env:
@@ -100,21 +84,22 @@ jobs:
 
           KEYSTORE_FILE="$RUNNER_TEMP/surveyquant-release.keystore"
 
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE_FILE"
 
           if [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Keystore file is empty."
             exit 1
           fi
 
-          echo "KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
 
           echo "Keystore prepared successfully."
 
-      - name: Build v1.0.62
+      - name: Generate Gradle Wrapper
         shell: bash
         env:
-          SURVEYQUANT_KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
+          SURVEYQUANT_KEYSTORE_FILE: ${{ env.SURVEYQUANT_KEYSTORE_FILE }}
           SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
           SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
           SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
@@ -123,27 +108,93 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "Building:"
-          echo "$PROJECT_DIR"
+          if [ ! -f gradlew ]; then
+            echo "gradlew is missing."
+            echo "Generating Gradle Wrapper..."
 
-          ./gradlew assembleDebug --stacktrace --no-daemon
+            gradle wrapper --gradle-version 8.7
+          fi
+
+          chmod +x gradlew
+
+          if [ ! -f gradlew ]; then
+            echo "::error::Gradle Wrapper was not generated."
+            exit 1
+          fi
+
+          echo "Gradle Wrapper ready."
+
+      - name: Verify keystore environment
+        shell: bash
+        env:
+          SURVEYQUANT_KEYSTORE_FILE: ${{ env.SURVEYQUANT_KEYSTORE_FILE }}
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SURVEYQUANT_KEYSTORE_FILE" ]; then
+            echo "::error::SURVEYQUANT_KEYSTORE_FILE is empty."
+            exit 1
+          fi
+
+          if [ ! -f "$SURVEYQUANT_KEYSTORE_FILE" ]; then
+            echo "::error::Keystore file does not exist."
+            exit 1
+          fi
+
+          echo "Keystore environment verified."
+
+      - name: Build v1.0.62
+        shell: bash
+        env:
+          SURVEYQUANT_KEYSTORE_FILE: ${{ env.SURVEYQUANT_KEYSTORE_FILE }}
+          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          echo "========================================"
+          echo "Building exact v1.0.62 source"
+          echo "$PROJECT_DIR"
+          echo "========================================"
+
+          ./gradlew assembleDebug \
+            --stacktrace \
+            --no-daemon
 
       - name: Find APK
         shell: bash
         run: |
           set -euo pipefail
 
-          APK="$(find "$PROJECT_DIR" -type f -name "*.apk" -path "*/build/outputs/*" | head -n 1)"
+          APK="$(find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -path "*/build/outputs/*" \
+            | head -n 1)"
 
           if [ -z "$APK" ]; then
             echo "::error::APK was not generated."
+
+            find "$PROJECT_DIR" \
+              -type f \
+              -path "*/build/outputs/*" \
+              -print
+
             exit 1
           fi
 
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
-          echo "APK:"
+          echo "========================================"
+          echo "APK GENERATED:"
           echo "$APK"
+          echo "========================================"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -151,3 +202,4 @@ jobs:
           name: SurveyQuant-v1.0.62-XY-ALL-FORMATS-COMPARE-NAMING-FIX
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
+          retention-days: 14
