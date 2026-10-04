@@ -1,163 +1,52 @@
-name: Build SurveyQuant V62
 
-on:
-  workflow_dispatch:
-  push:
-    paths:
-      - '**'
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Find and verify source project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ROOT=""
-
-          # First: look for an extracted Android project.
-          FOUND="$(find "$GITHUB_WORKSPACE" \
-            -type f -path '*/app/build.gradle' \
-            -not -path '*/.gradle/*' \
-            -print -quit || true)"
-
-          if [ -n "$FOUND" ]; then
-            ROOT="$(dirname "$(dirname "$FOUND")")"
-          else
-            # Otherwise: extract the V62 source ZIP.
-            ZIP="$(find "$GITHUB_WORKSPACE" \
-              -type f \
-              -name 'SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip' \
-              -print -quit || true)"
-
-            if [ -z "$ZIP" ]; then
-              echo "ERROR: Android source project or V62 ZIP not found."
-              echo "Expected ZIP:"
-              echo "SurveyQuantAndroid_v1.0.62_FINAL_CANDIDATE.zip"
-              exit 1
-            fi
-
-            mkdir -p "$RUNNER_TEMP/surveyquant-source"
-            unzip -q "$ZIP" -d "$RUNNER_TEMP/surveyquant-source"
-
-            FOUND="$(find "$RUNNER_TEMP/surveyquant-source" \
-              -type f -path '*/app/build.gradle' \
-              -print -quit || true)"
-
-            if [ -z "$FOUND" ]; then
-              echo "ERROR: ZIP does not contain app/build.gradle."
-              exit 1
-            fi
-
-            ROOT="$(dirname "$(dirname "$FOUND")")"
-          fi
-
-          test -f "$ROOT/app/build.gradle"
-          test -f "$ROOT/app/src/main/AndroidManifest.xml"
-          test -f "$ROOT/app/src/main/assets/index.html"
-
-          grep -Eq 'versionCode[[:space:]]+62' \
-            "$ROOT/app/build.gradle"
-
-          grep -Eq "versionName[[:space:]]+'1\.0\.62'|versionName[[:space:]]+\"1\.0\.62\"" \
-            "$ROOT/app/build.gradle"
-
-          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo "Verified project root: $ROOT"
-
-      - name: Find Gradle Wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          GRADLEW="$(find "$PROJECT_ROOT" \
-            -type f -name gradlew -print -quit || true)"
-
-          if [ -n "$GRADLEW" ]; then
-            chmod +x "$GRADLEW"
-            echo "GRADLEW_PATH=$GRADLEW" >> "$GITHUB_ENV"
-            echo "Found Gradle Wrapper: $GRADLEW"
-          else
-            echo "Gradle Wrapper not found."
-            echo "Will use installed Gradle 8.7."
-            echo "GRADLEW_PATH=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Decode signing keystore
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "${KEYSTORE_BASE64:-}" ]; then
-            echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64 secret."
-            exit 1
-          fi
-
-          echo "$KEYSTORE_BASE64" \
-            | base64 --decode > "$RUNNER_TEMP/surveyquant.jks"
-
-          test -s "$RUNNER_TEMP/surveyquant.jks"
-
-      - name: Build release APK
-        shell: bash
-        env:
-          SURVEYQUANT_KEYSTORE_FILE: ${{ runner.temp }}/surveyquant.jks
-          SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-          SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-          SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_ROOT"
-
-          if [ -n "${GRADLEW_PATH:-}" ] && [ -f "$GRADLEW_PATH" ]; then
-            chmod +x "$GRADLEW_PATH"
-            "$GRADLEW_PATH" --no-daemon clean assembleRelease
-          else
-            gradle --no-daemon clean assembleRelease
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/output"
-
-          find app/build/outputs/apk/release \
-            -maxdepth 1 -type f -name '*.apk' \
-            -exec cp {} "$GITHUB_WORKSPACE/output/" \;
-
-          if ! find "$GITHUB_WORKSPACE/output" \
-            -maxdepth 1 -type f -name '*.apk' \
-            -print -quit | grep -q .; then
-            echo "ERROR: Release APK was not generated."
-            exit 1
-          fi
-
-          echo "APK generated successfully."
-
-      - name: Upload release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.62-release
-          path: output/*.apk
-          if-no-files-found: error
-          retention-days: 14
+خطأ واحد، تحذيران، وإشعار واحد
+يبني
+فشل جاد تشارنفي 34 ثانية
+سجلات البحث
+3s
+Current runner version: '2.337.0'
+Runner Image Provisioner
+Operating System
+Runner Image
+GITHUB_TOKEN Permissions
+Secret source: Actions
+Cache mode: write
+Prepare workflow directory
+Prepare all required actions
+Getting action download info
+Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+Download action repository 'actions/setup-java@v4' (SHA:cf277c60eb25467037889841efdb72551f06f6c3)
+Download action repository 'gradle/actions@v4' (SHA:ed408507eac070d1f99cc633dbcf757c94c7933a)
+Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+Complete job name: build
+1s
+Run actions/checkout@v4
+Syncing repository: aboabdalla72229-hash/SurveyQuantAndroid_v1.0.57
+Getting Git version info
+Temporarily overriding HOME='/home/runner/work/_temp/df9ba52e-d716-4dec-9cea-36bea83e004e' before making global git config changes
+Adding repository directory to the temporary git global config as a safe directory
+/usr/bin/git config --global --add safe.directory /home/runner/work/SurveyQuantAndroid_v1.0.57/SurveyQuantAndroid_v1.0.57
+Deleting the contents of '/home/runner/work/SurveyQuantAndroid_v1.0.57/SurveyQuantAndroid_v1.0.57'
+Initializing the repository
+Disabling automatic garbage collection
+Setting up auth
+Fetching the repository
+Determining the checkout info
+/usr/bin/git sparse-checkout disable
+/usr/bin/git config --local --unset-all extensions.worktreeConfig
+Checking out the ref
+/usr/bin/git log -1 --format=%H
+7599cf65425b2e93ae07e84866f45e8e21c53f6c
+0s
+Run actions/setup-java@v4
+Warning: setup-java v4 is deprecated and will no longer receive updates. Please migrate to actions/setup-java@v5.
+Installed distributions
+Creating settings.xml with server-id: github
+Writing to /home/runner/.m2/settings.xml
+15s
+Run gradle/actions/setup-gradle@v4
+Merged default JDK locations into /home/runner/.m2/toolchains.xml
+Preparing cache for cleanup.
+Restore Gradle state from cache
+All Gradle Wrapper jars are valid
+Provision Gradle 8.7
