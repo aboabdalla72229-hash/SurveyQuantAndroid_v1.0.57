@@ -31,26 +31,16 @@ jobs:
           ZIP="SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip"
 
           echo "========================================"
-          echo "SurveyQuant V62 XY FIXED"
+          echo "SURVEYQUANT V62 XY FIXED"
           echo "========================================"
-
-          echo "Checking:"
-          echo "$ZIP"
 
           if [ ! -f "$ZIP" ]; then
             echo "ERROR: Source ZIP not found:"
-            echo "$PWD/$ZIP"
-            echo ""
-            echo "Available ZIP files:"
-            find . -maxdepth 3 -type f -iname "*.zip" -print
+            echo "$ZIP"
             exit 1
           fi
 
-          echo ""
-          echo "SOURCE ZIP FOUND:"
           ls -lh "$ZIP"
-
-          echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
 
       - name: Extract source
         shell: bash
@@ -58,9 +48,12 @@ jobs:
           set -euo pipefail
 
           rm -rf source
+
           mkdir -p source
 
-          unzip -q "$SOURCE_ZIP" -d source
+          unzip -q \
+            SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip \
+            -d source
 
           echo "========================================"
           echo "EXTRACTED SOURCE"
@@ -68,47 +61,62 @@ jobs:
 
           find source -maxdepth 5 -type f -print | sort
 
-      - name: Locate Android project
+      - name: Set Android project directory
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "========================================"
-          echo "SEARCHING FOR GRADLE PROJECT"
-          echo "========================================"
+          PROJECT_DIR="source/SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE"
 
-          GRADLEW="$(find source -type f -name "gradlew" -print -quit || true)"
-
-          if [ -z "$GRADLEW" ]; then
-            echo "gradlew not found."
-
-            echo ""
-            echo "Searching for Gradle settings:"
-            find source -type f \
-              \( -name "settings.gradle" \
-              -o -name "settings.gradle.kts" \
-              -o -name "build.gradle" \
-              -o -name "build.gradle.kts" \) \
-              -print || true
-
-            echo ""
-            echo "Searching for AndroidManifest:"
-            find source -type f \
-              -name "AndroidManifest.xml" \
-              -print || true
-
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+            echo "ERROR: settings.gradle not found"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW")"
+          if [ ! -f "$PROJECT_DIR/build.gradle" ]; then
+            echo "ERROR: build.gradle not found"
+            exit 1
+          fi
 
-          chmod +x "$GRADLEW"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "ERROR: app/build.gradle not found"
+            exit 1
+          fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo ""
-          echo "ANDROID PROJECT:"
+          echo "========================================"
+          echo "ANDROID PROJECT"
+          echo "========================================"
+
           echo "$PROJECT_DIR"
+
+      - name: Inspect Gradle configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          echo "========================================"
+          echo "settings.gradle"
+          echo "========================================"
+
+          cat settings.gradle
+
+          echo ""
+          echo "========================================"
+          echo "root build.gradle"
+          echo "========================================"
+
+          cat build.gradle
+
+          echo ""
+          echo "========================================"
+          echo "app/build.gradle"
+          echo "========================================"
+
+          cat app/build.gradle
 
       - name: Build Release APK
         shell: bash
@@ -117,22 +125,27 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          chmod +x ./gradlew
-
           echo "========================================"
-          echo "BUILDING V62"
+          echo "BUILDING SURVEYQUANT V62"
           echo "========================================"
 
-          ./gradlew clean assembleRelease \
+          gradle clean assembleRelease \
             --no-daemon \
             --stacktrace
 
-      - name: Collect APK
+      - name: Find generated APK
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          echo "========================================"
+          echo "SEARCHING FOR APK"
+          echo "========================================"
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -iname "*.apk" \
+            -print
 
           APK="$(find "$PROJECT_DIR" \
             -type f \
@@ -141,12 +154,16 @@ jobs:
             | head -n 1 || true)"
 
           if [ -z "$APK" ]; then
+            echo ""
             echo "ERROR: APK was not generated."
             exit 1
           fi
 
+          echo ""
           echo "APK FOUND:"
           echo "$APK"
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
 
           cp "$APK" \
             "$GITHUB_WORKSPACE/output/SurveyQuant_v1.0.62_XY_FIXED.apk"
