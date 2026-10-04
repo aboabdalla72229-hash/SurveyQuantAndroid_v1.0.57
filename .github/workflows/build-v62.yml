@@ -1,4 +1,4 @@
-name: Build SurveyQuant V61
+name: Build SurveyQuant V62
 
 on:
   workflow_dispatch:
@@ -41,10 +41,10 @@ jobs:
             if [ -n "$FOUND" ]; then
               ROOT="$(dirname "$(dirname "$FOUND")")"
             else
-              ZIP="$(find "$GITHUB_WORKSPACE" -type f -name 'SurveyQuantAndroid_v1.0.61_REPAIRED_SOURCE.zip' -print -quit || true)"
+              ZIP="$(find "$GITHUB_WORKSPACE" -type f -name 'SurveyQuantAndroid_v1.0.62_REPAIRED_SOURCE.zip' -print -quit || true)"
               if [ -z "$ZIP" ]; then
                 echo 'ERROR: No app/build.gradle found and source ZIP is not in the repository.'
-                echo 'Upload the extracted source folder or add SurveyQuantAndroid_v1.0.61_REPAIRED_SOURCE.zip.'
+                echo 'Upload the extracted source folder or add SurveyQuantAndroid_v1.0.62_REPAIRED_SOURCE.zip.'
                 exit 1
               fi
               mkdir -p "$RUNNER_TEMP/surveyquant-source"
@@ -62,7 +62,7 @@ jobs:
           test -f "$ROOT/app/src/main/AndroidManifest.xml"
           test -f "$ROOT/app/src/main/assets/index.html"
           grep -Eq 'versionCode[[:space:]]+61' "$ROOT/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+'1\.0\.61'|versionName[[:space:]]+\"1\.0\.61\"" "$ROOT/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+'1\.0\.62'|versionName[[:space:]]+\"1\.0\.62\"" "$ROOT/app/build.gradle"
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "Verified source root: $ROOT"
 
@@ -97,7 +97,7 @@ jobs:
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.61-release
+          name: SurveyQuant-v1.0.62-release
           path: output/*.apk
           if-no-files-found: error
           retention-days: 14
