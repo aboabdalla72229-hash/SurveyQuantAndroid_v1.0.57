@@ -1,0 +1,113 @@
+name: Build SurveyQuant V62
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: DEBUG - Show repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== V62 NEW WORKFLOW ====="
+          echo "COMMIT:"
+          git rev-parse HEAD
+
+          echo ""
+          echo "WORKFLOW:"
+          sed -n '1,240p' .github/workflows/build-v62.yml
+
+          echo ""
+          echo "ZIP FILES:"
+          find . -type f -iname "*.zip" -print || true
+
+      - name: Find source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$(find . -type f -iname "*.zip" -print -quit || true)"
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: NO ZIP FILE EXISTS IN REPOSITORY"
+            exit 1
+          fi
+
+          echo "FOUND ZIP:"
+          echo "$ZIP"
+
+          echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Extract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf source
+          mkdir source
+
+          unzip -q "$SOURCE_ZIP" -d source
+
+          echo "SOURCE EXTRACTED"
+
+          find source -maxdepth 5 -type f -print | head -300
+
+      - name: Find Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLEW="$(find source -type f -name gradlew -print -quit || true)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew NOT FOUND"
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          chmod +x "$GRADLEW"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "PROJECT:"
+          echo "$PROJECT_DIR"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          chmod +x ./gradlew
+
+          ./gradlew clean assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.62
+          path: "**/build/outputs/apk/release/*.apk"
+          if-no-files-found: error
