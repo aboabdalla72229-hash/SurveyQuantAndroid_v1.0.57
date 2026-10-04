@@ -23,16 +23,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Verify V62 source
+      - name: Verify source
         shell: bash
         run: |
           set -euo pipefail
 
           ZIP="SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip"
-
-          echo "========================================"
-          echo "SURVEYQUANT V62 XY FIXED"
-          echo "========================================"
 
           if [ ! -f "$ZIP" ]; then
             echo "ERROR: Source ZIP not found:"
@@ -40,6 +36,7 @@ jobs:
             exit 1
           fi
 
+          echo "Source ZIP:"
           ls -lh "$ZIP"
 
       - name: Extract source
@@ -55,68 +52,73 @@ jobs:
             SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE.zip \
             -d source
 
-          echo "========================================"
-          echo "EXTRACTED SOURCE"
-          echo "========================================"
-
-          find source -maxdepth 5 -type f -print | sort
-
-      - name: Set Android project directory
+      - name: Set project directory
         shell: bash
         run: |
           set -euo pipefail
 
           PROJECT_DIR="source/SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE"
 
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
-            echo "ERROR: settings.gradle not found"
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/build.gradle" ]; then
-            echo "ERROR: build.gradle not found"
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "ERROR: app/build.gradle not found"
-            exit 1
-          fi
+          test -f "$PROJECT_DIR/settings.gradle"
+          test -f "$PROJECT_DIR/build.gradle"
+          test -f "$PROJECT_DIR/app/build.gradle"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "========================================"
-          echo "ANDROID PROJECT"
-          echo "========================================"
-
+          echo "Project:"
           echo "$PROJECT_DIR"
 
-      - name: Inspect Gradle configuration
+      - name: Configure release signing
         shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          cd "$PROJECT_DIR"
-
           echo "========================================"
-          echo "settings.gradle"
+          echo "CONFIGURING RELEASE SIGNING"
           echo "========================================"
 
-          cat settings.gradle
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is missing."
+            exit 1
+          fi
 
-          echo ""
-          echo "========================================"
-          echo "root build.gradle"
-          echo "========================================"
+          if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
+            echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD secret is missing."
+            exit 1
+          fi
 
-          cat build.gradle
+          if [ -z "${KEY_ALIAS:-}" ]; then
+            echo "ERROR: SURVEYQUANT_KEY_ALIAS secret is missing."
+            exit 1
+          fi
 
-          echo ""
-          echo "========================================"
-          echo "app/build.gradle"
-          echo "========================================"
+          if [ -z "${KEY_PASSWORD:-}" ]; then
+            echo "ERROR: SURVEYQUANT_KEY_PASSWORD secret is missing."
+            exit 1
+          fi
 
-          cat app/build.gradle
+          KEYSTORE_FILE="$GITHUB_WORKSPACE/surveyquant-ci.jks"
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+
+          if [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "ERROR: Keystore file was not created."
+            exit 1
+          fi
+
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+          chmod 600 "$KEYSTORE_FILE"
+
+          echo "Keystore configured successfully."
 
       - name: Build Release APK
         shell: bash
@@ -126,14 +128,14 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "========================================"
-          echo "BUILDING SURVEYQUANT V62"
+          echo "BUILDING SURVEYQUANT V62 XY FIXED"
           echo "========================================"
 
           gradle clean assembleRelease \
             --no-daemon \
             --stacktrace
 
-      - name: Find generated APK
+      - name: Find APK
         shell: bash
         run: |
           set -euo pipefail
@@ -154,19 +156,17 @@ jobs:
             | head -n 1 || true)"
 
           if [ -z "$APK" ]; then
-            echo ""
             echo "ERROR: APK was not generated."
             exit 1
           fi
-
-          echo ""
-          echo "APK FOUND:"
-          echo "$APK"
 
           mkdir -p "$GITHUB_WORKSPACE/output"
 
           cp "$APK" \
             "$GITHUB_WORKSPACE/output/SurveyQuant_v1.0.62_XY_FIXED.apk"
+
+          echo "APK ready:"
+          ls -lh "$GITHUB_WORKSPACE/output/SurveyQuant_v1.0.62_XY_FIXED.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
