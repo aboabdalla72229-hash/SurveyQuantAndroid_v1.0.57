@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.62
+name: Build SurveyQuant v1.0.63
 
 on:
   workflow_dispatch:
@@ -24,20 +24,21 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Extract v1.0.62 source
+      - name: Extract v1.0.63 source
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP="$GITHUB_WORKSPACE/SurveyQuantAndroid_v1.0.62_XY_ALL_FORMATS_COMPARE_NAMING_FIX.zip"
+          ZIP="$GITHUB_WORKSPACE/SurveyQuantAndroid_v1.0.63_XY_PROJECTION_QUANT_FIX.zip"
 
           echo "========================================"
-          echo "Using exact source:"
+          echo "Using source ZIP:"
           echo "$ZIP"
           echo "========================================"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Source ZIP not found."
+            echo "::error::Source ZIP not found:"
+            echo "$ZIP"
             exit 1
           fi
 
@@ -46,30 +47,59 @@ jobs:
 
           unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/source"
 
-          PROJECT_DIR="$GITHUB_WORKSPACE/source/SurveyQuantAndroid_v1.0.62_XY_FIXED_SOURCE"
+          echo "========================================"
+          echo "Searching for Android project..."
+          echo "========================================"
 
-          if [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
+          PROJECT_DIR=""
+
+          while IFS= read -r SETTINGS_FILE; do
+            CANDIDATE_DIR="$(dirname "$SETTINGS_FILE")"
+
+            if [ -f "$CANDIDATE_DIR/build.gradle" ] &&
+               [ -f "$CANDIDATE_DIR/app/build.gradle" ]; then
+              PROJECT_DIR="$CANDIDATE_DIR"
+              break
+            fi
+          done < <(find "$GITHUB_WORKSPACE/source" \
+            -type f \
+            -name "settings.gradle" \
+            -o -name "settings.gradle.kts")
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::Android project root was not found."
+            echo "Extracted files:"
+            find "$GITHUB_WORKSPACE/source" -maxdepth 4 -type f | sort
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "PROJECT_DIR:"
+          echo "$PROJECT_DIR"
+          echo "========================================"
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] &&
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
             echo "::error::settings.gradle not found."
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_DIR/build.gradle" ]; then
-            echo "::error::build.gradle not found."
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] &&
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "::error::Root build.gradle not found."
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] &&
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
             echo "::error::app/build.gradle not found."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Source extracted successfully."
+          echo "Android project detected successfully."
 
-      # IMPORTANT:
-      # This must run BEFORE Gradle Wrapper generation because
-      # app/build.gradle requires SURVEYQUANT_KEYSTORE_FILE
       - name: Prepare release keystore
         shell: bash
         env:
@@ -146,7 +176,7 @@ jobs:
 
           echo "Keystore environment verified."
 
-      - name: Build v1.0.62
+      - name: Build v1.0.63
         shell: bash
         env:
           SURVEYQUANT_KEYSTORE_FILE: ${{ env.SURVEYQUANT_KEYSTORE_FILE }}
@@ -159,7 +189,7 @@ jobs:
           cd "$PROJECT_DIR"
 
           echo "========================================"
-          echo "Building exact v1.0.62 source"
+          echo "Building SurveyQuant v1.0.63"
           echo "$PROJECT_DIR"
           echo "========================================"
 
@@ -181,6 +211,7 @@ jobs:
           if [ -z "$APK" ]; then
             echo "::error::APK was not generated."
 
+            echo "==== BUILD OUTPUT FILES ===="
             find "$PROJECT_DIR" \
               -type f \
               -path "*/build/outputs/*" \
@@ -189,17 +220,42 @@ jobs:
             exit 1
           fi
 
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
-
           echo "========================================"
           echo "APK GENERATED:"
           echo "$APK"
           echo "========================================"
 
-      - name: Upload APK
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/dist/SurveyQuant-v1.0.63-XY-PROJECTION-QUANT-FIX.apk"
+
+          echo "FINAL_APK=$GITHUB_WORKSPACE/dist/SurveyQuant-v1.0.63-XY-PROJECTION-QUANT-FIX.apk" >> "$GITHUB_ENV"
+
+      - name: Verify final APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$FINAL_APK" ]; then
+            echo "::error::Final APK file does not exist."
+            exit 1
+          fi
+
+          if [ ! -s "$FINAL_APK" ]; then
+            echo "::error::Final APK file is empty."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "FINAL APK:"
+          ls -lh "$FINAL_APK"
+          echo "========================================"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.62-XY-ALL-FORMATS-COMPARE-NAMING-FIX
-          path: ${{ env.APK_PATH }}
+          name: SurveyQuant-v1.0.63-XY-PROJECTION-QUANT-FIX
+          path: ${{ env.FINAL_APK }}
           if-no-files-found: error
           retention-days: 14
