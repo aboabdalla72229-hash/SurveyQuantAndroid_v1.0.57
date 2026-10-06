@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.74 (from v1.0.66 property preserve)
+name: Build SurveyQuant v1.0.74 (from v67)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_NAME: SurveyQuantAndroid_v1.0.74_FROM_V66_PROPERTY_PRESERVE_FINAL.zip
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.74_FROM_V67_EXACT_PROJECTION_PROPERTY_FIX.zip
 
 jobs:
   build:
@@ -32,7 +32,7 @@ jobs:
           fi
           ZIP="$SOURCE_NAME"
           if [[ ! -s "$ZIP" ]]; then
-            ZIP="$(find . -maxdepth 2 -type f -name 'SurveyQuantAndroid_v1.0.74_FROM_V66*.zip' -print -quit)"
+            ZIP="$(find . -maxdepth 2 -type f -name 'SurveyQuantAndroid_v1.0.74_FROM_V67*.zip' -print -quit)"
           fi
           test -s "$ZIP" || { echo "Source ZIP not found"; find . -maxdepth 3 -type f | sort | head -200; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source"
@@ -95,11 +95,11 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           mkdir -p "$PROJECT_DIR/release"
-          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.74-from-v66-release.apk"
-          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.74-from-v66-release.apk"
+          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.74-from-v67-release.apk"
+          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.74-from-v67-release.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.74-from-v66-release
-          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.74-from-v66-release.apk
+          name: SurveyQuant-v1.0.74-from-v67-release
+          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.74-from-v67-release.apk
           if-no-files-found: error
