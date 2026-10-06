@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.72
+name: Build SurveyQuant v1.0.73
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_NAME: SurveyQuantAndroid_v1.0.72_V68_ONLY_PROPERTY_FIX.zip
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.73_V68_FUNCTIONAL_PROPERTY_FIX.zip
 
 jobs:
   build:
@@ -29,7 +29,7 @@ jobs:
             exit 0
           fi
           ZIP="$SOURCE_NAME"
-          if [[ ! -s "$ZIP" ]]; then ZIP="$(find . -maxdepth 2 -type f -name 'SurveyQuantAndroid_v1.0.72*.zip' -print -quit)"; fi
+          if [[ ! -s "$ZIP" ]]; then ZIP="$(find . -maxdepth 2 -type f -name 'SurveyQuantAndroid_v1.0.73*.zip' -print -quit)"; fi
           test -s "$ZIP" || { echo "Source ZIP not found"; find . -maxdepth 3 -type f | sort | head -200; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source" && mkdir -p "$RUNNER_TEMP/sq-source"
           unzip -q "$ZIP" -d "$RUNNER_TEMP/sq-source"
@@ -60,8 +60,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "versionCode 72" "$PROJECT_DIR/app/build.gradle"
-          grep -q "versionName '1.0.72'" "$PROJECT_DIR/app/build.gradle"
+          grep -q "versionCode 73" "$PROJECT_DIR/app/build.gradle"
+          grep -q "versionName '1.0.73'" "$PROJECT_DIR/app/build.gradle"
           python3 - "$PROJECT_DIR/app/src/main/assets/index.html" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           import pathlib,re,sys
           html=pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
@@ -82,10 +82,10 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           mkdir -p "$PROJECT_DIR/release"
-          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.72-release.apk"
-          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.72-release.apk"
+          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.73-release.apk"
+          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.73-release.apk"
       - uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.72-release
-          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.72-release.apk
+          name: SurveyQuant-v1.0.73-release
+          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.73-release.apk
           if-no-files-found: error
