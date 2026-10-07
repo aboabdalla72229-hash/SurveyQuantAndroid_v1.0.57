@@ -1,0 +1,156 @@
+name: Build SurveyQuant v1.0.81 - UI Background Output Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$RUNNER_TEMP/surveyquant"
+          mkdir -p "$RUNNER_TEMP/surveyquant"
+
+          unzip -q "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip" \
+            -d "$RUNNER_TEMP/surveyquant"
+
+          echo "=== Source root ==="
+          find "$RUNNER_TEMP/surveyquant" -maxdepth 3 -type f | sort | sed -n '1,300p'
+
+      - name: Apply v81 UI/background/output patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="surveyquant-v67-ui-background-output-patch.zip"
+
+          if [ ! -f "$PATCH" ]; then
+            echo "ERROR: $PATCH not found in repository root."
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/patch"
+          mkdir -p "$RUNNER_TEMP/patch"
+          unzip -q "$PATCH" -d "$RUNNER_TEMP/patch"
+
+          PATCH_INDEX="$(find "$RUNNER_TEMP/patch" -type f -name 'index-v67-patched.html' | head -n 1)"
+
+          if [ -z "$PATCH_INDEX" ]; then
+            echo "ERROR: patched index.html not found."
+            exit 1
+          fi
+
+          TARGET_INDEX="$(find "$RUNNER_TEMP/surveyquant" -type f -name 'index.html' | head -n 1)"
+
+          if [ -z "$TARGET_INDEX" ]; then
+            echo "ERROR: source index.html not found."
+            exit 1
+          fi
+
+          cp "$PATCH_INDEX" "$TARGET_INDEX"
+
+          BG="$(find "$RUNNER_TEMP/patch" -type f \\( -iname 'surveyquant_background.png' -o -iname '*.png' \\) | grep -E 'surveyquant_background\\.png$' | head -n 1 || true)"
+          LOGO="$(find "$RUNNER_TEMP/patch" -type f \\( -iname 'surveyquant_logo.png' -o -iname '*.png' \\) | grep -E 'surveyquant_logo\\.png$' | head -n 1 || true)"
+
+          if [ -n "$BG" ]; then
+            ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' | head -n 1 || true)"
+            if [ -n "$ASSETS" ]; then
+              cp "$BG" "$ASSETS/surveyquant_background.png"
+            fi
+          fi
+
+          if [ -n "$LOGO" ]; then
+            ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' | head -n 1 || true)"
+            if [ -n "$ASSETS" ]; then
+              cp "$LOGO" "$ASSETS/surveyquant_logo.png"
+            fi
+          fi
+
+          echo "=== Patched source ==="
+          find "$RUNNER_TEMP/surveyquant" -type f | sort | sed -n '1,500p'
+
+      - name: Verify CAD files were not modified by patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "CAD-related source files:"
+          find "$RUNNER_TEMP/surveyquant" -type f \
+            \\( -iname '*dxf*' -o -iname '*dwg*' -o -iname '*cad*' \\) \
+            | sort | sed -n '1,300p'
+
+          echo "Patch is limited to UI/background/output path."
+
+      - name: Find Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="$(find "$RUNNER_TEMP/surveyquant" -type f -name gradlew -print -quit)"
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: gradlew not found."
+            exit 1
+          fi
+
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+          chmod +x ./gradlew
+
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK to v1.0.81
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: Release APK not found."
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.81.apk"
+
+          echo "APK=$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.81.apk" >> "$GITHUB_ENV"
+
+      - name: Package v1.0.81 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$RUNNER_TEMP"
+          zip -qr \
+            "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.81_UI_BACKGROUND_OUTPUT_FIX.zip" \
+            surveyquant
+
+      - name: Upload v1.0.81 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.81
+          path: |
+            release/SurveyQuant_v1.0.81.apk
+            release/SurveyQuantAndroid_v1.0.81_UI_BACKGROUND_OUTPUT_FIX.zip
+          if-no-files-found: error
