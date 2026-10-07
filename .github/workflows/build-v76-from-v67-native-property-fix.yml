@@ -1,0 +1,44 @@
+name: Build v1.0.76 from v1.0.67 - Native DXF Property Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_NAME: SurveyQuantAndroid_v1.0.76_FROM_V67_NATIVE_PROPERTY_FIX.zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SOURCE_NAME"
+          rm -rf source
+          mkdir -p source
+          unzip -q "$SOURCE_NAME" -d source
+          ROOT="$(find source -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          test -n "$ROOT"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          chmod +x "$(find "$ROOT" -name gradlew -type f | head -n 1)"
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$ROOT"
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.76-native-property-fix
+          path: |
+            ${{ env.ROOT }}/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
