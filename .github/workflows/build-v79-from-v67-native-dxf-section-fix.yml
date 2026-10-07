@@ -1,17 +1,17 @@
-name: Build SurveyQuant v1.0.78 - v67 Projection + Native DXF + Session Settings
+name: Build SurveyQuant v1.0.79 - v67 Projection + Native DXF + Session Settings
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuantAndroid_v1.0.78_FROM_V67_SESSION_SETTINGS_DXF_FIX.zip"
-      - ".github/workflows/build-v78-from-v67-session-settings-dxf-fix.yml"
+      - "SurveyQuantAndroid_v1.0.79_FROM_V67_NATIVE_DXF_SECTION_FIX.zip"
+      - ".github/workflows/build-v79-from-v67-native-dxf-section-fix.yml"
 
 permissions:
   contents: read
 
 env:
-  SOURCE_NAME: SurveyQuantAndroid_v1.0.78_FROM_V67_SESSION_SETTINGS_DXF_FIX.zip
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.79_FROM_V67_NATIVE_DXF_SECTION_FIX.zip
 
 jobs:
   build:
@@ -78,11 +78,11 @@ jobs:
           APK="$(find "$PROJECT_DIR" -type f -name '*.apk' -path '*/outputs/apk/release/*' -print -quit)"
           test -n "$APK" || { echo "ERROR: APK not generated"; exit 1; }
           mkdir -p output
-          cp "$APK" output/SurveyQuant-v1.0.78-from-v67-release.apk
+          cp "$APK" output/SurveyQuant-v1.0.79-from-v67-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.78-from-v67-release
-          path: output/SurveyQuant-v1.0.78-from-v67-release.apk
+          name: SurveyQuant-v1.0.79-from-v67-release
+          path: output/SurveyQuant-v1.0.79-from-v67-release.apk
           if-no-files-found: error
