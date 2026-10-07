@@ -14,7 +14,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare source
+      - name: Prepare v67 source
         shell: bash
         run: |
           set -euo pipefail
@@ -22,75 +22,70 @@ jobs:
           rm -rf "$RUNNER_TEMP/surveyquant"
           mkdir -p "$RUNNER_TEMP/surveyquant"
 
-          unzip -q "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip" \
-            -d "$RUNNER_TEMP/surveyquant"
+          SOURCE_ZIP="SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip"
 
-          echo "=== Source root ==="
-          find "$RUNNER_TEMP/surveyquant" -maxdepth 3 -type f | sort | sed -n '1,300p'
+          if [ ! -f "$SOURCE_ZIP" ]; then
+            echo "ERROR: $SOURCE_ZIP not found."
+            exit 1
+          fi
+
+          unzip -q "$SOURCE_ZIP" -d "$RUNNER_TEMP/surveyquant"
+
+      - name: Load v81 patch from bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLE="SurveyQuant_v1.0.81_WORKFLOW_BUNDLE.zip"
+
+          if [ ! -f "$BUNDLE" ]; then
+            echo "ERROR: $BUNDLE not found in repository root."
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/bundle" "$RUNNER_TEMP/patch"
+          mkdir -p "$RUNNER_TEMP/bundle" "$RUNNER_TEMP/patch"
+
+          unzip -q "$BUNDLE" -d "$RUNNER_TEMP/bundle"
+
+          PATCH="$(find "$RUNNER_TEMP/bundle" -type f -name 'surveyquant-v67-ui-background-output-patch.zip' -print -quit)"
+
+          if [ -z "$PATCH" ]; then
+            echo "ERROR: bundled patch ZIP not found."
+            exit 1
+          fi
+
+          unzip -q "$PATCH" -d "$RUNNER_TEMP/patch"
 
       - name: Apply v81 UI/background/output patch
         shell: bash
         run: |
           set -euo pipefail
 
-          PATCH="surveyquant-v67-ui-background-output-patch.zip"
-
-          if [ ! -f "$PATCH" ]; then
-            echo "ERROR: $PATCH not found in repository root."
-            exit 1
-          fi
-
-          rm -rf "$RUNNER_TEMP/patch"
-          mkdir -p "$RUNNER_TEMP/patch"
-          unzip -q "$PATCH" -d "$RUNNER_TEMP/patch"
-
-          PATCH_INDEX="$(find "$RUNNER_TEMP/patch" -type f -name 'index-v67-patched.html' | head -n 1)"
+          PATCH_INDEX="$(find "$RUNNER_TEMP/patch" -type f -name 'index-v67-patched.html' -print -quit)"
+          TARGET_INDEX="$(find "$RUNNER_TEMP/surveyquant" -type f -name 'index.html' -print -quit)"
 
           if [ -z "$PATCH_INDEX" ]; then
-            echo "ERROR: patched index.html not found."
+            echo "ERROR: index-v67-patched.html not found."
             exit 1
           fi
 
-          TARGET_INDEX="$(find "$RUNNER_TEMP/surveyquant" -type f -name 'index.html' | head -n 1)"
-
           if [ -z "$TARGET_INDEX" ]; then
-            echo "ERROR: source index.html not found."
+            echo "ERROR: index.html not found."
             exit 1
           fi
 
           cp "$PATCH_INDEX" "$TARGET_INDEX"
 
-          BG="$(find "$RUNNER_TEMP/patch" -type f \\( -iname 'surveyquant_background.png' -o -iname '*.png' \\) | grep -E 'surveyquant_background\\.png$' | head -n 1 || true)"
-          LOGO="$(find "$RUNNER_TEMP/patch" -type f \\( -iname 'surveyquant_logo.png' -o -iname '*.png' \\) | grep -E 'surveyquant_logo\\.png$' | head -n 1 || true)"
+          ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' -print -quit || true)"
 
-          if [ -n "$BG" ]; then
-            ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' | head -n 1 || true)"
-            if [ -n "$ASSETS" ]; then
-              cp "$BG" "$ASSETS/surveyquant_background.png"
-            fi
+          if [ -n "$ASSETS" ]; then
+            BG="$(find "$RUNNER_TEMP/patch" -type f -name 'surveyquant_background.png' -print -quit || true)"
+            LOGO="$(find "$RUNNER_TEMP/patch" -type f -name 'surveyquant_logo.png' -print -quit || true)"
+
+            [ -z "$BG" ] || cp "$BG" "$ASSETS/surveyquant_background.png"
+            [ -z "$LOGO" ] || cp "$LOGO" "$ASSETS/surveyquant_logo.png"
           fi
-
-          if [ -n "$LOGO" ]; then
-            ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' | head -n 1 || true)"
-            if [ -n "$ASSETS" ]; then
-              cp "$LOGO" "$ASSETS/surveyquant_logo.png"
-            fi
-          fi
-
-          echo "=== Patched source ==="
-          find "$RUNNER_TEMP/surveyquant" -type f | sort | sed -n '1,500p'
-
-      - name: Verify CAD files were not modified by patch
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "CAD-related source files:"
-          find "$RUNNER_TEMP/surveyquant" -type f \
-            \\( -iname '*dxf*' -o -iname '*dwg*' -o -iname '*cad*' \\) \
-            | sort | sed -n '1,300p'
-
-          echo "Patch is limited to UI/background/output path."
 
       - name: Find Gradle project
         shell: bash
@@ -104,20 +99,18 @@ jobs:
             exit 1
           fi
 
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
 
-      - name: Build APK
+      - name: Build release APK
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
           chmod +x ./gradlew
-
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK to v1.0.81
+      - name: Collect v1.0.81 outputs
         shell: bash
         run: |
           set -euo pipefail
@@ -131,20 +124,10 @@ jobs:
 
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.81.apk"
-
-          echo "APK=$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.81.apk" >> "$GITHUB_ENV"
-
-      - name: Package v1.0.81 source
-        shell: bash
-        run: |
-          set -euo pipefail
+          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.81.apk"
 
           cd "$RUNNER_TEMP"
-          zip -qr \
-            "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.81_UI_BACKGROUND_OUTPUT_FIX.zip" \
-            surveyquant
+          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.81_UI_BACKGROUND_OUTPUT_FIX.zip" surveyquant
 
       - name: Upload v1.0.81 artifacts
         uses: actions/upload-artifact@v4
