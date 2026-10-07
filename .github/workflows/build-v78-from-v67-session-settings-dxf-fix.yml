@@ -1,80 +1,88 @@
-name: Build SurveyQuant v1.0.77 - Exact User Logo
+name: Build SurveyQuant v1.0.78 - v67 Projection + Native DXF + Session Settings
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuantAndroid_v1.0.77_FROM_V67_EXACT_USER_LOGO.zip"
-      - ".github/workflows/build-v77-from-v67-exact-user-logo.yml"
+      - "SurveyQuantAndroid_v1.0.78_FROM_V67_SESSION_SETTINGS_DXF_FIX.zip"
+      - ".github/workflows/build-v78-from-v67-session-settings-dxf-fix.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.78_FROM_V67_SESSION_SETTINGS_DXF_FIX.zip
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare source
+      - name: Locate and extract Android source
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="SurveyQuantAndroid_v1.0.77_FROM_V67_EXACT_USER_LOGO.zip"
-          test -f "$ZIP"
-          rm -rf extracted source
-          mkdir -p extracted source
-          unzip -q "$ZIP" -d extracted
-          PROJECT_DIR="$(find extracted -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname | xargs -r dirname)"
-          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
-            echo "ERROR: Android project not found"
-            find extracted -maxdepth 5 -type f | sort | head -200
-            exit 1
-          fi
-          cp -R "$PROJECT_DIR/." source/
-          echo "Project: $PROJECT_DIR"
+          ZIP="$SOURCE_NAME"
+          test -s "$ZIP" || { echo "ERROR: Source ZIP not found: $ZIP"; exit 1; }
+          rm -rf "$RUNNER_TEMP/sq-source"
+          mkdir -p "$RUNNER_TEMP/sq-source"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/sq-source"
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname | xargs -r dirname)"
+          test -n "$PROJECT" || { echo "ERROR: Android project not found"; find "$RUNNER_TEMP/sq-source" -maxdepth 6 -type f | sort | head -300; exit 1; }
+          test -s "$PROJECT/settings.gradle"
+          test -s "$PROJECT/build.gradle"
+          test -s "$PROJECT/app/build.gradle"
+          test -s "$PROJECT/app/src/main/assets/index.html"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          echo "Project: $PROJECT"
 
-      - name: Set up Java 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle 8.7
+      - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Prepare signing
-        shell: bash
+      - name: Restore signing key
         env:
           KS_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
-          KS_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        shell: bash
         run: |
           set -euo pipefail
-          test -n "$KS_B64"
+          test -n "$KS_B64" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
           echo "$KS_B64" | base64 --decode > "$GITHUB_WORKSPACE/surveyquant-release.keystore"
           echo "SURVEYQUANT_KEYSTORE_FILE=$GITHUB_WORKSPACE/surveyquant-release.keystore" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KS_PASSWORD" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Build release APK
-        working-directory: source
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Collect APK
         shell: bash
         run: |
           set -euo pipefail
-          APK="$(find source -type f -name '*.apk' -path '*/outputs/apk/release/*' -print -quit)"
-          test -n "$APK"
+          APK="$(find "$PROJECT_DIR" -type f -name '*.apk' -path '*/outputs/apk/release/*' -print -quit)"
+          test -n "$APK" || { echo "ERROR: APK not generated"; exit 1; }
           mkdir -p output
-          cp "$APK" output/SurveyQuant-v1.0.77-exact-user-logo-release.apk
+          cp "$APK" output/SurveyQuant-v1.0.78-from-v67-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.77-exact-user-logo-release
-          path: output/SurveyQuant-v1.0.77-exact-user-logo-release.apk
+          name: SurveyQuant-v1.0.78-from-v67-release
+          path: output/SurveyQuant-v1.0.78-from-v67-release.apk
           if-no-files-found: error
