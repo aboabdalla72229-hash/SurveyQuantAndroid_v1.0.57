@@ -1,16 +1,16 @@
-name: Build v1.0.76 from v1.0.67 - Native DXF Property Fix
+name: Build SurveyQuant v1.0.76
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    paths:
+      - "SurveyQuantAndroid_v1.0.76_FROM_V67_NATIVE_PROPERTY_FIX.zip"
+      - ".github/workflows/build-v76-from-v67-native-property-fix.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      SOURCE_NAME: SurveyQuantAndroid_v1.0.76_FROM_V67_NATIVE_PROPERTY_FIX.zip
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,26 +19,84 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f "$SOURCE_NAME"
-          rm -rf source
-          mkdir -p source
-          unzip -q "$SOURCE_NAME" -d source
-          ROOT="$(find source -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-          test -n "$ROOT"
-          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
-          chmod +x "$(find "$ROOT" -name gradlew -type f | head -n 1)"
 
-      - name: Build release APK
+          ZIP="SurveyQuantAndroid_v1.0.76_FROM_V67_NATIVE_PROPERTY_FIX.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: ZIP not found: $ZIP"
+            exit 1
+          fi
+
+          rm -rf source extracted
+          mkdir -p extracted
+
+          unzip -q "$ZIP" -d extracted
+
+          echo "Extracted files:"
+          find extracted -maxdepth 4 -type f | head -100
+
+          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew not found inside ZIP"
+            echo "Directories:"
+            find extracted -maxdepth 4 -type d
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          echo "Found gradlew:"
+          echo "$GRADLEW"
+
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
+          cp -R "$PROJECT_DIR/." source/
+
+          chmod +x source/gradlew
+
+          echo "Source prepared:"
+          find source -maxdepth 3 -type f | head -100
+
+      - name: Build APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$ROOT"
-          ./gradlew --no-daemon --stacktrace assembleRelease
+
+          cd source
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: source/gradlew does not exist"
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find source -type f -name "*.apk" -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated"
+            find source -type f | grep -E '\.(apk|aab)$' || true
+            exit 1
+          fi
+
+          echo "APK found:"
+          echo "$APK"
+
+          mkdir -p output
+          cp "$APK" "output/SurveyQuant-v1.0.76-from-v67-release.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.76-native-property-fix
-          path: |
-            ${{ env.ROOT }}/app/build/outputs/apk/release/*.apk
+          name: SurveyQuant-v1.0.76-from-v67-release
+          path: output/SurveyQuant-v1.0.76-from-v67-release.apk
           if-no-files-found: error
