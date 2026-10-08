@@ -1,0 +1,211 @@
+name: Build SurveyQuant v1.0.84 - V67 Exact Fixes
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip"
+      - "SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES.zip"
+      - ".github/workflows/build-v84-from-v67-exact-fixes.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_ZIP: SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip
+  PATCH_ZIP: SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$SOURCE_ZIP" || { echo "ERROR: missing $SOURCE_ZIP"; exit 1; }
+          test -s "$PATCH_ZIP" || { echo "ERROR: missing $PATCH_ZIP"; exit 1; }
+
+      - name: Extract v67 source and v84 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
+          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
+          unzip -q "$SOURCE_ZIP" -d "$RUNNER_TEMP/sq-source"
+          unzip -q "$PATCH_ZIP" -d "$RUNNER_TEMP/sq-patch"
+
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname | xargs -r dirname)"
+          test -n "$PROJECT" || {
+            echo "ERROR: Android project not found in v67 source."
+            find "$RUNNER_TEMP/sq-source" -maxdepth 7 -type f | sort | head -300
+            exit 1
+          }
+
+          PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
+          LOGO="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_logo.png' -print -quit)"
+          BG="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_background.png' -print -quit)"
+
+          test -n "$PATCH_INDEX" || { echo "ERROR: patched index.html missing"; exit 1; }
+          test -n "$LOGO" || { echo "ERROR: surveyquant_logo.png missing"; exit 1; }
+          test -n "$BG" || { echo "ERROR: surveyquant_background.png missing"; exit 1; }
+
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Apply exact v84 UI and projection patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSETS="$PROJECT_DIR/app/src/main/assets"
+          PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
+          LOGO="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_logo.png' -print -quit)"
+          BG="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_background.png' -print -quit)"
+
+          test -d "$ASSETS" || { echo "ERROR: Android assets directory missing"; exit 1; }
+
+          cp "$PATCH_INDEX" "$ASSETS/index.html"
+          cp "$LOGO" "$ASSETS/surveyquant_logo.png"
+          cp "$BG" "$ASSETS/surveyquant_background.png"
+
+          grep -q "projectionPointStyle" "$ASSETS/index.html"
+          grep -q "downloadNamedOutput" "$ASSETS/index.html"
+          grep -q "preserveOriginalDXFWithAdditions" "$ASSETS/index.html"
+          grep -q "downloadDroppedDXF" "$ASSETS/index.html"
+
+      - name: Use the same in-app logo as Android app icon
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="$(find "$PROJECT_DIR/app/src/main" -type f -name AndroidManifest.xml -print -quit)"
+          test -n "$MANIFEST" || { echo "ERROR: AndroidManifest.xml not found"; exit 1; }
+
+          ICON_DIR="$PROJECT_DIR/app/src/main/res/drawable-nodpi"
+          mkdir -p "$ICON_DIR"
+          cp "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$ICON_DIR/surveyquant_app_logo.png"
+
+          python3 - "$MANIFEST" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          m = re.search(r"<application\b[\s\S]*?>", text)
+          if not m:
+              raise SystemExit("ERROR: <application> tag not found")
+
+          tag = m.group(0)
+
+          def set_attr(tag, name, value):
+              pat = rf'({re.escape(name)}\s*=\s*")[^"]*(")'
+              if re.search(pat, tag):
+                  return re.sub(pat, rf'\1{value}\2', tag, count=1)
+              return tag[:-1] + f' {name}="{value}">'
+
+          tag = set_attr(tag, "android:icon", "@drawable/surveyquant_app_logo")
+          tag = set_attr(tag, "android:roundIcon", "@drawable/surveyquant_app_logo")
+
+          text = text[:m.start()] + tag + text[m.end():]
+          path.write_text(text, encoding="utf-8")
+          print("Android icon set to @drawable/surveyquant_app_logo")
+          PY
+
+          grep -q 'android:icon="@drawable/surveyquant_app_logo"' "$MANIFEST"
+          grep -q 'android:roundIcon="@drawable/surveyquant_app_logo"' "$MANIFEST"
+          test -s "$ICON_DIR/surveyquant_app_logo.png"
+
+      - name: Set version 1.0.84
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_FILE="$PROJECT_DIR/app/build.gradle"
+          sed -E -i "0,/versionCode[[:space:]]+[0-9]+/s//versionCode 84/" "$BUILD_FILE"
+          sed -E -i "0,/versionName[[:space:]]+['\"][^'\"]+['\"]/s//versionName '1.0.84'/" "$BUILD_FILE"
+          grep -nE "versionCode|versionName" "$BUILD_FILE"
+
+      - name: Validate JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+          node - "$INDEX" "$RUNNER_TEMP/inline.js" <<'NODE'
+          const fs=require('fs');
+          const h=fs.readFileSync(process.argv[2],'utf8');
+          const re=/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
+          let m, out=[];
+          while((m=re.exec(h))) out.push(m[1]);
+          if(!out.length) throw new Error('No inline JavaScript found');
+          fs.writeFileSync(process.argv[3],out.join('\n'));
+          console.log('Inline script blocks:',out.length);
+          NODE
+          node --check "$RUNNER_TEMP/inline.js"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Prepare signing
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "ERROR: Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+
+          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/surveyquant-release.keystore"
+          test -s "$RUNNER_TEMP/surveyquant-release.keystore"
+
+          {
+            echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.keystore"
+            echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "SURVEYQUANT_KEY_ALIAS=$KEY_ALIAS"
+            echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build signed release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle clean assembleRelease --no-daemon --stacktrace
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
+          test -n "$APK" || { echo "ERROR: release APK not found"; exit 1; }
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.84.apk"
+
+          cd "$RUNNER_TEMP"
+          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES_SOURCE.zip" sq-source
+
+          ls -lh "$GITHUB_WORKSPACE/release"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.84-V67-EXACT-FIXES
+          path: |
+            release/SurveyQuant_v1.0.84.apk
+            release/SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES_SOURCE.zip
+          if-no-files-found: error
