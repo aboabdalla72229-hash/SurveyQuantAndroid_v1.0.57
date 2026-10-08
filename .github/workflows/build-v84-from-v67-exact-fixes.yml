@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.84 - V67 Exact Fixes
+name: Build SurveyQuant v1.0.84 - Exact Project Settings + Quantity + DXF Fix
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     paths:
       - "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip"
       - "SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES.zip"
-      - ".github/workflows/build-v84-from-v67-exact-fixes.yml"
+      - ".github/workflows/build-v84-exact-settings-contour-dxf-fix.yml"
 
 permissions:
   contents: read
@@ -18,17 +18,16 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify inputs
+      - name: Verify v84 inputs
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$SOURCE_ZIP" || { echo "ERROR: missing $SOURCE_ZIP"; exit 1; }
-          test -s "$PATCH_ZIP" || { echo "ERROR: missing $PATCH_ZIP"; exit 1; }
+          test -s "$SOURCE_ZIP"
+          test -s "$PATCH_ZIP"
 
       - name: Extract v67 source and v84 patch
         shell: bash
@@ -38,25 +37,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
           unzip -q "$SOURCE_ZIP" -d "$RUNNER_TEMP/sq-source"
           unzip -q "$PATCH_ZIP" -d "$RUNNER_TEMP/sq-patch"
-
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname | xargs -r dirname)"
-          test -n "$PROJECT" || {
-            echo "ERROR: Android project not found in v67 source."
-            find "$RUNNER_TEMP/sq-source" -maxdepth 7 -type f | sort | head -300
-            exit 1
-          }
-
+          test -n "$PROJECT"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
           LOGO="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_logo.png' -print -quit)"
           BG="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_background.png' -print -quit)"
-
-          test -n "$PATCH_INDEX" || { echo "ERROR: patched index.html missing"; exit 1; }
-          test -n "$LOGO" || { echo "ERROR: surveyquant_logo.png missing"; exit 1; }
-          test -n "$BG" || { echo "ERROR: surveyquant_background.png missing"; exit 1; }
-
+          test -n "$PATCH_INDEX"
+          test -n "$LOGO"
+          test -n "$BG"
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
 
-      - name: Apply exact v84 UI and projection patch
+      - name: Apply v84 base and exact requested fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -64,61 +55,284 @@ jobs:
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
           LOGO="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_logo.png' -print -quit)"
           BG="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'surveyquant_background.png' -print -quit)"
-
-          test -d "$ASSETS" || { echo "ERROR: Android assets directory missing"; exit 1; }
-
           cp "$PATCH_INDEX" "$ASSETS/index.html"
           cp "$LOGO" "$ASSETS/surveyquant_logo.png"
           cp "$BG" "$ASSETS/surveyquant_background.png"
 
-          grep -q "projectionPointStyle" "$ASSETS/index.html"
-          grep -q "downloadNamedOutput" "$ASSETS/index.html"
+          cat > "$RUNNER_TEMP/patch_v84.py" <<'PY_PATCH'
+          
+          #!/usr/bin/env python3
+          import re
+          import sys
+          from pathlib import Path
+          
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f"PATCH ERROR: marker not found: {label}")
+              return text.replace(old, new, 1)
+          
+          def main():
+              if len(sys.argv) != 2:
+                  raise SystemExit("usage: patch_v84.py INDEX_HTML")
+              path = Path(sys.argv[1])
+              text = path.read_text(encoding="utf-8")
+          
+              css_marker = "        .engineering-frame-note{background:#101b28;border:1px dashed #31506A;padding:10px;border-radius:8px;margin-top:10px;color:#b9fff5}"
+              css_add = '''
+                  .sq-project-settings{background:rgba(8,17,27,.72);border:1px solid #31506A;border-radius:10px;padding:12px;margin:0 0 14px}
+                  .sq-project-settings summary{cursor:pointer;font-weight:800;color:#fff}
+                  .sq-settings-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}
+                  .sq-settings-group{border:1px solid #2c3b52;border-radius:9px;padding:10px;background:rgba(15,20,29,.72)}
+                  .sq-settings-group h4{margin:0 0 8px;color:#57d4c4}
+                  .sq-settings-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+                  .sq-settings-actions button{margin-top:0}
+                  @media(max-width:650px){.sq-settings-grid{grid-template-columns:1fr}}
+          '''
+              text = replace_once(text, css_marker, css_marker + css_add, "settings CSS")
+          
+              js_marker = "let dwgLibPromise=null, activeProjectId='project1Card', droppedOriginalCadBytes=null, droppedOriginalCadName='';"
+              js_add = '''
+          const SQ_DEFAULT_PROJECT_SETTINGS={
+            lineColor:'#2463eb',textColor:'#202020',textHeight:.25,
+            pointSize:.5,pointSymbol:'circleX',pointColor:'#ff3333',
+            detailColor:'#00aaff',labelSize:.25,showId:true,showElevation:true,
+            contourColor:'#00cc66',tinColor:'#808080',gridColor:'#808080'
+          };
+          const SQ_PROJECT_SETTINGS={};
+          function sqCloneDefaults(){return JSON.parse(JSON.stringify(SQ_DEFAULT_PROJECT_SETTINGS));}
+          function sqEnsureProjectSettings(pid=activeProjectId){
+            if(!SQ_PROJECT_SETTINGS[pid]) SQ_PROJECT_SETTINGS[pid]={base:sqCloneDefaults(),before:sqCloneDefaults(),after:sqCloneDefaults()};
+            return SQ_PROJECT_SETTINGS[pid];
+          }
+          function sqHex(v,d){return /^#[0-9a-f]{6}$/i.test(String(v||''))?String(v):d;}
+          function sqNum(v,d,min=.01){const n=Number(v);return Number.isFinite(n)?Math.max(min,n):d;}
+          function sqLayerCfg(pid,which='base'){
+            const s=sqEnsureProjectSettings(pid);
+            const src=s[which]||s.base;
+            const out={...src};
+            out.lineColor=sqHex(src.lineColor,SQ_DEFAULT_PROJECT_SETTINGS.lineColor);
+            out.textColor=sqHex(src.textColor,SQ_DEFAULT_PROJECT_SETTINGS.textColor);
+            out.textHeight=sqNum(src.textHeight,.25,.01);
+            out.pointSize=sqNum(src.pointSize,.5,.01);
+            out.pointSymbol=['plus','x','circleX','squareX'].includes(src.pointSymbol)?src.pointSymbol:'circleX';
+            out.pointColor=sqHex(src.pointColor,SQ_DEFAULT_PROJECT_SETTINGS.pointColor);
+            out.detailColor=sqHex(src.detailColor,SQ_DEFAULT_PROJECT_SETTINGS.detailColor);
+            out.labelSize=sqNum(src.labelSize,.25,.01);
+            out.showId=src.showId!==false;out.showElevation=src.showElevation!==false;
+            out.contourColor=sqHex(src.contourColor,SQ_DEFAULT_PROJECT_SETTINGS.contourColor);
+            out.tinColor=sqHex(src.tinColor,SQ_DEFAULT_PROJECT_SETTINGS.tinColor);
+            out.gridColor=sqHex(src.gridColor,SQ_DEFAULT_PROJECT_SETTINGS.gridColor);
+            out.lineAci=hexToCadAci(out.lineColor);out.textAci=hexToCadAci(out.textColor);
+            out.pointAci=hexToCadAci(out.pointColor);out.detailAci=hexToCadAci(out.detailColor);
+            out.contourAci=hexToCadAci(out.contourColor);out.tinAci=hexToCadAci(out.tinColor);
+            out.gridAci=hexToCadAci(out.gridColor);return out;
+          }
+          function getProjectOutputSettings(){return sqLayerCfg(activeProjectId,'base');}
+          function getGlobalOutputSettings(){return getProjectOutputSettings();}
+          function getPointStyleSettings(){const s=sqLayerCfg(activeProjectId,'base');return{symbol:s.pointSymbol,color:s.pointAci,detailColor:s.detailAci,size:s.pointSize,labelSize:s.labelSize,showId:s.showId,showElevation:s.showElevation};}
+          function sqSettingsField(prefix,key,label,type='color',value=''){
+            const id=`sq_${prefix}_${key}`;
+            if(type==='select'){const v=String(value||'circleX');return `<div><label>${label}</label><select id="${id}">${[['plus','+'],['x','X'],['circleX','دائرة داخلها X'],['squareX','مربع داخله X']].map(([k,t])=>`<option value="${k}" ${v===k?'selected':''}>${t}</option>`).join('')}</select></div>`;}
+            return `<div><label>${label}</label><input id="${id}" type="${type}" value="${value}"></div>`;
+          }
+          function sqSettingsPanelHtml(pid){
+            const compare=pid==='project1Card';const s=sqEnsureProjectSettings(pid);
+            const group=(key,title)=>{
+              const q=s[key]||sqCloneDefaults(),prefix=pid+'_'+key;
+              return `<div class="sq-settings-group"><h4>${title}</h4><div class="sq-settings-grid">
+                ${sqSettingsField(prefix,'lineColor','لون الخطوط','color',q.lineColor)}
+                ${sqSettingsField(prefix,'textColor','لون الكتابة','color',q.textColor)}
+                ${sqSettingsField(prefix,'textHeight','حجم النص','number',q.textHeight)}
+                ${sqSettingsField(prefix,'pointSymbol','استايل النقطة','select',q.pointSymbol)}
+                ${sqSettingsField(prefix,'pointSize','حجم النقطة','number',q.pointSize)}
+                ${sqSettingsField(prefix,'pointColor','لون النقطة','color',q.pointColor)}
+                ${sqSettingsField(prefix,'detailColor','لون تفاصيل النقاط','color',q.detailColor)}
+                ${sqSettingsField(prefix,'labelSize','حجم تسمية النقطة','number',q.labelSize)}
+                ${sqSettingsField(prefix,'contourColor','لون خطوط الكنتور','color',q.contourColor)}
+                ${sqSettingsField(prefix,'tinColor','لون TIN / المثلثات','color',q.tinColor)}
+                ${sqSettingsField(prefix,'gridColor','لون الشبكة','color',q.gridColor)}
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="sq_${prefix}_showId" type="checkbox" ${q.showId?'checked':''}> إظهار رقم النقطة</label>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="sq_${prefix}_showElevation" type="checkbox" ${q.showElevation?'checked':''}> إظهار منسوب النقطة</label>
+              </div>`;
+            };
+            return `<details class="sq-project-settings" id="sqSettings_${pid}"><summary>🎨 إعدادات إخراج هذا المشروع</summary>
+              <div class="muted" style="margin-top:8px">الإعدادات مستقلة لكل مشروع. لا يتم حفظها تلقائيًا.</div>
+              <div id="sqSettingsBody_${pid}" class="sq-settings-grid">${compare?group('before','الطبقة الأولى / قبل')+group('after','الطبقة الثانية / بعد'):group('base','إعدادات المشروع')}</div>
+              <div class="sq-settings-actions">
+                <button class="btn-blue" type="button" onclick="sqApplyProjectSettings('${pid}')">✅ تطبيق الإعدادات</button>
+                <button class="btn-green" type="button" onclick="sqSaveProjectSettings('${pid}')">💾 حفظ اختياري لهذا المشروع</button>
+              </div>
+            </details>`;
+          }
+          function sqSyncOne(pid,key){
+            const s=sqEnsureProjectSettings(pid),q=s[key]||sqCloneDefaults(),prefix=`sq_${pid}_${key}_`,get=id=>document.getElementById(prefix+id);
+            if(get('lineColor'))q.lineColor=sqHex(get('lineColor').value,q.lineColor);
+            if(get('textColor'))q.textColor=sqHex(get('textColor').value,q.textColor);
+            if(get('textHeight'))q.textHeight=sqNum(get('textHeight').value,q.textHeight,.01);
+            if(get('pointSymbol'))q.pointSymbol=get('pointSymbol').value;
+            if(get('pointSize'))q.pointSize=sqNum(get('pointSize').value,q.pointSize,.01);
+            if(get('pointColor'))q.pointColor=sqHex(get('pointColor').value,q.pointColor);
+            if(get('detailColor'))q.detailColor=sqHex(get('detailColor').value,q.detailColor);
+            if(get('labelSize'))q.labelSize=sqNum(get('labelSize').value,q.labelSize,.01);
+            if(get('contourColor'))q.contourColor=sqHex(get('contourColor').value,q.contourColor);
+            if(get('tinColor'))q.tinColor=sqHex(get('tinColor').value,q.tinColor);
+            if(get('gridColor'))q.gridColor=sqHex(get('gridColor').value,q.gridColor);
+            const sid=document.getElementById(`${prefix}showId`);if(sid)q.showId=sid.checked;
+            const se=document.getElementById(`${prefix}showElevation`);if(se)q.showElevation=se.checked;
+            s[key]=q;
+          }
+          function sqApplyProjectSettings(pid){
+            const compare=pid==='project1Card';sqSyncOne(pid,compare?'before':'base');if(compare)sqSyncOne(pid,'after');
+            const el=document.getElementById('sqSettings_'+pid);if(el)el.open=false;
+            showDownloadStatus('تم تطبيق إعدادات المشروع فقط، بدون حفظ تلقائي.',true);
+          }
+          function sqSaveProjectSettings(pid){
+            sqApplyProjectSettings(pid);
+            try{localStorage.setItem('sq_project_settings_v84_'+pid,JSON.stringify(sqEnsureProjectSettings(pid)));showDownloadStatus('تم حفظ إعدادات هذا المشروع اختياريًا.',true);}
+            catch(e){alert('تعذر حفظ إعدادات المشروع: '+(e.message||e));}
+          }
+          function sqLoadProjectSavedSettings(pid){
+            const raw=localStorage.getItem('sq_project_settings_v84_'+pid);if(!raw)return;
+            try{const obj=JSON.parse(raw);if(obj&&typeof obj==='object')SQ_PROJECT_SETTINGS[pid]={base:{...sqCloneDefaults(),...(obj.base||{})},before:{...sqCloneDefaults(),...(obj.before||{})},after:{...sqCloneDefaults(),...(obj.after||{})}};}catch(_){}
+          }
+          function ensureProjectSettingsPanel(card){
+            if(!card||card.querySelector('.sq-project-settings'))return;
+            sqLoadProjectSavedSettings(card.id);
+            const head=card.querySelector('.project-page-head');if(head)head.insertAdjacentHTML('afterend',sqSettingsPanelHtml(card.id));
+          }
+          '''
+              text = replace_once(text, js_marker, js_marker + js_add, "project settings engine")
+          
+              old = "head.appendChild(badge);el.insertBefore(head,title);}"
+              new = "head.appendChild(badge);el.insertBefore(head,title); ensureProjectSettingsPanel(el);}"
+              text = replace_once(text, old, new, "openProjectPage settings panel hook")
+          
+              old_fn_start = "function buildQuantBoardModel(model, surfaceTris, contourSegs, stats){"
+              start=text.find(old_fn_start); end=text.find("\nfunction buildDXF(",start)
+              if start<0 or end<0: raise SystemExit("PATCH ERROR: buildQuantBoardModel block")
+              new_block = '''
+          function buildQuantBoardModel(model, surfaceTris, contourSegs, stats){
+           const ent=[];const ps=getPointStyleSettings(),gs=getProjectOutputSettings();
+           const xs=points.map(p=>p.e),ys=points.map(p=>p.n);if(!xs.length)throw new Error('لا توجد نقاط لإنشاء اللوحة.');
+           const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys),span=Math.max(maxx-minx,maxy-miny)||1;
+           const ci=Math.max(.01,parseFloat(document.getElementById('contourInterval')?.value)||1),step=Math.max(ci,span/12),margin=step*.9,panelW=Math.max(step*6.5,span*.28),gap=step*1.25;
+           const fx1=minx-margin,fy1=miny-margin,modelX2=maxx+margin,fy2=maxy+margin,fx2=modelX2+gap+panelW;
+           const line=(layer,a,b,color)=>ent.push({type:'LINE',layer,color:color??undefined,a:{x:a.x,y:a.y,z:a.z||0},b:{x:b.x,y:b.y,z:b.z||0}});
+           const txt=(layer,x,y,h,text,rotation=0,color)=>ent.push({type:'TEXT',layer,color:color??undefined,position:{x,y,z:0},height:Math.max(.08,h),rotation,text:String(text)});
+           for(const p of points){for(const e of pointMarkerEntities(p,ps.symbol,ps.size)){e.layer='SURVEY_POINT_STYLE';e.color=ps.color;ent.push(e);}const h=ps.labelSize;if(ps.showId)txt('POINT_LABELS',p.e+h*.7,p.n+h*.7,h,String(p.id||'P'),0,ps.detailColor);if(ps.showElevation)txt('POINT_LABELS',p.e+h*.7,p.n-h*1.25,h*.82,Number(p.z).toFixed(3),0,ps.detailColor);}
+           for(const t of surfaceTris){ent.push({type:'3DFACE',layer:'TIN_SURFACE',color:gs.tinAci,vertices:[t.a,t.b,t.c,t.c]});line('TIN_EDGES',t.a,t.b,gs.lineAci);line('TIN_EDGES',t.b,t.c,gs.lineAci);line('TIN_EDGES',t.c,t.a,gs.lineAci);}
+           const contours=stitchContours(contourSegs);for(const c of contours){const major=Math.abs((c.z/ci)-Math.round(c.z/ci))<1e-8;ent.push({type:'POLYLINE3D',layer:major?'MAJOR_CONTOURS':'CONTOURS',color:gs.contourAci,vertices:c.points,closed:false});if(c.points.length>1){const mid=c.points[Math.floor(c.points.length/2)];txt('CONTOUR_LABELS',mid.x,mid.y,Math.max(.14,span*.0017),Number(c.z).toFixed(2),0,gs.detailAci);}}
+           for(const poly of (model?.polylines||[]))if(poly.closed&&poly.vertices?.length>=3)ent.push({type:'POLYLINE3D',layer:'BOUNDARY',color:gs.lineAci,vertices:poly.vertices,closed:true});
+           for(let x=Math.floor(minx/step)*step;x<=maxx+1e-9;x+=step){line('GRID',{x,y:miny,z:0},{x,y:maxy,z:0},gs.gridAci);txt('GRID',x,miny-step*.28,Math.max(.12,span*.0015),x.toFixed(2),0,gs.gridAci);}
+           for(let y=Math.floor(miny/step)*step;y<=maxy+1e-9;y+=step){line('GRID',{x:minx,y,z:0},{x:maxx,y,z:0},gs.gridAci);txt('GRID',minx-step*.28,y,Math.max(.12,span*.0015),y.toFixed(2),0,gs.gridAci);}
+           line('FRAME',{x:fx1,y:fy1,z:0},{x:fx2,y:fy1,z:0},7);line('FRAME',{x:fx2,y:fy1,z:0},{x:fx2,y:fy2,z:0},7);line('FRAME',{x:fx2,y:fy2,z:0},{x:fx1,y:fy2,z:0},7);line('FRAME',{x:fx1,y:fy2,z:0},{x:fx1,y:fy1,z:0},7);
+           const dividerX=modelX2+gap*.5;line('FRAME',{x:dividerX,y:fy1,z:0},{x:dividerX,y:fy2,z:0},7);
+           const nx=modelX2-step*.65,ny=fy2-step*1.15,na=step*.55;line('NORTH_ARROW',{x:nx,y:ny-na,z:0},{x:nx,y:ny+na,z:0},gs.lineAci);line('NORTH_ARROW',{x:nx,y:ny+na,z:0},{x:nx-step*.16,y:ny+na-step*.27,z:0},gs.lineAci);line('NORTH_ARROW',{x:nx,y:ny+na,z:0},{x:nx+step*.16,y:ny+na-step*.27,z:0},gs.lineAci);txt('NORTH_ARROW',nx-step*.12,ny+na+step*.18,step*.30,'N',0,gs.textAci);
+           txt('TITLE',fx1+step*.35,fy2-step*.52,step*.38,'SURVEYQUANT PRO - SURFACE QUANTITIES',0,gs.textAci);txt('TITLE',fx1+step*.35,fy2-step*.92,step*.20,'TOPOGRAPHIC / TIN / CONTOURS / ELEVATIONS',0,gs.textAci);
+           const rows=[['POINTS',stats.points],['TIN TRIANGLES',stats.tris],['CONTOUR INTERVAL',ci.toFixed(2)+' m'],['MIN ELEVATION',stats.min.toFixed(3)+' m'],['MAX ELEVATION',stats.max.toFixed(3)+' m'],['TARGET LEVEL',stats.target.toFixed(3)+' m'],['HORIZONTAL AREA',stats.hArea.toFixed(3)+' m2'],['3D SURFACE AREA',stats.sArea.toFixed(3)+' m2'],['CUT VOLUME',stats.cut.toFixed(3)+' m3'],['FILL VOLUME',stats.fill.toFixed(3)+' m3']];
+           const x1=dividerX+step*.32,x2=fx2-step*.32,rowH=Math.max(step*.52,span*.018),top=fy2-step*1.65;for(let i=0;i<=rows.length;i++)line('TABLE',{x:x1,y:top-i*rowH,z:0},{x:x2,y:top-i*rowH,z:0},7);line('TABLE',{x:x1,y:top,z:0},{x:x1,y:top-rows.length*rowH,z:0},7);line('TABLE',{x:x2,y:top,z:0},{x:x2,y:top-rows.length*rowH,z:0},7);rows.forEach((r,i)=>txt('TABLE',x1+step*.18,top-(i+.68)*rowH,Math.max(.12,rowH*.34),r[0]+' : '+r[1],0,gs.textAci));
+           const by=fy1+step*.42;line('FRAME',{x:fx1,y:by,z:0},{x:fx2,y:by,z:0},7);txt('TITLE',fx1+step*.35,fy1+step*.18,Math.max(.12,step*.24),'DRAWING GENERATED BY SURVEYQUANT',0,gs.textAci);
+           return{entities:ent,points};
+          }
+          '''
+              text=text[:start]+new_block+text[end:]
+          
+              cmp_start=text.find("function buildComparisonBoardModel(a,b,st){")
+              cmp_end=text.find("\nasync function compareQuantLayers",cmp_start)
+              if cmp_start<0 or cmp_end<0: raise SystemExit("PATCH ERROR: compare board block")
+              cmp_block = '''
+          function buildComparisonBoardModel(a,b,st){
+           const beforeCfg=sqLayerCfg(activeProjectId,'before'),afterCfg=sqLayerCfg(activeProjectId,'after'),before=surfacePointsFromModel(a),after=surfacePointsFromModel(b),all=before.concat(after);
+           if(all.length<3)throw new Error('لا توجد نقاط كافية لإنشاء لوحة المقارنة.');
+           const xs=all.map(p=>p.e),ys=all.map(p=>p.n),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys),span=Math.max(maxx-minx,maxy-miny)||1,ci=Math.max(.01,Number(document.getElementById('contourInterval')?.value)||1),step=Math.max(ci,span/12),margin=step*.9,panelW=Math.max(step*7,span*.30),gap=step*1.25,fx1=minx-margin,fy1=miny-margin,modelX2=maxx+margin,fy2=maxy+margin,fx2=modelX2+gap+panelW,dividerX=modelX2+gap*.5;
+           const ent=[],line=(layer,u,v,color)=>ent.push({type:'LINE',layer,color,a:{x:u.x,y:u.y,z:u.z||0},b:{x:v.x,y:v.y,z:v.z||0}}),txt=(layer,x,y,h,text,color)=>ent.push({type:'TEXT',layer,color,position:{x,y,z:0},height:Math.max(.08,h),text:String(text)});
+           const addLayer=(arr,cfg,prefix,idPrefix)=>{const tris=delaunay(arr);for(const p of arr){for(const e of pointMarkerEntities(p,cfg.pointSymbol,cfg.pointSize)){e.layer=prefix+'_POINT_STYLE';e.color=cfg.pointAci;ent.push(e);}if(cfg.showId)txt(prefix+'_POINT_IDS',p.e+cfg.labelSize*.7,p.n+cfg.labelSize*.7,cfg.labelSize,String(p.id||idPrefix),cfg.detailAci);if(cfg.showElevation)txt(prefix+'_POINT_ELEVATIONS',p.e+cfg.labelSize*.7,p.n-cfg.labelSize*1.25,cfg.labelSize*.82,Number(p.z).toFixed(3),cfg.detailAci);}for(const t of tris){ent.push({type:'3DFACE',layer:prefix+'_TIN',color:cfg.tinAci,vertices:[{x:t.a.x,y:t.a.y,z:t.a.z},{x:t.b.x,y:t.b.y,z:t.b.z},{x:t.c.x,y:t.c.y,z:t.c.z},{x:t.c.x,y:t.c.y,z:t.c.z}]});line(prefix+'_TIN_EDGES',t.a,t.b,cfg.lineAci);line(prefix+'_TIN_EDGES',t.b,t.c,cfg.lineAci);line(prefix+'_TIN_EDGES',t.c,t.a,cfg.lineAci);}const segs=[],zs=arr.map(p=>p.z),lo=Math.ceil((Math.min(...zs)+1e-10)/ci)*ci,hi=Math.floor((Math.max(...zs)-1e-10)/ci)*ci;for(let z=lo;z<=hi+1e-8;z+=ci)for(const t of tris){const s=contourForTriangle(t,z);if(s)segs.push({...s,z});}for(const c of stitchContours(segs))ent.push({type:'POLYLINE3D',layer:prefix+'_CONTOURS',color:cfg.contourAci,vertices:c.points,closed:false});};
+           addLayer(before,beforeCfg,'BEFORE','B');addLayer(after,afterCfg,'AFTER','A');
+           for(const f of st.faces||[]){const bv=f.before.map(q=>({x:q.e,y:q.n,z:q.z})),av=f.after.map(q=>({x:q.e,y:q.n,z:q.z}));ent.push({type:'3DFACE',layer:'COMPARISON_SURFACE',color:beforeCfg.lineAci,vertices:[...bv,av[2]]});}
+           line('FRAME',{x:fx1,y:fy1,z:0},{x:fx2,y:fy1,z:0},7);line('FRAME',{x:fx2,y:fy1,z:0},{x:fx2,y:fy2,z:0},7);line('FRAME',{x:fx2,y:fy2,z:0},{x:fx1,y:fy2,z:0},7);line('FRAME',{x:fx1,y:fy2,z:0},{x:fx1,y:fy1,z:0},7);line('FRAME',{x:dividerX,y:fy1,z:0},{x:dividerX,y:fy2,z:0},7);
+           const nx=modelX2-step*.65,ny=fy2-step*1.15,na=step*.55;line('NORTH_ARROW',{x:nx,y:ny-na,z:0},{x:nx,y:ny+na,z:0},beforeCfg.lineAci);line('NORTH_ARROW',{x:nx,y:ny+na,z:0},{x:nx-step*.16,y:ny+na-step*.27,z:0},beforeCfg.lineAci);line('NORTH_ARROW',{x:nx,y:ny+na,z:0},{x:nx+step*.16,y:ny+na-step*.27,z:0},beforeCfg.lineAci);txt('NORTH_ARROW',nx-step*.12,ny+na+step*.18,step*.30,'N',beforeCfg.detailAci);
+           txt('TITLE',fx1+step*.35,fy2-step*.52,step*.38,'SURVEYQUANT PRO - TWO LAYER COMPARISON',beforeCfg.textAci);txt('TITLE',fx1+step*.35,fy2-step*.92,step*.20,'TIN / GRID / POINTS / CUT / FILL / CONTOURS',beforeCfg.textAci);
+           const rows=[['BEFORE POINTS',before.length],['AFTER POINTS',after.length],['TIN / OVERLAP FACES',st.used],['OVERLAP AREA',st.area.toFixed(3)+' m2'],['CUT VOLUME',st.cut.toFixed(3)+' m3'],['FILL VOLUME',st.fill.toFixed(3)+' m3'],['NET VOLUME',st.net.toFixed(3)+' m3']],x1=dividerX+step*.32,x2=fx2-step*.32,rowH=Math.max(step*.52,span*.018),top=fy2-step*1.65;
+           for(let i=0;i<=rows.length;i++)line('TABLE',{x:x1,y:top-i*rowH,z:0},{x:x2,y:top-i*rowH,z:0},7);line('TABLE',{x:x1,y:top,z:0},{x:x1,y:top-rows.length*rowH,z:0},7);line('TABLE',{x:x2,y:top,z:0},{x:x2,y:top-rows.length*rowH,z:0},7);rows.forEach((r,i)=>txt('TABLE',x1+step*.18,top-(i+.68)*rowH,Math.max(.12,rowH*.34),r[0]+' : '+r[1],beforeCfg.textAci));
+           return{entities:ent,points:all};
+          }
+          '''
+              text=text[:cmp_start]+cmp_block+text[cmp_end:]
+          
+              marker="function preserveOriginalDXFWithAdditions(model, entities){"
+              s=text.find(marker); e=text.find("\nfunction downloadNamedOutput",s)
+              if s<0 or e<0: raise SystemExit("PATCH ERROR: preserve function")
+              preserve = r'''
+          function ensureDxfLayersInRaw(raw,layerNames){
+           const names=[...new Set((layerNames||[]).map(asciiLayerName).filter(Boolean))];if(!names.length)return raw;
+           const normalized=String(raw||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+           const m=/0\nTABLE\n2\nLAYER\n70\n(\d+)\n([\s\S]*?)0\nENDTAB/i.exec(normalized);if(!m)return normalized;
+           const body=m[2],existing=new Set(),re=/0\nLAYER\n(?:[^\n]*\n)*?2\n([^\n]+)/gi;let x;while((x=re.exec(body)))existing.add(String(x[1]).trim().toUpperCase());
+           const missing=names.filter(n=>!existing.has(String(n).toUpperCase()));if(!missing.length)return normalized;
+           const recs=missing.map(n=>`0\nLAYER\n2\n${n}\n70\n0\n62\n7\n6\nCONTINUOUS\n`).join(''),count=Number(m[1])+missing.length,start=m.index,end=start+m[0].length;
+           return normalized.slice(0,start)+`0\nTABLE\n2\nLAYER\n70\n${count}\n${body}${recs}0\nENDTAB`+normalized.slice(end);
+          }
+          function preserveOriginalDXFWithAdditions(model,entities){
+           if(!model?.rawDXF)return null;
+           try{
+             const raw=String(model.rawDXF),nl=raw.includes('\r\n')?'\r\n':'\n';let normalized=raw.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+             const safeEntities=(entities||[]).map(e=>({...e,layer:asciiLayerName(e.layer||'0')})),valid=safeEntities.map(entityToR12).filter(Boolean).join('\n');if(!valid)return raw;
+             normalized=ensureDxfLayersInRaw(normalized,safeEntities.map(e=>e.layer));
+             const section=/0\nSECTION\n2\nENTITIES(?:\n|$)/i.exec(normalized);
+             if(section){const tail=normalized.slice(section.index+section[0].length),endRel=tail.search(/0\nENDSEC(?:\n|$)/i);if(endRel>=0){const endPos=section.index+section[0].length+endRel,work=normalized.slice(0,endPos)+valid+'\n'+normalized.slice(endPos);return nl==='\r\n'?work.replace(/\n/g,'\r\n'):work;}}
+             const eof=/0\nEOF\s*$/i.exec(normalized);if(eof){const insert='0\nSECTION\n2\nENTITIES\n'+valid+'\n0\nENDSEC\n',work=normalized.slice(0,eof.index)+insert+normalized.slice(eof.index);return nl==='\r\n'?work.replace(/\n/g,'\r\n'):work;}
+             return null;
+           }catch(e){console.error(e);return null;}
+          }
+          '''
+              text=text[:s]+preserve+text[e:]
+          
+              text=text.replace("SurveyQuant PRO v1.0.57","SurveyQuant PRO v1.0.84")
+              path.write_text(text,encoding="utf-8")
+              print("patched",path)
+          
+          if __name__=="__main__":
+              main()
+          PY_PATCH
+
+          python3 "$RUNNER_TEMP/patch_v84.py" "$ASSETS/index.html"
+
+          grep -q "sq-project-settings" "$ASSETS/index.html"
+          grep -q "sqLayerCfg" "$ASSETS/index.html"
+          grep -q "ensureDxfLayersInRaw" "$ASSETS/index.html"
           grep -q "preserveOriginalDXFWithAdditions" "$ASSETS/index.html"
-          grep -q "downloadDroppedDXF" "$ASSETS/index.html"
+          grep -q "SurveyQuant PRO v1.0.84" "$ASSETS/index.html"
 
       - name: Use the same in-app logo as Android app icon
         shell: bash
         run: |
           set -euo pipefail
-
           MANIFEST="$(find "$PROJECT_DIR/app/src/main" -type f -name AndroidManifest.xml -print -quit)"
-          test -n "$MANIFEST" || { echo "ERROR: AndroidManifest.xml not found"; exit 1; }
-
           ICON_DIR="$PROJECT_DIR/app/src/main/res/drawable-nodpi"
           mkdir -p "$ICON_DIR"
           cp "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$ICON_DIR/surveyquant_app_logo.png"
-
           python3 - "$MANIFEST" <<'PY'
           import re, sys
           from pathlib import Path
-
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-          m = re.search(r"<application\b[\s\S]*?>", text)
-          if not m:
-              raise SystemExit("ERROR: <application> tag not found")
-
-          tag = m.group(0)
-
-          def set_attr(tag, name, value):
-              pat = rf'({re.escape(name)}\s*=\s*")[^"]*(")'
-              if re.search(pat, tag):
-                  return re.sub(pat, rf'\1{value}\2', tag, count=1)
-              return tag[:-1] + f' {name}="{value}">'
-
-          tag = set_attr(tag, "android:icon", "@drawable/surveyquant_app_logo")
-          tag = set_attr(tag, "android:roundIcon", "@drawable/surveyquant_app_logo")
-
-          text = text[:m.start()] + tag + text[m.end():]
-          path.write_text(text, encoding="utf-8")
-          print("Android icon set to @drawable/surveyquant_app_logo")
+          path=Path(sys.argv[1])
+          text=path.read_text(encoding="utf-8")
+          m=re.search(r"<application\b[\s\S]*?>",text)
+          if not m: raise SystemExit("ERROR: <application> tag not found")
+          tag=m.group(0)
+          def set_attr(tag,name,value):
+              pat=rf'({re.escape(name)}\s*=\s*")[^"]*(")'
+              if re.search(pat,tag):
+                  return re.sub(pat,rf'\1{value}\2',tag,count=1)
+              return tag[:-1]+f' {name}="{value}">'
+          tag=set_attr(tag,"android:icon","@drawable/surveyquant_app_logo")
+          tag=set_attr(tag,"android:roundIcon","@drawable/surveyquant_app_logo")
+          path.write_text(text[:m.start()]+tag+text[m.end():],encoding="utf-8")
           PY
-
           grep -q 'android:icon="@drawable/surveyquant_app_logo"' "$MANIFEST"
           grep -q 'android:roundIcon="@drawable/surveyquant_app_logo"' "$MANIFEST"
-          test -s "$ICON_DIR/surveyquant_app_logo.png"
 
-      - name: Set version 1.0.84
+      - name: Force version 1.0.84
         shell: bash
         run: |
           set -euo pipefail
@@ -127,7 +341,7 @@ jobs:
           sed -E -i "0,/versionName[[:space:]]+['\"][^'\"]+['\"]/s//versionName '1.0.84'/" "$BUILD_FILE"
           grep -nE "versionCode|versionName" "$BUILD_FILE"
 
-      - name: Validate JavaScript
+      - name: Validate patched JavaScript
         shell: bash
         run: |
           set -euo pipefail
@@ -136,7 +350,7 @@ jobs:
           const fs=require('fs');
           const h=fs.readFileSync(process.argv[2],'utf8');
           const re=/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
-          let m, out=[];
+          let m,out=[];
           while((m=re.exec(h))) out.push(m[1]);
           if(!out.length) throw new Error('No inline JavaScript found');
           fs.writeFileSync(process.argv[3],out.join('\n'));
@@ -164,14 +378,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -n "$KEYSTORE_B64" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
-          test -n "$KEYSTORE_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
-          test -n "$KEY_ALIAS" || { echo "ERROR: Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
-          test -n "$KEY_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
-
+          test -n "$KEYSTORE_B64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
           echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/surveyquant-release.keystore"
-          test -s "$RUNNER_TEMP/surveyquant-release.keystore"
-
           {
             echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.keystore"
             echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
@@ -179,33 +390,29 @@ jobs:
             echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD"
           } >> "$GITHUB_ENV"
 
-      - name: Build signed release
+      - name: Build signed v84 release
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
           gradle clean assembleRelease --no-daemon --stacktrace
 
-      - name: Collect release files
+      - name: Collect artifacts
         shell: bash
         run: |
           set -euo pipefail
           APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
-          test -n "$APK" || { echo "ERROR: release APK not found"; exit 1; }
-
+          test -n "$APK"
           mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.84.apk"
-
+          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.84_Exact_Settings_Quantity_DXF_Fix.apk"
           cd "$RUNNER_TEMP"
-          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES_SOURCE.zip" sq-source
-
-          ls -lh "$GITHUB_WORKSPACE/release"
+          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.84_Exact_Settings_Quantity_DXF_Fix_SOURCE.zip" sq-source
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.84-V67-EXACT-FIXES
+          name: SurveyQuant-v1.0.84-Exact-Settings-Quantity-DXF-Fix
           path: |
-            release/SurveyQuant_v1.0.84.apk
-            release/SurveyQuantAndroid_v1.0.84_V67_EXACT_FIXES_SOURCE.zip
+            release/SurveyQuant_v1.0.84_Exact_Settings_Quantity_DXF_Fix.apk
+            release/SurveyQuantAndroid_v1.0.84_Exact_Settings_Quantity_DXF_Fix_SOURCE.zip
           if-no-files-found: error
