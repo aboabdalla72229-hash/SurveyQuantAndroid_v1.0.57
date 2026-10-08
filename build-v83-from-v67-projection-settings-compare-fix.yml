@@ -1,19 +1,19 @@
-name: Build SurveyQuant v1.0.82 - V67 CAD Background Fix
+name: Build SurveyQuant v1.0.83 - V67 Projection Settings + Compare Fix
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip"
-      - "SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX.zip"
-      - ".github/workflows/build-v82-from-v67-cad-background-fix.yml"
+      - "SurveyQuantAndroid_v1.0.83_V67_PROJECTION_SETTINGS_COMPARE_FIX.zip"
+      - ".github/workflows/build-v83-from-v67-projection-settings-compare-fix.yml"
 
 permissions:
   contents: read
 
 env:
   SOURCE_ZIP: SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip
-  PATCH_ZIP: SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX.zip
+  PATCH_ZIP: SurveyQuantAndroid_v1.0.83_V67_PROJECTION_SETTINGS_COMPARE_FIX.zip
 
 jobs:
   build:
@@ -45,7 +45,7 @@ jobs:
           echo "=== Patch files ==="
           find "$RUNNER_TEMP/patch" -maxdepth 4 -type f | sort
 
-      - name: Apply v82 patch
+      - name: Apply v83 patch
         shell: bash
         run: |
           set -euo pipefail
@@ -62,8 +62,10 @@ jobs:
           cp "$PATCH_INDEX" "$TARGET_INDEX"
           cp "$BG" "$ASSETS/surveyquant_background.png"
           cp "$LOGO" "$ASSETS/surveyquant_logo.png"
-          grep -q "surveyquant_background.png" "$TARGET_INDEX"
-          grep -q "surveyquant_logo.png" "$TARGET_INDEX"
+          grep -q "projectionApplySettings" "$TARGET_INDEX"
+          grep -q "calculateStandaloneSurfaceStats" "$TARGET_INDEX"
+          grep -q "payment-below-projects" "$TARGET_INDEX"
+          ! grep -q "bottom-activate" "$TARGET_INDEX"
           echo "=== Applied assets ==="
           ls -lh "$TARGET_INDEX" "$ASSETS/surveyquant_background.png" "$ASSETS/surveyquant_logo.png"
 
@@ -114,13 +116,13 @@ jobs:
             echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD"
           } >> "$GITHUB_ENV"
 
-      - name: Force version 1.0.82
+      - name: Force version 1.0.83
         shell: bash
         run: |
           set -euo pipefail
           BUILD_FILE="$PROJECT_DIR/app/build.gradle"
-          sed -E -i "0,/versionCode[[:space:]]+[0-9]+/s//versionCode 82/" "$BUILD_FILE"
-          sed -E -i "0,/versionName[[:space:]]+['\"][^'\"]+['\"]/s//versionName '1.0.82'/" "$BUILD_FILE"
+          sed -E -i "0,/versionCode[[:space:]]+[0-9]+/s//versionCode 83/" "$BUILD_FILE"
+          sed -E -i "0,/versionName[[:space:]]+['\"][^'\"]+['\"]/s//versionName '1.0.83'/" "$BUILD_FILE"
           grep -nE "versionCode|versionName" "$BUILD_FILE"
 
       - name: Validate patched JavaScript
@@ -145,16 +147,16 @@ jobs:
           APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
           test -n "$APK" || { echo "ERROR: Release APK not found"; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.82.apk"
+          cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.83.apk"
           cd "$RUNNER_TEMP"
-          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX_SOURCE.zip" surveyquant
+          zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.83_V67_PROJECTION_SETTINGS_COMPARE_FIX_SOURCE.zip" surveyquant
           ls -lh "$GITHUB_WORKSPACE/release"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.82-V67-CAD-BACKGROUND-FIX
+          name: SurveyQuant-v1.0.83-V67-PROJECTION-COMPARE-FIX
           path: |
-            release/SurveyQuant_v1.0.82.apk
-            release/SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX_SOURCE.zip
+            release/SurveyQuant_v1.0.83.apk
+            release/SurveyQuantAndroid_v1.0.83_V67_PROJECTION_SETTINGS_COMPARE_FIX_SOURCE.zip
           if-no-files-found: error
