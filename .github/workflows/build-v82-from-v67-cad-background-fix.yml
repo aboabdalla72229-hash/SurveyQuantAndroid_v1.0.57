@@ -2,6 +2,11 @@ name: Build SurveyQuant v1.0.82 - V67 CAD Background Fix
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip"
+      - "SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX.zip"
+      - ".github/workflows/build-v82-from-v67-cad-background-fix.yml"
 
 permissions:
   contents: read
@@ -9,8 +14,6 @@ permissions:
 env:
   SOURCE_ZIP: SurveyQuantAndroid_v1.0.67_XY_FINAL_FIX.zip
   PATCH_ZIP: SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX.zip
-  APP_VERSION_CODE: 82
-  APP_VERSION_NAME: 1.0.82
 
 jobs:
   build:
@@ -20,113 +23,111 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare v67 source
+      - name: Show repository inputs
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/surveyquant"
-          mkdir -p "$RUNNER_TEMP/surveyquant"
+          echo "=== Repository root ==="
+          ls -lah
+          test -s "$SOURCE_ZIP" || { echo "ERROR: $SOURCE_ZIP not found or empty"; exit 1; }
+          test -s "$PATCH_ZIP" || { echo "ERROR: $PATCH_ZIP not found or empty"; exit 1; }
 
-          if [ ! -f "$SOURCE_ZIP" ]; then
-            echo "ERROR: $SOURCE_ZIP not found in repository root."
-            exit 1
-          fi
-
+      - name: Prepare source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/surveyquant" "$RUNNER_TEMP/patch"
+          mkdir -p "$RUNNER_TEMP/surveyquant" "$RUNNER_TEMP/patch"
           unzip -q "$SOURCE_ZIP" -d "$RUNNER_TEMP/surveyquant"
-
-      - name: Extract v82 patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$RUNNER_TEMP/patch"
-          mkdir -p "$RUNNER_TEMP/patch"
-
-          if [ ! -f "$PATCH_ZIP" ]; then
-            echo "ERROR: $PATCH_ZIP not found in repository root."
-            exit 1
-          fi
-
           unzip -q "$PATCH_ZIP" -d "$RUNNER_TEMP/patch"
+          echo "=== Source files ==="
+          find "$RUNNER_TEMP/surveyquant" -maxdepth 7 -type f | sort | head -300
+          echo "=== Patch files ==="
+          find "$RUNNER_TEMP/patch" -maxdepth 4 -type f | sort
 
-      - name: Apply v82 source and assets
+      - name: Apply v82 patch
         shell: bash
         run: |
           set -euo pipefail
-
           PATCH_INDEX="$(find "$RUNNER_TEMP/patch" -type f -name 'index-v67-patched.html' -print -quit)"
           BG="$(find "$RUNNER_TEMP/patch" -type f -name 'surveyquant_background.png' -print -quit)"
           LOGO="$(find "$RUNNER_TEMP/patch" -type f -name 'surveyquant_logo.png' -print -quit)"
           TARGET_INDEX="$(find "$RUNNER_TEMP/surveyquant" -type f -name 'index.html' -print -quit)"
-          ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' -print -quit || true)"
-
-          [ -n "$PATCH_INDEX" ] || { echo 'ERROR: patched index.html not found'; exit 1; }
-          [ -n "$TARGET_INDEX" ] || { echo 'ERROR: target index.html not found'; exit 1; }
-          [ -n "$ASSETS" ] || { echo 'ERROR: Android assets directory not found'; exit 1; }
-          [ -n "$BG" ] || { echo 'ERROR: surveyquant_background.png not found'; exit 1; }
-          [ -n "$LOGO" ] || { echo 'ERROR: surveyquant_logo.png not found'; exit 1; }
-
+          ASSETS="$(find "$RUNNER_TEMP/surveyquant" -type d -path '*/src/main/assets' -print -quit)"
+          test -n "$PATCH_INDEX" || { echo "ERROR: index-v67-patched.html not found"; exit 1; }
+          test -n "$TARGET_INDEX" || { echo "ERROR: source index.html not found"; exit 1; }
+          test -n "$ASSETS" || { echo "ERROR: Android assets directory not found"; exit 1; }
+          test -n "$BG" || { echo "ERROR: surveyquant_background.png not found"; exit 1; }
+          test -n "$LOGO" || { echo "ERROR: surveyquant_logo.png not found"; exit 1; }
           cp "$PATCH_INDEX" "$TARGET_INDEX"
           cp "$BG" "$ASSETS/surveyquant_background.png"
           cp "$LOGO" "$ASSETS/surveyquant_logo.png"
-
-          echo '--- Applied files ---'
+          grep -q "surveyquant_background.png" "$TARGET_INDEX"
+          grep -q "surveyquant_logo.png" "$TARGET_INDEX"
+          echo "=== Applied assets ==="
           ls -lh "$TARGET_INDEX" "$ASSETS/surveyquant_background.png" "$ASSETS/surveyquant_logo.png"
 
-      - name: Locate Gradle project
+      - name: Locate Android project
         shell: bash
         run: |
           set -euo pipefail
-          PROJECT="$(find "$RUNNER_TEMP/surveyquant" -type f -name gradlew -print -quit)"
-          [ -n "$PROJECT" ] || { echo 'ERROR: gradlew not found'; exit 1; }
-          echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
+          GRADLEW="$(find "$RUNNER_TEMP/surveyquant" -type f -name gradlew -print -quit)"
+          test -n "$GRADLEW" || { echo "ERROR: gradlew not found"; exit 1; }
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+          test -s "$PROJECT_DIR/settings.gradle" || { echo "ERROR: settings.gradle missing"; exit 1; }
+          test -s "$PROJECT_DIR/build.gradle" || { echo "ERROR: build.gradle missing"; exit 1; }
+          test -s "$PROJECT_DIR/app/build.gradle" || { echo "ERROR: app/build.gradle missing"; exit 1; }
+          test -s "$PROJECT_DIR/app/src/main/assets/index.html" || { echo "ERROR: patched index.html missing"; exit 1; }
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR"
 
-      - name: Configure Java 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
       - name: Prepare signing
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          [ -n "${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}" ] || { echo 'ERROR: SURVEYQUANT_KEYSTORE_BASE64 is not configured'; exit 1; }
-          [ -n "${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}" ] || { echo 'ERROR: SURVEYQUANT_KEYSTORE_PASSWORD is not configured'; exit 1; }
-          [ -n "${{ secrets.SURVEYQUANT_KEY_ALIAS }}" ] || { echo 'ERROR: SURVEYQUANT_KEY_ALIAS is not configured'; exit 1; }
-          [ -n "${{ secrets.SURVEYQUANT_KEY_PASSWORD }}" ] || { echo 'ERROR: SURVEYQUANT_KEY_PASSWORD is not configured'; exit 1; }
-
+          test -n "$KEYSTORE_B64" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "ERROR: Missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "ERROR: Missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
           echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/surveyquant-release.keystore"
-          echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.keystore" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEYSTORE_PASSWORD=${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEY_ALIAS=${{ secrets.SURVEYQUANT_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "SURVEYQUANT_KEY_PASSWORD=${{ secrets.SURVEYQUANT_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          test -s "$RUNNER_TEMP/surveyquant-release.keystore"
+          {
+            echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.keystore"
+            echo "SURVEYQUANT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "SURVEYQUANT_KEY_ALIAS=$KEY_ALIAS"
+            echo "SURVEYQUANT_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Force version 1.0.82
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_FILE="$(find "$PROJECT_DIR" -maxdepth 3 -type f -path '*/app/build.gradle*' -print -quit)"
-          if [ -z "$BUILD_FILE" ]; then
-            echo 'ERROR: app/build.gradle not found'
-            exit 1
-          fi
+          BUILD_FILE="$PROJECT_DIR/app/build.gradle"
+          sed -E -i "0,/versionCode[[:space:]]+[0-9]+/s//versionCode 82/" "$BUILD_FILE"
+          sed -E -i "0,/versionName[[:space:]]+['\"][^'\"]+['\"]/s//versionName '1.0.82'/" "$BUILD_FILE"
+          grep -nE "versionCode|versionName" "$BUILD_FILE"
 
-          python - "$BUILD_FILE" <<'PY'
-from pathlib import Path
-import re, sys
-p=Path(sys.argv[1])
-s=p.read_text(encoding='utf-8')
-s=re.sub(r'versionCode\s+\d+', 'versionCode 82', s, count=1)
-s=re.sub(r'versionName\s+[\"\'][^\"\']+[\"\']', "versionName '1.0.82'", s, count=1)
-p.write_text(s, encoding='utf-8')
-print(p)
-PY
-          grep -n "versionCode\|versionName" "$BUILD_FILE" | head -20
+      - name: Validate patched JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX_FILE="$PROJECT_DIR/app/src/main/assets/index.html"
+          node -e 'const fs=require("fs"); const h=fs.readFileSync(process.argv[1],"utf8"); const re=/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi; const a=[]; let m; while((m=re.exec(h))) a.push(m[1]); if(!a.length) throw new Error("No inline JavaScript found"); fs.writeFileSync(process.argv[2],a.join("\n")); console.log("Inline script blocks:",a.length);' "$INDEX_FILE" "$RUNNER_TEMP/inline.js"
+          node --check "$RUNNER_TEMP/inline.js"
 
-      - name: Build release APK
+      - name: Build signed release APK
         shell: bash
         run: |
           set -euo pipefail
@@ -139,14 +140,11 @@ PY
         run: |
           set -euo pipefail
           APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/release/*.apk' -print -quit)"
-          [ -n "$APK" ] || { echo 'ERROR: Release APK not found'; exit 1; }
-
+          test -n "$APK" || { echo "ERROR: Release APK not found"; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/release"
           cp "$APK" "$GITHUB_WORKSPACE/release/SurveyQuant_v1.0.82.apk"
-
           cd "$RUNNER_TEMP"
           zip -qr "$GITHUB_WORKSPACE/release/SurveyQuantAndroid_v1.0.82_V67_CAD_BACKGROUND_FIX_SOURCE.zip" surveyquant
-
           ls -lh "$GITHUB_WORKSPACE/release"
 
       - name: Upload artifacts
