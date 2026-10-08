@@ -71,9 +71,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GRADLEW="$(find "$RUNNER_TEMP/surveyquant" -type f -name gradlew -print -quit)"
-          test -n "$GRADLEW" || { echo "ERROR: gradlew not found"; exit 1; }
-          PROJECT_DIR="$(dirname "$GRADLEW")"
+          APP_GRADLE="$(find "$RUNNER_TEMP/surveyquant" -type f -path '*/app/build.gradle' -print -quit)"
+          test -n "$APP_GRADLE" || { echo "ERROR: app/build.gradle not found"; find "$RUNNER_TEMP/surveyquant" -maxdepth 7 -type f | sort | head -300; exit 1; }
+          PROJECT_DIR="$(dirname "$(dirname "$APP_GRADLE")")"
           test -s "$PROJECT_DIR/settings.gradle" || { echo "ERROR: settings.gradle missing"; exit 1; }
           test -s "$PROJECT_DIR/build.gradle" || { echo "ERROR: build.gradle missing"; exit 1; }
           test -s "$PROJECT_DIR/app/build.gradle" || { echo "ERROR: app/build.gradle missing"; exit 1; }
@@ -86,7 +86,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
 
       - name: Prepare signing
         shell: bash
@@ -132,8 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          chmod +x ./gradlew
-          ./gradlew clean assembleRelease --no-daemon --stacktrace
+          gradle clean assembleRelease --no-daemon --stacktrace
 
       - name: Collect APK and source
         shell: bash
