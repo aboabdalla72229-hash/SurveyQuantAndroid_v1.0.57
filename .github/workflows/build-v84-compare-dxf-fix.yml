@@ -57,7 +57,7 @@ jobs:
 
           grep -q "compareLevelTypeBefore" "$ASSETS/index.html"
           grep -q "compareLevelTypeAfter" "$ASSETS/index.html"
-          grep -q "const originalEntities=(originalCad.entities||[]).filter(Boolean)" "$ASSETS/index.html"
+          grep -Fq "const originalEntities=(originalCad.entities||[]).filter(Boolean)" "$ASSETS/index.html"
 
       - name: Set version 1.0.84
         shell: bash
