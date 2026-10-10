@@ -1,0 +1,117 @@
+name: Build SurveyQuant v1.0.91 - Preserve Profile DXF + Independent Layer Quantities
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "SurveyQuantAndroid_v1.0.91_FROM_V90_PROFILE_PRESERVE_LAYER_COMPARE.zip"
+      - ".github/workflows/build-v91-from-v90-profile-preserve-layer-compare.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.91_FROM_V90_PROFILE_PRESERVE_LAYER_COMPARE.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract v1.0.91 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$SOURCE_NAME" || { echo "ERROR: Missing source ZIP: $SOURCE_NAME"; exit 1; }
+          rm -rf "$RUNNER_TEMP/sq-source"
+          mkdir -p "$RUNNER_TEMP/sq-source"
+          unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | xargs -r dirname | xargs -r dirname)"
+          test -n "$PROJECT" || { echo "ERROR: Android project not found in source ZIP"; exit 1; }
+          test -s "$PROJECT/app/src/main/assets/index.html"
+          test -s "$PROJECT/app/src/main/assets/surveyquant_logo.png"
+          test -s "$PROJECT/app/src/main/assets/surveyquant_background.png"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Verify the two requested changes and original branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "versionCode 91" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq "versionName '1.0.91'" "$PROJECT_DIR/app/build.gradle"
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+          grep -Fq 'function buildProfileDXFWithOriginal' "$INDEX"
+          grep -Fq 'mergeProjectionDxfPreservingReference(model.rawDXFBytes,additions)' "$INDEX"
+          grep -Fq 'function calculateStandaloneSurfaceStats' "$INDEX"
+          grep -Fq 'standaloneBefore' "$INDEX"
+          grep -Fq 'standaloneAfter' "$INDEX"
+          grep -Fq 'quantityDifference' "$INDEX"
+          grep -Fq 'cmpBeforeContourColor' "$INDEX"
+          grep -Fq 'cmpAfterContourColor' "$INDEX"
+          grep -Fq 'cmpBeforeTinColor' "$INDEX"
+          grep -Fq 'cmpAfterTinColor' "$INDEX"
+          cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png"
+          grep -Fq 'surveyquant_background.png' "$INDEX"
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$PROJECT_DIR/app/src/main/assets/index.html" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
+          from pathlib import Path
+          import re, sys
+          html = Path(sys.argv[1]).read_text(encoding='utf-8')
+          scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script blocks found')
+          Path(sys.argv[2]).write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check "$RUNNER_TEMP/surveyquant-inline.js"
+
+      - name: Restore signing key
+        env:
+          KS_B64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KS_B64" || { echo "Missing secret SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "Missing secret SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "Missing secret SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "Missing secret SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          echo "$KS_B64" | base64 --decode > "$RUNNER_TEMP/surveyquant-release.jks"
+          test -s "$RUNNER_TEMP/surveyquant-release.jks"
+          echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.jks" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build signed release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle clean assembleRelease --no-daemon --stacktrace
+          APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || { echo "ERROR: APK was not produced"; exit 1; }
+          mkdir -p "$PROJECT_DIR/release"
+          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.91-profile-preserve-layer-compare.apk"
+          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.91-profile-preserve-layer-compare.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.91-profile-preserve-layer-compare
+          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.91-profile-preserve-layer-compare.apk
+          if-no-files-found: error
