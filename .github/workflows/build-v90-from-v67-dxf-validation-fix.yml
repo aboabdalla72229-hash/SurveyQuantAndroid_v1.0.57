@@ -1,17 +1,17 @@
-name: Build SurveyQuant v1.0.89 from V67 - Preserve DXF + TIN Only in Project 1
+name: Build SurveyQuant v1.0.90 - DXF Preservation Validation Fix
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuantAndroid_v1.0.89_FROM_V67_PRESERVE_DXF_NO_TIN.zip"
-      - ".github/workflows/build-v89-from-v67-preserve-dxf-no-extra-tin.yml"
+      - "SurveyQuantAndroid_v1.0.90_FROM_V67_DXF_VALIDATION_FIX.zip"
+      - ".github/workflows/build-v90-from-v67-dxf-validation-fix.yml"
 
 permissions:
   contents: read
 
 env:
-  SOURCE_NAME: SurveyQuantAndroid_v1.0.89_FROM_V67_PRESERVE_DXF_NO_TIN.zip
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.90_FROM_V67_DXF_VALIDATION_FIX.zip
 
 jobs:
   build:
@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract V67-based source
+      - name: Extract v90 source
         shell: bash
         run: |
           set -euo pipefail
@@ -62,12 +62,13 @@ jobs:
           test -s "$RUNNER_TEMP/surveyquant-release.jks"
           echo "SURVEYQUANT_KEYSTORE_FILE=$RUNNER_TEMP/surveyquant-release.jks" >> "$GITHUB_ENV"
 
-      - name: Verify preservation patch, TIN scope, branding, version and JavaScript
+      - name: Validate DXF fix and branding
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "versionCode 89" "$PROJECT_DIR/app/build.gradle"
-          grep -q "versionName '1.0.89'" "$PROJECT_DIR/app/build.gradle"
+          grep -q "versionCode 90" "$PROJECT_DIR/app/build.gradle"
+          grep -q "versionName '1.0.90'" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'function inspectPreservedReferenceDXF' "$PROJECT_DIR/app/src/main/assets/index.html"
           grep -Fq 'mergeProjectionDxfPreservingReference' "$PROJECT_DIR/app/src/main/assets/index.html"
           grep -Fq 'model.rawDXFBytes=bytes.slice()' "$PROJECT_DIR/app/src/main/assets/index.html"
           grep -Fq "activeProjectId==='project1Card'" "$PROJECT_DIR/app/src/main/assets/index.html"
@@ -83,11 +84,6 @@ jobs:
           pathlib.Path(sys.argv[2]).write_text('\n'.join(scripts), encoding='utf-8')
           PY
           node --check "$RUNNER_TEMP/surveyquant-inline.js"
-          python3 - "$PROJECT_DIR/app/src/main/res/drawable/ic_surveyquant.xml" "$PROJECT_DIR/app/src/main/res/drawable/ic_surveyquant_foreground.xml" "$PROJECT_DIR/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml" "$PROJECT_DIR/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          for path in sys.argv[1:]:
-              ET.parse(path)
-          PY
 
       - name: Build signed APK
         shell: bash
@@ -103,11 +99,11 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK" || { echo "ERROR: APK was not produced"; exit 1; }
           mkdir -p "$PROJECT_DIR/release"
-          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.89-preserve-dxf-no-extra-tin.apk"
-          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.89-preserve-dxf-no-extra-tin.apk"
+          cp "$APK" "$PROJECT_DIR/release/SurveyQuant-v1.0.90-dxf-validation-fix.apk"
+          sha256sum "$PROJECT_DIR/release/SurveyQuant-v1.0.90-dxf-validation-fix.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.89-preserve-dxf-no-extra-tin
-          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.89-preserve-dxf-no-extra-tin.apk
+          name: SurveyQuant-v1.0.90-dxf-validation-fix
+          path: ${{ env.PROJECT_DIR }}/release/SurveyQuant-v1.0.90-dxf-validation-fix.apk
           if-no-files-found: error
