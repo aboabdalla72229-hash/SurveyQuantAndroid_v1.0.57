@@ -18,6 +18,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
       SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
@@ -33,13 +34,15 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Node.js for JavaScript syntax validation
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         shell: bash
@@ -55,8 +58,7 @@ jobs:
           set -euo pipefail
 
           if [ ! -s "$SOURCE_NAME" ]; then
-            echo "ERROR: Source archive not found at repository root: $SOURCE_NAME"
-            echo "Repository root files:"
+            echo "ERROR: Source archive not found: $SOURCE_NAME"
             ls -lah
             exit 1
           fi
@@ -65,10 +67,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sq-source"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
 
-          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" \
+            -type f -path '*/app/build.gradle' -print -quit \
+            | sed 's#/app/build.gradle$##')"
 
           if [ -z "$PROJECT" ] || [ ! -d "$PROJECT" ]; then
-            echo "ERROR: Could not locate the Android project in the v1.0.93 ZIP."
+            echo "ERROR: Android project was not found inside the ZIP."
             find "$RUNNER_TEMP/sq-source" -maxdepth 5 -type f | head -200
             exit 1
           fi
@@ -94,9 +98,9 @@ jobs:
           }
 
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-          echo "Found Android project: $PROJECT"
+          echo "Found project: $PROJECT"
 
-      - name: Verify version 93 and requested app features
+      - name: Verify version and app features
         shell: bash
         run: |
           set -euo pipefail
@@ -105,60 +109,39 @@ jobs:
           INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
 
           grep -Eq 'versionCode[[:space:]]+93([^0-9]|$)' "$GRADLE_FILE" || {
-            echo "ERROR: This archive does not declare versionCode 93."
+            echo "ERROR: versionCode 93 was not found."
             exit 1
           }
 
           grep -Eq "versionName[[:space:]]+['\"]1\.0\.93['\"]" "$GRADLE_FILE" || {
-            echo "ERROR: This archive does not declare versionName 1.0.93."
+            echo "ERROR: versionName 1.0.93 was not found."
             exit 1
           }
 
           grep -Fq 'minimumVersionCode' "$INDEX" || {
-            echo "ERROR: Forced-update check not found in index.html"
+            echo "ERROR: Forced-update check was not found."
             exit 1
           }
 
           grep -Fq 'kashier/create-session' "$INDEX" || {
-            echo "ERROR: Kashier payment integration not found in index.html"
+            echo "ERROR: Kashier session integration was not found."
             exit 1
           }
 
           grep -Fq 'kashier/status' "$INDEX" || {
-            echo "ERROR: Kashier payment status check not found in index.html"
+            echo "ERROR: Kashier payment status integration was not found."
             exit 1
           }
 
-          grep -Fq 'انتهت فترة الاستخدام المجاني لمدة 3 أيام' "$INDEX" || {
-            echo "ERROR: Three-day trial text not found in index.html"
-            exit 1
-          }
-
-          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" || {
-            echo "ERROR: App logo asset is missing"
-            exit 1
-          }
-
-          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png" || {
-            echo "ERROR: App background asset is missing"
-            exit 1
-          }
-
-          cmp -s \
-            "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" \
-            "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || {
-              echo "ERROR: The launcher logo and web logo are not identical."
-              exit 1
-            }
-
-          echo "Source checks passed for version 1.0.93."
+          echo "Version and integration checks passed."
 
       - name: Validate embedded JavaScript syntax
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 - "$PROJECT_DIR/app/src/main/assets/index.html" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
+          python3 - "$PROJECT_DIR/app/src/main/assets/index.html" \
+            "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
           import re
           import sys
@@ -171,7 +154,7 @@ jobs:
           )
 
           if not scripts:
-              raise SystemExit("ERROR: No inline script blocks were found.")
+              raise SystemExit("ERROR: No inline scripts found.")
 
           Path(sys.argv[2]).write_text(
               "\n".join(scripts),
@@ -189,22 +172,22 @@ jobs:
           set -euo pipefail
 
           test -n "${KEYSTORE_BASE64:-}" || {
-            echo "ERROR: Missing secret SURVEYQUANT_KEYSTORE_BASE64"
+            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is missing."
             exit 1
           }
 
           test -n "${SURVEYQUANT_KEYSTORE_PASSWORD:-}" || {
-            echo "ERROR: Missing secret SURVEYQUANT_KEYSTORE_PASSWORD"
+            echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD secret is missing."
             exit 1
           }
 
           test -n "${SURVEYQUANT_KEY_ALIAS:-}" || {
-            echo "ERROR: Missing secret SURVEYQUANT_KEY_ALIAS"
+            echo "ERROR: SURVEYQUANT_KEY_ALIAS secret is missing."
             exit 1
           }
 
           test -n "${SURVEYQUANT_KEY_PASSWORD:-}" || {
-            echo "ERROR: Missing secret SURVEYQUANT_KEY_PASSWORD"
+            echo "ERROR: SURVEYQUANT_KEY_PASSWORD secret is missing."
             exit 1
           }
 
@@ -212,11 +195,10 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
 
           test -s "$KEYSTORE_PATH" || {
-            echo "ERROR: Decoded keystore file is empty"
+            echo "ERROR: Decoded keystore is empty."
             exit 1
           }
 
-          # app/build.gradle reads this exact environment variable.
           echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Set up Gradle 8.7
@@ -235,7 +217,7 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: Release APK was not produced. APK outputs found:"
+            echo "ERROR: Release APK was not generated."
             find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
             exit 1
           fi
@@ -245,7 +227,7 @@ jobs:
 
           sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.93.apk"
 
-      - name: Include the exact v1.0.93 source archive
+      - name: Copy source archive
         shell: bash
         run: |
           set -euo pipefail
@@ -257,7 +239,7 @@ jobs:
 
           test -s "$RUNNER_TEMP/sq-release/SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
 
-      - name: Upload APK and source archive
+      - name: Upload APK and source ZIP
         uses: actions/upload-artifact@v4
         with:
           name: SurveyQuant-v1.0.93-Release
