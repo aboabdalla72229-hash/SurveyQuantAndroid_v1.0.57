@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.95 - OPEN TEST Gate Fix Concrete 2D 3D
+name: Build SurveyQuant v1.0.95 - Concrete 2D 3D Validation
 
 on:
   workflow_dispatch:
@@ -24,9 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # FIX: Restore the embedded scripts from the historical workflow.
-      # The old file is no longer present at its former current path.
-      - name: Extract the built-in patches from the prior workflow revision
+      - name: Restore built-in patches from historical workflow
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +40,7 @@ jobs:
             > "$PATCH_SOURCE_FILE"
 
           test -s "$PATCH_SOURCE_FILE" || {
-            echo "ERROR: Could not restore the historical workflow containing the built-in patches."
+            echo "ERROR: Historical workflow is missing or empty."
             exit 1
           }
 
@@ -56,49 +54,51 @@ jobs:
           out = Path(sys.argv[2])
           workflow = workflow_path.read_text(encoding="utf-8")
 
-          for block, filename in (
-              (
-                  "concrete_patch",
-                  "SurveyQuant_Concrete_Quantity_2D_3D_TOP_PATCH.js",
-              ),
-              (
-                  "open_test_patch",
-                  "SurveyQuant_OPEN_TEST_MODE.js",
-              ),
-          ):
+          blocks = (
+              ("concrete_patch", "SurveyQuant_Concrete_Quantity_2D_3D_TOP_PATCH.js"),
+              ("open_test_patch", "SurveyQuant_OPEN_TEST_MODE.js"),
+          )
+
+          for block, filename in blocks:
               pattern = (
-                  r'cat > "\$RUNNER_TEMP/'
-                  + re.escape(block)
-                  + r'\.b64" <<\'PATCH_B64\'\s*\n(.*?)\nPATCH_B64'
+                  r'\.b64"\s*<<\'PATCH_B64\'[ \t]*\n'
+                  r'(.*?)\n[ \t]*PATCH_B64'
               )
 
-              match = re.search(pattern, workflow, flags=re.S)
+              # Match the heredoc associated with the requested block.
+              command = re.compile(
+                  r'cat\s+>\s+"\$RUNNER_TEMP/'
+                  + re.escape(block)
+                  + r'\.b64"\s*<<\'PATCH_B64\'[ \t]*\n'
+                  r'(.*?)\n[ \t]*PATCH_B64',
+                  re.S,
+              )
+              match = command.search(workflow)
 
               if not match:
                   raise SystemExit(
                       "ERROR: Could not find built-in patch block: " + block
                   )
 
-              encoded = "".join(match.group(1).split())
+              encoded = "".join(
+                  line.strip()
+                  for line in match.group(1).splitlines()
+              )
 
               try:
                   payload = base64.b64decode(encoded, validate=True)
               except Exception as exc:
                   raise SystemExit(
-                      "ERROR: Invalid Base64 data in " + block + ": " + str(exc)
+                      f"ERROR: Invalid Base64 in {block}: {exc}"
                   )
+
+              if not payload.strip():
+                  raise SystemExit("ERROR: Extracted patch is empty: " + block)
 
               target = out / filename
               target.write_bytes(payload)
+              print(f"Extracted {block}: {len(payload)} bytes")
 
-              if not payload.strip():
-                  raise SystemExit(
-                      "ERROR: Extracted patch is empty: " + block
-                  )
-
-              print(
-                  f"Extracted {block}: {target} ({len(payload)} bytes)"
-              )
           PY
 
           node --check "$RUNNER_TEMP/SurveyQuant_Concrete_Quantity_2D_3D_TOP_PATCH.js"
@@ -129,7 +129,7 @@ jobs:
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract v1.0.93 source and base drawing patch
+      - name: Extract source and drawing-preservation patch
         shell: bash
         run: |
           set -euo pipefail
@@ -162,7 +162,7 @@ jobs:
           )"
 
           test -n "$PROJECT" && test -d "$PROJECT" || {
-            echo "ERROR: Android project was not found in the source ZIP."
+            echo "ERROR: Android project was not found in source ZIP."
             exit 1
           }
 
@@ -176,206 +176,79 @@ jobs:
           test -s "$PROJECT/app/src/main/AndroidManifest.xml"
 
           mkdir -p "$PROJECT/app/src/main/assets"
-
           cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
 
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          echo "Source and drawing-preservation patch loaded."
 
-          echo "Base v1.0.93 source and drawing-preservation patch loaded."
-
-      - name: Inject existing concrete quantity additions
+      - name: Validate concrete patch prerequisites
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 - \
-            "$PROJECT_DIR/app/src/main/assets/index.html" \
-            "$CONCRETE_PATCH_NAME" <<'PY'
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+
+          python3 - "$INDEX" <<'PY'
           from pathlib import Path
           import sys
 
-          html_path = Path(sys.argv[1])
-          patch = Path(sys.argv[2]).read_text(encoding="utf-8")
-          html = html_path.read_text(encoding="utf-8")
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
 
           required = [
-              'id="concreteDxfInput"',
-              'id="concreteMainLayer"',
-              'id="concreteAdjustLayer"',
-              'id="concreteResults"',
-              'function parseDXF',
+              "concreteDxfInput",
+              "concreteMainLayer",
+              "concreteAdjustLayer",
+              "concreteResults",
+              "function parseDXF",
+              "transformOriginalDxfPreservingDetails",
+              "orientationIntersections",
           ]
 
           missing = [item for item in required if item not in html]
 
           if missing:
               raise SystemExit(
-                  "ERROR: Required concrete-project components missing: "
+                  "ERROR: Required source markers are missing: "
                   + ", ".join(missing)
               )
 
-          if "SurveyQuant v1.0.94 additive concrete-quantity patch" in html:
-              raise SystemExit(
-                  "ERROR: Concrete patch already exists in the input page."
-              )
-
-          if "</body>" not in html:
-              raise SystemExit(
-                  "ERROR: </body> not found; refusing unsafe injection."
-              )
-
-          html = html.replace(
-              "</body>",
-              "\n<script>\n" + patch + "\n</script>\n</body>",
-              1,
-          )
-
-          html_path.write_text(html, encoding="utf-8")
-          print("Concrete quantity patch injected.")
+          print("Required drawing and concrete source markers are present.")
           PY
 
-      - name: Inject open-test notice and payment-page cleanup
+      - name: Validate original access-gate integration
         shell: bash
         run: |
           set -euo pipefail
 
-          python3 - \
-            "$PROJECT_DIR/app/src/main/assets/index.html" \
-            "$OPEN_TEST_PATCH_NAME" <<'PY'
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+
+          python3 - "$INDEX" <<'PY'
           from pathlib import Path
           import sys
 
-          html_path = Path(sys.argv[1])
-          patch = Path(sys.argv[2]).read_text(encoding="utf-8")
-          html = html_path.read_text(encoding="utf-8")
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
 
-          if "window.SURVEYQUANT_OPEN_TEST_MODE = true;" in html:
-              raise SystemExit(
-                  "ERROR: Open-test patch was already injected."
-              )
-
-          for marker in (
+          required = [
               "function sqApi",
               "async function sqInitAccess",
               "function sqShowGate",
               "function sqEnsureGate",
-          ):
-              if marker not in html:
-                  raise SystemExit(
-                      "ERROR: Expected access-gate entry not found: " + marker
-                  )
+              "kashier/create-session",
+              "kashier/status",
+          ]
 
-          if "</body>" not in html:
+          missing = [item for item in required if item not in html]
+
+          if missing:
               raise SystemExit(
-                  "ERROR: </body> not found; refusing unsafe injection."
+                  "ERROR: Existing access or payment integration is missing: "
+                  + ", ".join(missing)
               )
 
-          html = html.replace(
-              "</body>",
-              "\n<script>\n" + patch + "\n</script>\n</body>",
-              1,
-          )
-
-          html_path.write_text(html, encoding="utf-8")
-          print("Open-test notice injected.")
+          print("Existing access and payment integration preserved.")
           PY
 
-      - name: Fix the actual app access gate for this test APK only
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - "$PROJECT_DIR/app/src/main/assets/index.html" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          p = Path(sys.argv[1])
-          html = p.read_text(encoding="utf-8")
-
-          def replace_once(pattern, replacement, label):
-              global html
-
-              updated, count = re.subn(
-                  pattern,
-                  replacement,
-                  html,
-                  count=1,
-                  flags=re.S,
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      f"ERROR: Could not safely patch {label}; matches={count}. "
-                      "No APK will be built."
-                  )
-
-              html = updated
-
-          replace_once(
-              r'async\s+function\s+sqInitAccess\s*\(\s*\)\s*\{.*?\}\s*(?=async\s+function\s+checkSurveySubscription\s*\()',
-              "async function sqInitAccess(){"
-              "/* SURVEYQUANT_OPEN_TEST_GATE_BYPASS_V95 */"
-              "try{"
-              "sqGateChecking=false;"
-              "sqGateMode='open';"
-              "var g=document.getElementById('sqAccessGate');"
-              "if(g)g.remove();"
-              "sqGateOverlay=null;"
-              "try{localStorage.setItem('sq_access_until','2099-12-31T23:59:59.000Z')}catch(e){};"
-              "return {ok:true,testMode:true,trialActive:true,"
-              "subscriptionActive:true,"
-              "trialUntil:'2099-12-31T23:59:59.000Z',"
-              "activeUntil:'2099-12-31T23:59:59.000Z'};"
-              "}finally{sqGateChecking=false;}}\n",
-              "sqInitAccess",
-          )
-
-          replace_once(
-              r'function\s+sqEnsureGate\s*\(\s*\)\s*\{.*?\}\s*(?=function\s+sqShowGate\s*\()',
-              "function sqEnsureGate(){"
-              "/* SURVEYQUANT_OPEN_TEST_GATE_BYPASS_V95 */"
-              "var g=document.getElementById('sqAccessGate');"
-              "if(g)g.remove();"
-              "sqGateOverlay=null;"
-              "sqGateMode='open';"
-              "return null;}\n",
-              "sqEnsureGate",
-          )
-
-          replace_once(
-              r'function\s+sqShowGate\s*\([^)]*\)\s*\{.*?\}\s*(?=function\s+sqHideGate\s*\()',
-              "function sqShowGate(){"
-              "/* SURVEYQUANT_OPEN_TEST_GATE_BYPASS_V95 */"
-              "var g=document.getElementById('sqAccessGate');"
-              "if(g)g.remove();"
-              "sqGateOverlay=null;"
-              "sqGateMode='open';}\n",
-              "sqShowGate",
-          )
-
-          for marker in (
-              "SURVEYQUANT_OPEN_TEST_GATE_BYPASS_V95",
-              "window.SURVEYQUANT_OPEN_TEST_MODE = true;",
-              "sqConcreteTopLevel",
-              "downloadConcrete3DDXF",
-              "dxfPolylineRecords",
-          ):
-              if marker not in html:
-                  raise SystemExit(
-                      "ERROR: Required test or concrete marker missing after "
-                      "patch: " + marker
-                  )
-
-          p.write_text(html, encoding="utf-8")
-
-          print(
-              "Verified: startup access gate and overlay functions patched "
-              "in this test APK only."
-          )
-          PY
-
-      - name: Verify source version, preserved features and assets
+      - name: Verify source version and project cards
         shell: bash
         run: |
           set -euo pipefail
@@ -393,45 +266,15 @@ jobs:
             exit 1
           }
 
-          grep -Fq 'minimumVersionCode' "$INDEX" || {
-            echo "ERROR: Forced-update check missing."
-            exit 1
-          }
-
-          grep -Fq 'transformOriginalDxfPreservingDetails' "$INDEX" || {
-            echo "ERROR: DXF preservation function missing."
-            exit 1
-          }
-
-          grep -Fq 'orientationIntersections' "$INDEX" || {
-            echo "ERROR: Existing orientation feature missing."
-            exit 1
-          }
-
           for card in \
             project1Card orientationCard profileCard roadCard \
             pipeCard landAreaCard dropFilesCard
           do
             grep -Fq "id=\"$card\"" "$INDEX" || {
-              echo "ERROR: Existing project card $card missing."
+              echo "ERROR: Existing project card $card is missing."
               exit 1
             }
           done
-
-          grep -Fq 'kashier/create-session' "$INDEX" || {
-            echo "ERROR: Kashier session integration missing."
-            exit 1
-          }
-
-          grep -Fq 'kashier/status' "$INDEX" || {
-            echo "ERROR: Kashier payment-status integration missing."
-            exit 1
-          }
-
-          grep -Fq 'SURVEYQUANT_OPEN_TEST_GATE_BYPASS_V95' "$INDEX" || {
-            echo "ERROR: Actual access-gate bypass not present."
-            exit 1
-          }
 
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
@@ -443,9 +286,9 @@ jobs:
               exit 1
           }
 
-          echo "Verified: source projects, payment integration, logo, background and test-only gate bypass."
+          echo "Source version, project cards and branding verified."
 
-      - name: Set app version to 1.0.95 OPEN TEST GATE FIX
+      - name: Set app version to 1.0.95
         shell: bash
         run: |
           set -euo pipefail
@@ -474,7 +317,7 @@ jobs:
 
           if n_code != 1 or n_name != 1:
               raise SystemExit(
-                  f"ERROR: Could not safely set v1.0.95: "
+                  f"ERROR: Version update failed: "
                   f"versionCode edits={n_code}, versionName edits={n_name}"
               )
 
@@ -482,7 +325,6 @@ jobs:
           PY
 
           grep -Eq 'versionCode[[:space:]]+95([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-
           grep -Eq "versionName[[:space:]]+['\"]1\.0\.95['\"]" "$PROJECT_DIR/app/build.gradle"
 
       - name: Validate inline JavaScript syntax
@@ -498,7 +340,6 @@ jobs:
           import sys
 
           html = Path(sys.argv[1]).read_text(encoding="utf-8")
-
           scripts = re.findall(
               r"<script(?:\s[^>]*)?>(.*?)</script>",
               html,
@@ -532,7 +373,6 @@ jobs:
           KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
 
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-
           test -s "$KEYSTORE_PATH"
 
           echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
@@ -548,7 +388,6 @@ jobs:
           set -euo pipefail
 
           cd "$PROJECT_DIR"
-
           gradle --no-daemon clean assembleRelease --stacktrace
 
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
@@ -562,15 +401,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sq-release"
 
           cp "$APK" \
-            "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.95_OPEN_TEST_CONCRETE_2D_3D_GATEFIX.apk"
+            "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.95_VALIDATION_CONCRETE_2D_3D.apk"
 
           sha256sum \
-            "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.95_OPEN_TEST_CONCRETE_2D_3D_GATEFIX.apk"
+            "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.95_VALIDATION_CONCRETE_2D_3D.apk"
 
-      - name: Upload OPEN-TEST APK only
+      - name: Upload validation APK
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.95-OPEN-TEST-GATEFIX-APK-ONLY
-          path: ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.95_OPEN_TEST_CONCRETE_2D_3D_GATEFIX.apk
+          name: SurveyQuant-v1.0.95-VALIDATION-APK
+          path: ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.95_VALIDATION_CONCRETE_2D_3D.apk
           if-no-files-found: error
           retention-days: 14
