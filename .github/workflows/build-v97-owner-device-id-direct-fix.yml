@@ -1,0 +1,310 @@
+
+name: Build SurveyQuant v1.0.97 - Owner Device ID Diagnostic Fix (Normal Trial)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-v97-owner-device-id-direct-fix.yml"
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_NAME: SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip
+  BASE_PATCH_NAME: SurveyQuant_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF_PATCH.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Extract original source and drawing-preservation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$SOURCE_NAME" || { echo "ERROR: Missing $SOURCE_NAME"; exit 1; }
+          test -s "$BASE_PATCH_NAME" || { echo "ERROR: Missing $BASE_PATCH_NAME"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch"
+          unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
+          unzip -q "$BASE_PATCH_NAME" -d "$RUNNER_TEMP/sq-base-patch"
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
+          PATCH_INDEX="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'index.html' -print -quit)"
+          test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
+          test -n "$PATCH_INDEX" && test -s "$PATCH_INDEX" || { echo "ERROR: Patch index.html not found."; exit 1; }
+          test -s "$PROJECT/settings.gradle"
+          test -s "$PROJECT/build.gradle"
+          test -s "$PROJECT/app/src/main/AndroidManifest.xml"
+          mkdir -p "$PROJECT/app/src/main/assets"
+          cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          echo "Original app source and drawing-preservation HTML loaded."
+
+      - name: Validate original access gate and project cards
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+          python3 - "$INDEX" <<'PY'
+          from pathlib import Path
+          import sys
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          required = [
+              "function sqApi",
+              "function sqDeviceId()",
+              "async function sqInitAccess",
+              "function sqShowGate",
+              "function sqEnsureGate",
+              "kashier/create-session",
+              "kashier/status",
+              "concreteDxfInput",
+              "concreteMainLayer",
+              "concreteAdjustLayer",
+              "concreteResults",
+              "function parseDXF",
+              "transformOriginalDxfPreservingDetails",
+              "orientationIntersections",
+          ]
+          missing = [item for item in required if item not in html]
+          if missing:
+              raise SystemExit("ERROR: Required original app features are missing: " + ", ".join(missing))
+          cards = ["project1Card", "orientationCard", "profileCard", "roadCard", "pipeCard", "landAreaCard", "dropFilesCard"]
+          missing_cards = [card for card in cards if f'id="{card}"' not in html]
+          if missing_cards:
+              raise SystemExit("ERROR: Existing project cards are missing: " + ", ".join(missing_cards))
+          print("Original access/payment gate and required project cards verified.")
+          PY
+
+      - name: Add direct owner-device ID display (does not bypass trial or payment)
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+          PANEL="$RUNNER_TEMP/sq-owner-device-id-panel.js"
+          cat > "$PANEL" <<'JS'
+          (function () {
+            'use strict';
+            var lastId = '';
+            var mountScheduled = false;
+            var marker = 'SQ_OWNER_DEVICE_ID_DIAGNOSTIC_V97';
+
+            function fallbackCopy(value) {
+              var ta = document.createElement('textarea');
+              ta.value = value;
+              ta.style.position = 'fixed';
+              ta.style.opacity = '0';
+              document.body.appendChild(ta);
+              ta.select();
+              try { document.execCommand('copy'); } catch (_) {}
+              ta.remove();
+            }
+
+            function mount() {
+              if (!document.body || !lastId) return;
+              var box = document.getElementById('sqOwnerDeviceIdDiagnostic');
+              if (!box) {
+                box = document.createElement('section');
+                box.id = 'sqOwnerDeviceIdDiagnostic';
+                box.setAttribute('data-marker', marker);
+                box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:10px;z-index:2147483647;background:#102b3f;color:#fff;border:2px solid #48c6c8;border-radius:12px;padding:12px;font:14px Arial,sans-serif;box-shadow:0 4px 18px #0008;direction:rtl;text-align:right';
+                box.innerHTML = '<b>معرّف هذا الجهاز</b><div id="sqOwnerDeviceIdValue" style="direction:ltr;word-break:break-all;background:#fff;color:#102b3f;padding:8px;margin:8px 0;border-radius:6px"></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button id="sqOwnerDeviceIdCopy" type="button" style="padding:8px 12px;border:0;border-radius:7px;background:#48c6c8;color:#102b3f;font-weight:bold">نسخ المعرّف</button><button id="sqOwnerDeviceIdHide" type="button" style="padding:8px 12px;border:1px solid #fff;border-radius:7px;background:transparent;color:#fff">إخفاء</button></div><small style="display:block;margin-top:6px;color:#d5edf4">لوحة تشخيص فقط. لا تلغي التجربة أو الدفع ولا تغيّر إعدادات الحساب.</small>';
+                document.body.appendChild(box);
+                document.getElementById('sqOwnerDeviceIdCopy').addEventListener('click', function () {
+                  var value = lastId;
+                  var button = this;
+                  if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(value).then(function () { button.textContent = 'تم النسخ'; }).catch(function () { fallbackCopy(value); button.textContent = 'تم طلب النسخ'; });
+                  } else {
+                    fallbackCopy(value);
+                    button.textContent = 'تم طلب النسخ';
+                  }
+                });
+                document.getElementById('sqOwnerDeviceIdHide').addEventListener('click', function () { box.style.display = 'none'; });
+              }
+              var valueNode = document.getElementById('sqOwnerDeviceIdValue');
+              if (valueNode) valueNode.textContent = lastId;
+              box.style.display = 'block';
+            }
+
+            function render(id) {
+              id = String(id || '').trim();
+              if (!id || id.length < 6) return;
+              lastId = id;
+              if (mountScheduled) {
+                var valueNode = document.getElementById('sqOwnerDeviceIdValue');
+                if (valueNode) valueNode.textContent = lastId;
+                return;
+              }
+              mountScheduled = true;
+              if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', function () { setTimeout(mount, 0); }, { once: true });
+              } else {
+                setTimeout(mount, 0);
+              }
+            }
+
+            function obtainRealAppId() {
+              var id = '';
+              try {
+                if (typeof window.sqDeviceId === 'function') id = window.sqDeviceId();
+              } catch (_) {}
+              if (!id) {
+                try { id = localStorage.getItem('sq_device_id') || ''; } catch (_) {}
+              }
+              if (id) render(id);
+            }
+
+            obtainRealAppId();
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', obtainRealAppId, { once: true });
+            } else {
+              setTimeout(obtainRealAppId, 0);
+            }
+          })();
+          JS
+          python3 - "$INDEX" "$PANEL" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          index_path, panel_path = Path(sys.argv[1]), Path(sys.argv[2])
+          html = index_path.read_text(encoding="utf-8")
+          panel = panel_path.read_text(encoding="utf-8")
+          marker = "SQ_OWNER_DEVICE_ID_DIAGNOSTIC_V97"
+          if marker in html:
+              raise SystemExit("ERROR: Diagnostic panel is already present.")
+          if not panel.strip():
+              raise SystemExit("ERROR: Diagnostic panel script is empty.")
+          if "function sqDeviceId()" not in html or "sq_device_id" not in html:
+              raise SystemExit("ERROR: The app's real device-ID provider was not found.")
+          if not re.search(r"</body\s*>", html, re.I):
+              raise SystemExit("ERROR: Cannot safely inject diagnostic panel.")
+          html = re.sub(r"</body\s*>", lambda _: "\n<script>\n" + panel + "\n</script>\n</body>", html, count=1, flags=re.I)
+          index_path.write_text(html, encoding="utf-8")
+          print("Direct app device-ID display added; trial/payment gate remains unchanged.")
+          PY
+          grep -Fq 'SQ_OWNER_DEVICE_ID_DIAGNOSTIC_V97' "$INDEX"
+          grep -Fq 'window.sqDeviceId' "$INDEX"
+
+      - name: Verify source version and branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLE_FILE="$PROJECT_DIR/app/build.gradle"
+          INDEX="$PROJECT_DIR/app/src/main/assets/index.html"
+          grep -Eq 'versionCode[[:space:]]+93([^0-9]|$)' "$GRADLE_FILE" || { echo "ERROR: Expected source versionCode 93."; exit 1; }
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.93['\"]" "$GRADLE_FILE" || { echo "ERROR: Expected source versionName 1.0.93."; exit 1; }
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
+          cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
+          echo "Source version and branding verified."
+
+      - name: Set app version and runtime gate to 1.0.97
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$PROJECT_DIR/app/build.gradle" "$PROJECT_DIR/app/src/main/assets/index.html" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          gradle_path, index_path = map(Path, sys.argv[1:3])
+          gradle = gradle_path.read_text(encoding="utf-8")
+          gradle, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>97', gradle, count=1)
+          gradle, n_name = re.subn(r'(?m)(\bversionName\s+)(["\'])1\.0\.93\2', "\\g<1>'1.0.97'", gradle, count=1)
+          if n_code != 1 or n_name != 1:
+              raise SystemExit(f"ERROR: Gradle version update failed: versionCode edits={n_code}, versionName edits={n_name}")
+          index = index_path.read_text(encoding="utf-8")
+          index, n_runtime = re.subn(r'(?m)const SQ_APP_VERSION_CODE = 93;', 'const SQ_APP_VERSION_CODE = 97;', index, count=1)
+          if n_runtime != 1:
+              raise SystemExit(f"ERROR: Runtime version update failed: edits={n_runtime}")
+          gradle_path.write_text(gradle, encoding="utf-8")
+          index_path.write_text(index, encoding="utf-8")
+          PY
+          grep -Eq 'versionCode[[:space:]]+97([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.97['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 97;' "$PROJECT_DIR/app/src/main/assets/index.html"
+
+      - name: Validate inline JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$PROJECT_DIR/app/src/main/assets/index.html" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S | re.I)
+          if not scripts:
+              raise SystemExit("ERROR: No inline scripts found.")
+          Path(sys.argv[2]).write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check "$RUNNER_TEMP/surveyquant-inline.js"
+
+      - name: Restore release signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "${KEYSTORE_BASE64:-}" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 is missing."; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD"
+          test -n "$SURVEYQUANT_KEY_ALIAS"
+          test -n "$SURVEYQUANT_KEY_PASSWORD"
+          KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build signed diagnostic APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle --no-daemon clean assembleRelease --stacktrace
+          APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
+          mkdir -p "$RUNNER_TEMP/sq-release"
+          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.97_OWNER_DEVICE_ID_DIAGNOSTIC.apk"
+          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.97_OWNER_DEVICE_ID_DIAGNOSTIC.apk"
+
+      - name: Upload diagnostic APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.97-OWNER-DEVICE-ID-DIAGNOSTIC-APK
+          path: ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.97_OWNER_DEVICE_ID_DIAGNOSTIC.apk
+          if-no-files-found: error
+          retention-days: 14
