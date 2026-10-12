@@ -56,22 +56,21 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Extract v1.0.93 source and apply orientation patch
+      - name: Extract source and apply patch
         shell: bash
         run: |
           set -euo pipefail
 
           test -s "$SOURCE_NAME" || {
-            echo "ERROR: Missing source: $SOURCE_NAME"
+            echo "ERROR: Missing source ZIP: $SOURCE_NAME"
             exit 1
           }
 
           test -s "$PATCH_NAME" || {
-            echo "ERROR: Missing patch: $PATCH_NAME"
+            echo "ERROR: Missing patch ZIP: $PATCH_NAME"
             exit 1
           }
 
-          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
           mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
 
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
@@ -85,42 +84,26 @@ jobs:
             -type f -name 'index.html' -print -quit)"
 
           test -n "$PROJECT" && test -d "$PROJECT" || {
-            echo "ERROR: Android project not found in source ZIP."
+            echo "ERROR: Android project not found."
             exit 1
           }
 
           test -n "$PATCH_INDEX" && test -s "$PATCH_INDEX" || {
-            echo "ERROR: index.html not found in patch ZIP."
+            echo "ERROR: Patch index.html not found."
             exit 1
           }
 
-          test -s "$PROJECT/settings.gradle" || {
-            echo "ERROR: settings.gradle is missing."
-            exit 1
-          }
-
-          test -s "$PROJECT/build.gradle" || {
-            echo "ERROR: Root build.gradle is missing."
-            exit 1
-          }
-
-          test -s "$PROJECT/app/src/main/AndroidManifest.xml" || {
-            echo "ERROR: AndroidManifest.xml is missing."
-            exit 1
-          }
-
-          test -d "$PROJECT/app/src/main/assets" || {
-            echo "ERROR: Android assets directory is missing."
-            exit 1
-          }
+          test -s "$PROJECT/settings.gradle"
+          test -s "$PROJECT/build.gradle"
+          test -s "$PROJECT/app/src/main/AndroidManifest.xml"
+          test -d "$PROJECT/app/src/main/assets"
 
           cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
-          test -s "$PROJECT/app/src/main/assets/index.html"
 
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-          echo "Patched project: $PROJECT"
+          echo "Patch applied successfully."
 
-      - name: Verify version and app requirements
+      - name: Verify version and required assets
         shell: bash
         run: |
           set -euo pipefail
@@ -138,46 +121,24 @@ jobs:
             exit 1
           }
 
-          grep -Fq 'minimumVersionCode' "$INDEX" || {
-            echo "ERROR: App update check is missing."
-            exit 1
-          }
+          grep -Fq 'minimumVersionCode' "$INDEX"
+          grep -Fq 'kashier/create-session' "$INDEX"
+          grep -Fq 'kashier/status' "$INDEX"
+          grep -Fq 'انتهت فترة الاستخدام المجاني لمدة 3 أيام' "$INDEX"
 
-          grep -Fq 'kashier/create-session' "$INDEX" || {
-            echo "ERROR: Kashier session integration is missing."
-            exit 1
-          }
-
-          grep -Fq 'kashier/status' "$INDEX" || {
-            echo "ERROR: Kashier status integration is missing."
-            exit 1
-          }
-
-          grep -Fq 'انتهت فترة الاستخدام المجاني لمدة 3 أيام' "$INDEX" || {
-            echo "ERROR: Three-day trial flow is missing."
-            exit 1
-          }
-
-          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" || {
-            echo "ERROR: App logo is missing."
-            exit 1
-          }
-
-          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png" || {
-            echo "ERROR: App background is missing."
-            exit 1
-          }
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
 
           cmp -s \
             "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" \
             "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || {
-            echo "ERROR: Launcher logo and app logo differ."
+            echo "ERROR: Logo assets do not match."
             exit 1
           }
 
-          echo "Version and app requirements verified."
+          echo "Version and assets verified."
 
-      - name: Validate embedded JavaScript syntax
+      - name: Validate JavaScript syntax
         shell: bash
         run: |
           set -euo pipefail
@@ -206,7 +167,7 @@ jobs:
 
           node --check "$RUNNER_TEMP/surveyquant-inline.js"
 
-      - name: Restore Android release signing key
+      - name: Restore signing key
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
@@ -214,33 +175,20 @@ jobs:
           set -euo pipefail
 
           test -n "${KEYSTORE_BASE64:-}" || {
-            echo "ERROR: Missing SURVEYQUANT_KEYSTORE_BASE64."
+            echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 is missing."
             exit 1
           }
 
-          test -n "${SURVEYQUANT_KEYSTORE_PASSWORD:-}" || {
-            echo "ERROR: Missing SURVEYQUANT_KEYSTORE_PASSWORD."
-            exit 1
-          }
-
-          test -n "${SURVEYQUANT_KEY_ALIAS:-}" || {
-            echo "ERROR: Missing SURVEYQUANT_KEY_ALIAS."
-            exit 1
-          }
-
-          test -n "${SURVEYQUANT_KEY_PASSWORD:-}" || {
-            echo "ERROR: Missing SURVEYQUANT_KEY_PASSWORD."
-            exit 1
-          }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD"
+          test -n "$SURVEYQUANT_KEY_ALIAS"
+          test -n "$SURVEYQUANT_KEY_PASSWORD"
 
           KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
 
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE_PATH"
 
-          test -s "$KEYSTORE_PATH" || {
-            echo "ERROR: Decoded keystore is empty."
-            exit 1
-          }
+          test -s "$KEYSTORE_PATH"
 
           echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
@@ -249,7 +197,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build signed release APK
+      - name: Build release APK
         shell: bash
         run: |
           set -euo pipefail
@@ -260,7 +208,7 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
 
           test -s "$APK" || {
-            echo "ERROR: Release APK was not produced."
+            echo "ERROR: Release APK was not generated."
             find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
             exit 1
           }
@@ -273,26 +221,10 @@ jobs:
           sha256sum \
             "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF.apk"
 
-      - name: Package patched v1.0.93 source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$RUNNER_TEMP/sq-source"
-
-          zip -qr \
-            "$RUNNER_TEMP/sq-release/SurveyQuantAndroid_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF_SOURCE.zip" \
-            .
-
-          test -s \
-            "$RUNNER_TEMP/sq-release/SurveyQuantAndroid_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF_SOURCE.zip"
-
-      - name: Upload APK and patched source
+      - name: Upload APK only
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.93-Orientation-Axes-Preserve-DXF
-          path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF.apk
-            ${{ runner.temp }}/sq-release/SurveyQuantAndroid_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF_SOURCE.zip
+          name: SurveyQuant-v1.0.93-APK-ONLY
+          path: ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.93_ORIENTATION_AXES_PRESERVE_DXF.apk
           if-no-files-found: error
           retention-days: 14
