@@ -1,12 +1,12 @@
-name: Build SurveyQuant v1.0.103 - Native DXF Overlay + Remove Orientation and Bottom Payment Bar
+name: Build SurveyQuant v1.0.104 - Restore DXF Reading and Original Projection
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-      - "SurveyQuant_v1.0.103_DXF_NATIVE_OVERLAY_REMOVE_ORIENTATION_PATCH.zip"
-      - ".github/workflows/build-v103-native-dxf-overlay-remove-orientation.yml"
+      - "SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
+      - ".github/workflows/build-v104-dxf-read-projection-restore.yml"
 
 permissions:
   contents: read
@@ -46,24 +46,24 @@ jobs:
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Apply v1.0.103 patch to the original Android source
+      - name: Apply targeted DXF parser and projection restoration patch
         shell: bash
         run: |
           set -euo pipefail
           SOURCE_NAME="SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-          PATCH_NAME="SurveyQuant_v1.0.103_DXF_NATIVE_OVERLAY_REMOVE_ORIENTATION_PATCH.zip"
-          test -s "$SOURCE_NAME" || { echo "ERROR: Missing source ZIP: $SOURCE_NAME"; exit 1; }
-          test -s "$PATCH_NAME" || { echo "ERROR: Missing patch ZIP: $PATCH_NAME"; exit 1; }
+          PATCH_NAME="SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
+          test -s "$SOURCE_NAME" || { echo "ERROR: Missing original Android source: $SOURCE_NAME"; exit 1; }
+          test -s "$PATCH_NAME" || { echo "ERROR: Missing v1.0.104 patch: $PATCH_NAME"; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
           mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
           unzip -q "$PATCH_NAME" -d "$RUNNER_TEMP/sq-patch"
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
-          PATCH_TEST="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'native-merge-test.js' -print -quit)"
-          test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found inside original source ZIP."; exit 1; }
+          PATCH_TEST="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'dxf-parser-restoration-test.js' -print -quit)"
+          test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
           test -s "$PATCH_INDEX" || { echo "ERROR: Patched index.html is missing."; exit 1; }
-          test -s "$PATCH_TEST" || { echo "ERROR: Native DXF preservation test is missing."; exit 1; }
+          test -s "$PATCH_TEST" || { echo "ERROR: DXF parser regression test is missing."; exit 1; }
           test -s "$PROJECT/settings.gradle"
           test -s "$PROJECT/build.gradle"
           test -s "$PROJECT/app/src/main/AndroidManifest.xml"
@@ -72,28 +72,35 @@ jobs:
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
           echo "INDEX_PATH=$PROJECT/app/src/main/assets/index.html" >> "$GITHUB_ENV"
           echo "PATCH_TEST=$PATCH_TEST" >> "$GITHUB_ENV"
-          echo "v1.0.103 HTML patch applied to the original Android project source."
+          echo "Applied only the v104 DXF-read/projection restoration HTML patch."
 
-      - name: Verify native overlay, existing projects, payment gate and removed UI
+      - name: Verify DXF readers, restored projection path, retained projects and requested removals
         shell: bash
         run: |
           set -euo pipefail
           python3 - "$INDEX_PATH" "$PROJECT_DIR/app/build.gradle" <<'PY'
           from pathlib import Path
           import re, sys
-          index = Path(sys.argv[1]).read_text(encoding='utf-8')
-          gradle = Path(sys.argv[2]).read_text(encoding='utf-8')
+          index = Path(sys.argv[1]).read_text(encoding="utf-8")
+          gradle = Path(sys.argv[2]).read_text(encoding="utf-8")
           required = [
-            "function mergeNativeDxfDrawingsPreservingDetails(targetBytes,sourceBytes)",
+            "function parseDXF(text){",
+            "const type=e.type, layer=e.layer||'0';",
+            "async function loadProfileCAD()",
+            "async function parseFile(file)",
+            "function mergeProjectionDxfPreservingReference(rawBytes, additions)",
             "async function dropFilesMerge()",
+            "mergeProjectionDxfPreservingReference(targetModel.rawDXFBytes,additions)",
+            "function sqBuildModernEntityRecords(entities,pairs,startHandle)",
             "function sqPolylineIsClosed(entity, vertices)",
             "function sqNormalizeConcreteVertices(input)",
             "function sqConcreteClosedPolylines(model, layerName)",
-            "function sqTriangulatePolygon2D(vertices)",
             "function sqAppendConcreteExtrusion",
             "function calculateConcreteDxf()",
             'id="concreteDxfDrawMode"',
-            'id="concreteDxfInput"',
+            'id="profileFileInput"',
+            'id="dropSurveyFiles"',
+            'id="dropCadFile"',
             'id="project1Card"',
             'id="profileCard"',
             'id="roadCard"',
@@ -108,36 +115,46 @@ jobs:
             'class="menu-btn payment-shortcut"',
             "async function sqInitAccess()",
             "kashier/create-session",
-            "const SQ_APP_VERSION_CODE = 103;",
+            "const SQ_APP_VERSION_CODE = 104;",
           ]
           missing = [x for x in required if x not in index]
           if missing:
-            raise SystemExit("ERROR: Required feature or project is missing: " + ", ".join(missing))
-          forbidden = [
+            raise SystemExit("ERROR: Required DXF reader/project/payment feature missing: " + ", ".join(missing))
+          writer_start = index.index("function sqBuildModernEntityRecords(entities,pairs,startHandle){")
+          writer_end = index.index("function sqApplyByteEdits(source,edits){", writer_start)
+          writer = index[writer_start:writer_end]
+          if "else if(type==='CIRCLE'" in writer or "else if(type==='ARC'" in writer:
+            raise SystemExit("ERROR: Modern DXF writer still uses undefined type variable.")
+          drop_start = index.index("async function dropFilesMerge(){")
+          drop_end = index.index("function resetProjectInputs(", drop_start)
+          drop = index[drop_start:drop_end]
+          if "mergeNativeDxfDrawingsPreservingDetails" in drop:
+            raise SystemExit("ERROR: New alternate merge path unexpectedly remains active.")
+          if "mergeProjectionDxfPreservingReference(targetModel.rawDXFBytes,additions)" not in drop:
+            raise SystemExit("ERROR: Original reference-preserving DXF projection path was not restored.")
+          if "const type=e.type, layer=e.layer||'0';" not in index:
+            raise SystemExit("ERROR: DXF entity type initialization is missing.")
+          removed = [
             'id="orientationCard"',
             "openProjectPage('orientationCard')",
             'class="bottom-activate"',
             'function loadOrientationFiles(',
-            'function calculateOrientation(',
             'function calculateOrientationByAxes(',
             'function downloadOrientedDXF(',
-            'function exportOrientationDrawing(',
-            'orientationRefModel',
-            'generatedOrientedDXF',
           ]
-          leftover = [x for x in forbidden if x in index]
+          leftover = [x for x in removed if x in index]
           if leftover:
-            raise SystemExit("ERROR: Removed orientation/fixed-payment UI remains: " + ", ".join(leftover))
-          if not re.search(r"\bversionCode\s+93\b", gradle) or not re.search(r"\bversionName\s+['\"]1\.0\.93['\"]", gradle):
+            raise SystemExit("ERROR: Removed orientation/fixed bottom bar has returned: " + ", ".join(leftover))
+          if not re.search(r"\\bversionCode\\s+93\\b", gradle) or not re.search(r"\\bversionName\\s+['\"]1\\.0\\.93['\"]", gradle):
             raise SystemExit("ERROR: Expected original v1.0.93 Android source before version bump.")
-          print("Native DXF overlay, all nine retained projects, concrete 2D/3D, and payment gate verified.")
-          print("Orientation project and fixed bottom payment bar are absent; payment shortcut/page remain.")
+          print("DXF parsing, levels reader, original reference-preserving projection path, concrete 2D/3D, remaining projects, and payment page verified.")
+          print("Orientation project/fixed bottom payment bar remain removed.")
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
-          cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Existing app-logo assets differ."; exit 1; }
+          cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.103
+      - name: Set Android release version to 1.0.104
         shell: bash
         run: |
           set -euo pipefail
@@ -145,16 +162,16 @@ jobs:
           from pathlib import Path
           import re, sys
           p = Path(sys.argv[1])
-          text = p.read_text(encoding='utf-8')
-          text, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>103', text, count=1)
-          text, n_name = re.subn(r'(?m)(\bversionName\s+)(["\'])1\.0\.93\2', "\\g<1>'1.0.103'", text, count=1)
+          text = p.read_text(encoding="utf-8")
+          text, n_code = re.subn(r'(?m)(\\bversionCode\\s+)93\\b', r'\\g<1>104', text, count=1)
+          text, n_name = re.subn(r'(?m)(\\bversionName\\s+)(["\\'])1\\.0\\.93\\2', "\\\\g<1>'1.0.104'", text, count=1)
           if n_code != 1 or n_name != 1:
             raise SystemExit(f"ERROR: Version edits failed (code={n_code}, name={n_name}).")
-          p.write_text(text, encoding='utf-8')
+          p.write_text(text, encoding="utf-8")
           PY
-          grep -Eq 'versionCode[[:space:]]+103([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.103['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 103;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+104([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.104['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 104;' "$INDEX_PATH"
 
       - name: Validate inline JavaScript syntax
         shell: bash
@@ -163,19 +180,19 @@ jobs:
           python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
           import re, sys
-          html = Path(sys.argv[1]).read_text(encoding='utf-8')
-          scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, re.I | re.S)
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          scripts = re.findall(r'<script(?:\\s[^>]*)?>(.*?)</script>', html, re.I | re.S)
           if not scripts:
             raise SystemExit("ERROR: No inline JavaScript found.")
-          Path(sys.argv[2]).write_text('\n'.join(scripts), encoding='utf-8')
+          Path(sys.argv[2]).write_text('\\n'.join(scripts), encoding="utf-8")
           PY
           node --check "$RUNNER_TEMP/surveyquant-inline.js"
 
-      - name: Test native DXF-to-DXF overlay preserves source details
+      - name: Test actual DXF parser and regression paths
         shell: bash
         run: |
           set -euo pipefail
-          node "$PATCH_TEST"
+          node "$PATCH_TEST" "$INDEX_PATH"
 
       - name: Restore release signing key
         shell: bash
@@ -206,16 +223,16 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           mkdir -p "$RUNNER_TEMP/sq-release"
-          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.103_DXF_NATIVE_OVERLAY_REMOVE_ORIENTATION.apk"
-          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.103_DXF_NATIVE_OVERLAY_REMOVE_ORIENTATION.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE.apk"
+          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
-      - name: Upload release APK and checksum
+      - name: Upload APK and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.103-DXF-NATIVE-OVERLAY-REMOVE-ORIENTATION
+          name: SurveyQuant-v1.0.104-DXF-READ-PROJECTION-RESTORE
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.103_DXF_NATIVE_OVERLAY_REMOVE_ORIENTATION.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE.apk
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
