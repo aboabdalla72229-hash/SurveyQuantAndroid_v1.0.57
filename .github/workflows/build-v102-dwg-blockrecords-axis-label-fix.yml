@@ -1,12 +1,12 @@
-name: Build SurveyQuant v1.0.101 - DWG Axes + Concrete 2D/3D
+name: Build SurveyQuant v1.0.102 - DWG Block Records Axis Labels + Concrete 2D/3D
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-      - "SurveyQuant_v1.0.101_ORIENTATION_CONCRETE_FIX_PATCH.zip"
-      - ".github/workflows/build-v101-orientation-concrete-closed-polyline.yml"
+      - "SurveyQuant_v1.0.102_DWG_BLOCKRECORDS_AXIS_LABEL_FIX_PATCH.zip"
+      - ".github/workflows/build-v102-dwg-blockrecords-axis-label-fix.yml"
 
 permissions:
   contents: read
@@ -46,12 +46,12 @@ jobs:
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Apply v1.0.101 patch to the original v1.0.93 Android source
+      - name: Apply v1.0.102 patch to the original v1.0.93 Android source
         shell: bash
         run: |
           set -euo pipefail
           SOURCE_NAME="SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-          PATCH_NAME="SurveyQuant_v1.0.101_ORIENTATION_CONCRETE_FIX_PATCH.zip"
+          PATCH_NAME="SurveyQuant_v1.0.102_DWG_BLOCKRECORDS_AXIS_LABEL_FIX_PATCH.zip"
           test -s "$SOURCE_NAME" || { echo "ERROR: Missing source ZIP: $SOURCE_NAME"; exit 1; }
           test -s "$PATCH_NAME" || { echo "ERROR: Missing patch ZIP: $PATCH_NAME"; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-patch"
@@ -61,7 +61,7 @@ jobs:
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-patch" -type f -name 'index.html' -print -quit)"
           test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
-          test -n "$PATCH_INDEX" && test -s "$PATCH_INDEX" || { echo "ERROR: v1.0.101 index.html missing from patch ZIP."; exit 1; }
+          test -n "$PATCH_INDEX" && test -s "$PATCH_INDEX" || { echo "ERROR: v1.0.102 index.html missing from patch ZIP."; exit 1; }
           test -s "$PROJECT/settings.gradle"
           test -s "$PROJECT/build.gradle"
           test -s "$PROJECT/app/src/main/AndroidManifest.xml"
@@ -105,17 +105,17 @@ jobs:
           missing = [x for x in required if x not in index]
           if missing:
             raise SystemExit("ERROR: Required app features missing: " + ", ".join(missing))
-          if "const SQ_APP_VERSION_CODE = 101;" not in index:
-            raise SystemExit("ERROR: Runtime marker is not version 101.")
+          if "const SQ_APP_VERSION_CODE = 102;" not in index:
+            raise SystemExit("ERROR: Runtime marker is not version 102.")
           if not re.search(r"\bversionCode\s+93\b", gradle) or not re.search(r"\bversionName\s+['\"]1\.0\.93['\"]", gradle):
             raise SystemExit("ERROR: Expected the original v1.0.93 Android source before version bump.")
-          print("Original projects, payment gate, orientation, quantities, concrete 2D/3D and v101 helpers verified.")
+          print("Original projects, payment gate, orientation, quantities, concrete 2D/3D and v102 DWG block-record and axis-end-label helpers verified.")
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Original logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.101
+      - name: Set Android release version to 1.0.102
         shell: bash
         run: |
           set -euo pipefail
@@ -124,15 +124,15 @@ jobs:
           import re, sys
           p = Path(sys.argv[1])
           text = p.read_text(encoding='utf-8')
-          text, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>101', text, count=1)
-          text, n_name = re.subn(r'(?m)(\bversionName\s+)(["\'])1\.0\.93\2', "\\g<1>'1.0.101'", text, count=1)
+          text, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>102', text, count=1)
+          text, n_name = re.subn(r'(?m)(\bversionName\s+)(["\'])1\.0\.93\2', "\\g<1>'1.0.102'", text, count=1)
           if n_code != 1 or n_name != 1:
             raise SystemExit(f"ERROR: Version edits failed (code={n_code}, name={n_name}).")
           p.write_text(text, encoding='utf-8')
           PY
-          grep -Eq 'versionCode[[:space:]]+101([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.101['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 101;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+102([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.102['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 102;' "$INDEX_PATH"
 
       - name: Validate inline JavaScript syntax
         shell: bash
@@ -149,17 +149,17 @@ jobs:
           PY
           node --check "$RUNNER_TEMP/surveyquant-inline.js"
 
-      - name: Smoke-test DWG block axes, intersections, closed polylines and 3D solids
+      - name: Test actual LibreDWG blockRecords, labelled axis intersections and concrete outputs
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/test_v101.js" <<'NODE'
+          cat > "$RUNNER_TEMP/test_v102.js" <<'NODE'
           const fs=require('fs'),vm=require('vm');
           const html=fs.readFileSync(process.argv[2],'utf8');
-          function between(start,end){const a=html.indexOf(start),b=html.indexOf(end,a);if(a<0||b<0)throw new Error('Missing test slice: '+start);return html.slice(a,b);}
+          function between(start,end){const a=html.indexOf(start),b=html.indexOf(end,a+1);if(a<0||b<0)throw new Error('Missing test slice: '+start);return html.slice(a,b);}
           const helpers=[
             between('/* V1.0.101: robust closed-polyline detection','function parseDXF(text){'),
-            between('/* V1.0.101: expand DWG block references','function parseDWGDatabase(db){'),
+            between('/* V1.0.102: LibreDWG','function parseDWGDatabase(db){'),
             between('function parseDWGDatabase(db){','async function parseFile(file){'),
             between('function sqAxisTextToken(value){','function fillAxisSelects(){'),
             between('function axisIntersection(u,v){','function sqByteString(bytes){'),
@@ -167,51 +167,68 @@ jobs:
             between('function polygonAreaXY(v){','async function loadConcreteDxf(){'),
             between('function asciiLayerName(name){','function buildR12FromEntities(entities,options={}){')
           ].join('\n');
-          const c={console,p3:(x,y,z=0)=>({x:Number(x)||0,y:Number(y)||0,z:Number(z)||0}),vec:v=>v?({x:Number(v.x??v[0]??0),y:Number(v.y??v[1]??0),z:Number(v.z??v[2]??0)}):null,addCadEntity:(m,type,layer,data)=>m.entities.push({type,layer:layer||'0',...data}),entityTextValue:e=>e.text??e.string??e.value??e.content??e.textString??'',textNumber:()=>null};vm.createContext(c);vm.runInContext(helpers,c);
+          const c={console,Math,Number,String,Array,Object,Set,Map,Infinity,NaN,
+            p3:(x,y,z=0)=>({x:Number(x)||0,y:Number(y)||0,z:Number(z)||0}),
+            vec:v=>v?({x:Number(v.x??v[0]??0),y:Number(v.y??v[1]??0),z:Number(v.z??v[2]??0)}):null,
+            addCadEntity:(m,type,layer,data)=>m.entities.push({type,layer:layer||'0',...data}),
+            entityTextValue:e=>e.text??e.string??e.value??e.content??e.textString??'',textNumber:()=>null};
+          vm.createContext(c);vm.runInContext(helpers,c);
           function check(ok,msg){if(!ok)throw new Error('FAIL: '+msg);console.log('PASS: '+msg);}
-          const db={tables:{BLOCK_RECORD:{entries:[
-            {name:'AXIS_A',basePoint:{x:0,y:0,z:0},entities:[
+          // This mirrors LibreDWG's typed DwgDatabase schema: tables.blockRecords, each with name/basePoint/entities.
+          const modelEntities=[
+            {type:'INSERT',blockName:'GRID_A',layer:'GRID',insertionPoint:{x:0,y:0,z:0},xScale:1,yScale:1,zScale:1,rotation:0},
+            {type:'INSERT',blockName:'GRID_1',layer:'GRID',insertionPoint:{x:0,y:0,z:0},xScale:1,yScale:1,zScale:1,rotation:0}
+          ];
+          const db={tables:{layers:[],blockRecords:[
+            {name:'*Model_Space',basePoint:{x:0,y:0,z:0},entities:modelEntities},
+            {name:'GRID_A',basePoint:{x:0,y:0,z:0},entities:[
               {type:'LINE',layer:'0',startPoint:{x:0,y:0,z:0},endPoint:{x:100,y:0,z:0}},
-              {type:'TEXT',layer:'0',startPoint:{x:80,y:50,z:0},endPoint:{x:1,y:.2,z:0},halign:1,valign:2,text:'A',textHeight:1}]},
-            {name:'AXIS_1',basePoint:{x:0,y:0,z:0},entities:[
+              {type:'CIRCLE',layer:'0',center:{x:100,y:0,z:0},radius:4},
+              {type:'TEXT',layer:'0',position:{x:100,y:0,z:0},height:1,text:'A'}]},
+            {name:'GRID_1',basePoint:{x:0,y:0,z:0},entities:[
               {type:'LINE',layer:'0',startPoint:{x:0,y:0,z:0},endPoint:{x:0,y:100,z:0}},
-              {type:'TEXT',layer:'0',position:{x:.2,y:1,z:0},text:'1',height:1}]}
-          ]}},entities:[
-            {type:'INSERT',name:'AXIS_A',layer:'GRID',insertionPoint:{x:0,y:0,z:0},xScale:1,yScale:1,zScale:1,rotation:0},
-            {type:'INSERT',name:'AXIS_1',layer:'GRID',insertionPoint:{x:0,y:0,z:0},xScale:1,yScale:1,zScale:1,rotation:0}
-          ]};
-          const parsedDwg=c.parseDWGDatabase(db);
-          check(parsedDwg.axisEntities.some(e=>e.type==='LINE')&&parsedDwg.axisEntities.some(e=>e.type==='TEXT')&&parsedDwg.entities.every(e=>e.type==='INSERT'),'DWG parser expands reference entities without mutating original entity list');
-          const extracted=parsedDwg.axisEntities;
-          check(extracted.some(e=>e.type==='LINE')&&extracted.some(e=>e.type==='TEXT'),'DWG blocks expand into axis geometry and text');
-          const rotated=c.sqExtractDwgAxisEntities({tables:db.tables,entities:[{type:'INSERT',name:'AXIS_A',layer:'GRID',insertionPoint:{x:10,y:20,z:0},xScale:1,yScale:1,zScale:1,rotation:Math.PI/2}]});
-          const rotatedLine=rotated.find(e=>e.type==='LINE');
-          check(rotatedLine&&Math.abs(rotatedLine.a.x-10)<1e-8&&Math.abs(rotatedLine.a.y-20)<1e-8&&Math.abs(rotatedLine.b.x-10)<1e-8&&Math.abs(rotatedLine.b.y-120)<1e-8,'rotated DWG block coordinates are transformed');
-          const model={source:'DWG',entities:extracted,axisEntities:extracted},axes=c.axisCandidates(model);
-          check(axes.some(a=>a.label==='A')&&axes.some(a=>a.label==='1'),'axis bubbles A and 1 are detected');
+              {type:'CIRCLE',layer:'0',center:{x:0,y:100,z:0},radius:4},
+              {type:'TEXT',layer:'0',position:{x:0,y:100,z:0},height:1,text:'1'}]}
+          ]}};
+          const parsed=c.parseDWGDatabase(db);
+          check(parsed.entities.length===2&&parsed.entities.every(e=>e.type==='INSERT'),'model-space entities load without replacing the original drawing entities');
+          const extracted=parsed.axisEntities;
+          check(extracted.some(e=>e.type==='LINE'&&e.a&&e.b),'nested block line geometry is extracted from tables.blockRecords');
+          check(extracted.some(e=>e.type==='TEXT'&&e.text==='A')&&extracted.some(e=>e.type==='TEXT'&&e.text==='1'),'axis labels inside named blocks are extracted');
+          check(extracted.filter(e=>e.type==='CIRCLE').length===2,'axis-bubble circles are extracted');
+          const model={source:'DWG',entities:parsed.entities,axisEntities:extracted},axes=c.axisCandidates(model);
+          check(axes.some(a=>a.label==='A')&&axes.some(a=>a.label==='1'),'grid labels A and 1 are linked to long axes at their end bubbles');
           const hits=c.orientationIntersections(model,axes);
-          check(hits.some(p=>Math.hypot(p.point.x,p.point.y)<1e-6&&[p.labelA,p.labelB].includes('A')&&[p.labelA,p.labelB].includes('1')),'named A/1 intersection is calculated');
-          check(c.sqPolylineIsClosed({shape:true},[{x:0,y:0},{x:1,y:0},{x:1,y:1}]),'DXF shape flag is detected');
-          check(c.sqPolylineIsClosed({flags:1},[{x:0,y:0},{x:1,y:0},{x:1,y:1}]),'closed bit flag is detected');
+          check(hits.some(h=>Math.hypot(h.point.x,h.point.y)<1e-7&&[h.labelA,h.labelB].includes('A')&&[h.labelA,h.labelB].includes('1')),'A/1 intersection is calculated from the true axes');
+          check(c.sqAxisTextToken('PIPE')===''&&c.sqAxisTextToken('STEEL')===''&&c.sqAxisTextToken('Ø')===''&&c.sqAxisTextToken('%%c300')==='','PIPE/STEEL/diameter text cannot become an axis name');
+          const withInteriorText=extracted.concat([{type:'TEXT',layer:'GRID',position:{x:50,y:0,z:0},height:1,text:'S1'}]);
+          check(!c.axisCandidates({source:'DWG',entities:withInteriorText,axisEntities:withInteriorText}).some(a=>a.label==='S1'),'short text on the middle of a long line is not an axis label');
+          const rotated={tables:{blockRecords:[
+            {name:'*Model_Space',entities:[{type:'INSERT',blockName:'GRID_A',layer:'GRID',insertionPoint:{x:10,y:20,z:0},xScale:1,yScale:1,zScale:1,rotation:Math.PI/2}]},
+            {name:'GRID_A',basePoint:{x:0,y:0,z:0},entities:[{type:'LINE',layer:'0',startPoint:{x:0,y:0,z:0},endPoint:{x:100,y:0,z:0}},{type:'TEXT',layer:'0',position:{x:100,y:0,z:0},height:1,text:'A'}]}
+          ]}};
+          const rotatedLine=c.sqExtractDwgAxisEntities(rotated).find(e=>e.type==='LINE');
+          check(rotatedLine&&Math.abs(rotatedLine.a.x-10)<1e-7&&Math.abs(rotatedLine.a.y-20)<1e-7&&Math.abs(rotatedLine.b.x-10)<1e-7&&Math.abs(rotatedLine.b.y-120)<1e-7,'rotated block coordinates are transformed correctly');
+          check(c.sqPolylineIsClosed({shape:true},[{x:0,y:0},{x:1,y:0},{x:1,y:1}]),'DXF shape flag is treated as closed');
+          check(c.sqPolylineIsClosed({flags:1},[{x:0,y:0},{x:1,y:0},{x:1,y:1}]),'closed bit flag is respected');
           check(c.sqPolylineIsClosed({},[{x:0,y:0},{x:1,y:0},{x:1,y:1},{x:0,y:0}]),'repeated endpoint infers closure');
           check(!c.sqPolylineIsClosed({},[{x:0,y:0},{x:1,y:0},{x:1,y:1}]),'open polyline remains open without closure evidence');
           const source={polylines:[{layer:'FOUNDATION',vertices:[{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10},{x:0,y:0}]}],entities:[{type:'LWPOLYLINE',layer:'FOUNDATION',vertices:[{x:0,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10},{x:0,y:0}]}]};
           const closed=c.sqConcreteClosedPolylines(source,'FOUNDATION');
-          check(closed.length===1,'closed polygon is normalized and not counted twice');
-          check(Math.abs(c.polygonAreaXY(closed[0].vertices)-100)<1e-9,'closed polygon area is correct');
+          check(closed.length===1&&Math.abs(c.polygonAreaXY(closed[0].vertices)-100)<1e-9,'closed concrete boundary is normalized exactly once with correct area');
           const duplicateAdjacent=c.sqConcreteClosedPolylines({polylines:[{layer:'FOUNDATION',vertices:[{x:0,y:0},{x:5,y:0},{x:5,y:0},{x:10,y:0},{x:10,y:10},{x:0,y:10},{x:0,y:0}]}]},'FOUNDATION');
-          check(duplicateAdjacent.length===1&&duplicateAdjacent[0].vertices.length===5&&Math.abs(c.polygonAreaXY(duplicateAdjacent[0].vertices)-100)<1e-9,'duplicate adjacent vertices normalize without changing area');
+          check(duplicateAdjacent.length===1&&duplicateAdjacent[0].vertices.length===5&&Math.abs(c.polygonAreaXY(duplicateAdjacent[0].vertices)-100)<1e-9,'duplicate adjacent vertices do not distort closed polygon area');
           const two=[];c.sqAppendConcreteExtrusion(two,closed[0],'TEST',5,3,7,.2,'2d');
-          check(two.length===1&&two[0].closed,'2D footprint remains closed');
+          check(two.length===1&&two[0].closed,'2D concrete output retains a closed footprint');
           const three=[];c.sqAppendConcreteExtrusion(three,closed[0],'TEST',5,3,7,.2,'3d');
-          check(three.filter(e=>e.type==='3DFACE').length===8&&three.filter(e=>e.layer==='TEST_SIDES').length===4&&three.filter(e=>e.layer==='TEST_BOTTOM_FACE').length===2&&three.filter(e=>e.layer==='TEST_TOP_FACE').length===2,'3D solid has side walls and triangulated top/bottom caps');
+          check(three.filter(e=>e.type==='3DFACE').length===8&&three.filter(e=>e.layer==='TEST_SIDES').length===4&&three.filter(e=>e.layer==='TEST_BOTTOM_FACE').length===2&&three.filter(e=>e.layer==='TEST_TOP_FACE').length===2,'3D concrete output contains sides and triangulated top/bottom faces');
           const concave=[{x:0,y:0,z:0},{x:4,y:0,z:0},{x:4,y:4,z:0},{x:2,y:2,z:0},{x:0,y:4,z:0}];
-          check(c.sqTriangulatePolygon2D(concave).length===3,'concave polygons triangulate');
+          check(c.sqTriangulatePolygon2D(concave).length===3,'concave concrete polygons triangulate');
           const dxf=three.map(c.entityToR12).join('');
-          check((dxf.match(/\n0\n3DFACE\n/g)||[]).length===8,'R12 DXF serializes the 3D faces');
-          console.log('ALL V1.0.101 SMOKE TESTS PASSED');
+          check((dxf.match(/\n0\n3DFACE\n/g)||[]).length===8,'3D concrete faces serialize to DXF');
+          console.log('ALL V1.0.102 ORIENTATION + CONCRETE TESTS PASSED');
           NODE
-          node "$RUNNER_TEMP/test_v101.js" "$INDEX_PATH"
+          node "$RUNNER_TEMP/test_v102.js" "$INDEX_PATH"
 
       - name: Restore Android release signing key
         shell: bash
@@ -233,7 +250,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build signed v1.0.101 release APK
+      - name: Build signed v1.0.102 release APK
         shell: bash
         run: |
           set -euo pipefail
@@ -242,16 +259,16 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           mkdir -p "$RUNNER_TEMP/sq-release"
-          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.101_ORIENTATION_CONCRETE_FIX.apk"
-          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.101_ORIENTATION_CONCRETE_FIX.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.102_DWG_BLOCKRECORDS_AXIS_LABEL_FIX.apk"
+          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.102_DWG_BLOCKRECORDS_AXIS_LABEL_FIX.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
       - name: Upload APK and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.101-ORIENTATION-CONCRETE-FIX
+          name: SurveyQuant-v1.0.102-DWG-BLOCKRECORDS-AXIS-LABEL-FIX
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.101_ORIENTATION_CONCRETE_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.102_DWG_BLOCKRECORDS_AXIS_LABEL_FIX.apk
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
