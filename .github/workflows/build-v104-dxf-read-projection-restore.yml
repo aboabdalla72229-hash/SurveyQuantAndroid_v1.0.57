@@ -145,7 +145,8 @@ jobs:
           leftover = [x for x in removed if x in index]
           if leftover:
             raise SystemExit("ERROR: Removed orientation/fixed bottom bar has returned: " + ", ".join(leftover))
-          if not re.search(r"\\bversionCode\\s+93\\b", gradle) or not re.search(r"\\bversionName\\s+['\"]1\\.0\\.93['\"]", gradle):
+          # FIX: use single backslashes in Python regex patterns.
+          if not re.search(r"\bversionCode\s+93\b", gradle) or not re.search(r"\bversionName\s+['\"]1\.0\.93['\"]", gradle):
             raise SystemExit("ERROR: Expected original v1.0.93 Android source before version bump.")
           print("DXF parsing, levels reader, original reference-preserving projection path, concrete 2D/3D, remaining projects, and payment page verified.")
           print("Orientation project/fixed bottom payment bar remain removed.")
@@ -163,8 +164,9 @@ jobs:
           import re, sys
           p = Path(sys.argv[1])
           text = p.read_text(encoding="utf-8")
-          text, n_code = re.subn(r'(?m)(\\bversionCode\\s+)93\\b', r'\\g<1>104', text, count=1)
-          text, n_name = re.subn(r'(?m)(\\bversionName\\s+)(["\\'])1\\.0\\.93\\2', "\\\\g<1>'1.0.104'", text, count=1)
+          # FIX: correct regex escaping and replacement backreference.
+          text, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>104', text, count=1)
+          text, n_name = re.subn(r"(?m)(\bversionName\s+)([\"'])1\.0\.93\2", r"\g<1>'1.0.104'", text, count=1)
           if n_code != 1 or n_name != 1:
             raise SystemExit(f"ERROR: Version edits failed (code={n_code}, name={n_name}).")
           p.write_text(text, encoding="utf-8")
@@ -181,10 +183,11 @@ jobs:
           from pathlib import Path
           import re, sys
           html = Path(sys.argv[1]).read_text(encoding="utf-8")
-          scripts = re.findall(r'<script(?:\\s[^>]*)?>(.*?)</script>', html, re.I | re.S)
+          # FIX: correctly match optional attributes on script tags.
+          scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, re.I | re.S)
           if not scripts:
             raise SystemExit("ERROR: No inline JavaScript found.")
-          Path(sys.argv[2]).write_text('\\n'.join(scripts), encoding="utf-8")
+          Path(sys.argv[2]).write_text('\n'.join(scripts), encoding="utf-8")
           PY
           node --check "$RUNNER_TEMP/surveyquant-inline.js"
 
