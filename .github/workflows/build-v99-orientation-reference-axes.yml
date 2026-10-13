@@ -1,19 +1,19 @@
-name: Build SurveyQuant v1.0.99 - Reference Drawing Axis Parsing
+name: Build SurveyQuant v1.0.100 - Reference Axis Text Anchors
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-      - "SurveyQuant_v1.0.99_REFERENCE_AXIS_READ_FIX_PATCH.zip"
-      - ".github/workflows/build-v99-orientation-reference-axes.yml"
+      - "SurveyQuant_v1.0.100_REFERENCE_AXIS_READ_FIX_PATCH.zip"
+      - ".github/workflows/build-v100-orientation-axis-text-anchor.yml"
 
 permissions:
   contents: read
 
 env:
   SOURCE_NAME: SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip
-  PATCH_NAME: SurveyQuant_v1.0.99_REFERENCE_AXIS_READ_FIX_PATCH.zip
+  PATCH_NAME: SurveyQuant_v1.0.100_REFERENCE_AXIS_READ_FIX_PATCH.zip
 
 jobs:
   build:
@@ -50,7 +50,7 @@ jobs:
           set -euo pipefail
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extract v1.0.93 source and apply the reference-axis patch
+      - name: Extract v1.0.93 source and apply v1.0.100 reference-axis patch
         shell: bash
         run: |
           set -euo pipefail
@@ -92,6 +92,8 @@ jobs:
               "function buildProfileOutputEntities",
               "function sqCompareSurfaceTriangles",
               "function sqExtractDxfAxisEntities",
+              "function sqRawDxfTextAnchor",
+              "V1.0.100: reliable reference-axis labels",
               "function sqRawDxfBlocks",
               "function sqRawDxfGroupPolylines",
               "function axisCandidates",
@@ -109,17 +111,17 @@ jobs:
           missing = [needle for needle in required if needle not in index]
           if missing:
               raise SystemExit("ERROR: Required app features missing: " + ", ".join(missing))
-          if "const SQ_APP_VERSION_CODE = 99;" not in index:
-              raise SystemExit("ERROR: Runtime app-version marker is not 99.")
+          if "const SQ_APP_VERSION_CODE = 100;" not in index:
+              raise SystemExit("ERROR: Runtime app-version marker is not 100.")
           if not re.search(r"\bversionCode\s+93\b", gradle) or not re.search(r"\bversionName\s+['\"]1\.0\.93['\"]", gradle):
               raise SystemExit("ERROR: Expected v1.0.93 source baseline before version bump.")
-          print("Profile, two-layer quantities, orientation, payment gate and original project cards verified.")
+          print("Profile, two-layer quantities, reference-axis repair, payment gate and original project cards verified.")
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Existing app-logo assets differ."; exit 1; }
 
-      - name: Set app version to 1.0.99
+      - name: Set app version to 1.0.100
         shell: bash
         run: |
           set -euo pipefail
@@ -129,15 +131,15 @@ jobs:
           import sys
           p = Path(sys.argv[1])
           text = p.read_text(encoding="utf-8")
-          text, code_edits = re.subn(r"(\bversionCode\s+)93\b", r"\g<1>99", text, count=1)
-          text, name_edits = re.subn(r"(\bversionName\s+)(['\"])1\.0\.93\2", "\\g<1>'1.0.99'", text, count=1)
+          text, code_edits = re.subn(r"(\bversionCode\s+)93\b", r"\g<1>100", text, count=1)
+          text, name_edits = re.subn(r"(\bversionName\s+)(['\"])1\.0\.93\2", "\\g<1>'1.0.100'", text, count=1)
           if code_edits != 1 or name_edits != 1:
               raise SystemExit(f"ERROR: Version update failed (versionCode={code_edits}, versionName={name_edits}).")
           p.write_text(text, encoding="utf-8")
           PY
-          grep -Eq 'versionCode[[:space:]]+99([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.99['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 99;' "$PROJECT_DIR/app/src/main/assets/index.html"
+          grep -Eq 'versionCode[[:space:]]+100([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.100['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 100;' "$PROJECT_DIR/app/src/main/assets/index.html"
 
       - name: Validate inline JavaScript syntax
         shell: bash
@@ -163,7 +165,7 @@ jobs:
           const fs = require('fs');
           const vm = require('vm');
           const html = fs.readFileSync(process.argv[2], 'utf8');
-          const start = html.indexOf('/* V1.0.99: read axis geometry');
+          const start = html.indexOf('/* V1.0.100: reliable reference-axis labels');
           const end = html.indexOf('function sqByteString(bytes){', start);
           if (start < 0 || end < 0) throw new Error('Reference-axis parser marker missing.');
           const context = { console, Math, Number, String, Array, Object, Set, Map };
@@ -174,7 +176,7 @@ jobs:
           add(0,'SECTION'); add(2,'HEADER'); add(0,'ENDSEC');
           add(0,'SECTION'); add(2,'BLOCKS');
           add(0,'BLOCK'); add(8,'0'); add(2,'LABEL_A'); add(10,0); add(20,0); add(30,0);
-          add(0,'MTEXT'); add(8,'0'); add(10,0); add(20,0); add(30,0); add(40,0.5); add(1,'A'); add(0,'ENDBLK'); add(8,'0');
+          add(0,'TEXT'); add(8,'0'); add(10,0); add(20,0); add(30,0); add(11,8); add(21,0); add(31,0); add(40,0.5); add(72,1); add(1,'A'); add(0,'ENDBLK'); add(8,'0');
           add(0,'BLOCK'); add(8,'0'); add(2,'LABEL_1'); add(10,0); add(20,0); add(30,0);
           add(0,'TEXT'); add(8,'0'); add(10,0); add(20,0); add(30,0); add(40,0.5); add(1,'1'); add(0,'ENDBLK'); add(8,'0'); add(0,'ENDSEC');
           add(0,'SECTION'); add(2,'ENTITIES');
@@ -187,7 +189,7 @@ jobs:
           const result = vm.runInContext(`(() => { const es=sqExtractDxfAxisEntities(testDxf); const m={source:'DXF',entities:es,axisEntities:es}; const a=axisCandidates(m); return {names:a.filter(x=>x.label).map(x=>x.label),hits:orientationIntersections(m,a)}; })()`, context);
           if (!result.names.includes('A') || !result.names.includes('1')) throw new Error('Axis labels A and 1 were not both recognized.');
           if (!result.hits.some(x => Math.hypot(x.point.x, x.point.y) < 1e-6 && [x.labelA,x.labelB].includes('A') && [x.labelA,x.labelB].includes('1'))) throw new Error('Intersection of axes A and 1 was not recognized.');
-          console.log('Reference-axis smoke test passed: XLINE + INSERT/BLOCK labels + named intersection.');
+          console.log('Reference-axis smoke test passed: XLINE + justified TEXT group 11 + INSERT/BLOCK labels + named intersection.');
           NODE
 
       - name: Restore release signing key
@@ -219,16 +221,16 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           mkdir -p "$RUNNER_TEMP/sq-release"
-          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.99_REFERENCE_AXIS_READ_FIX.apk"
-          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.99_REFERENCE_AXIS_READ_FIX.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          cp "$APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.100_REFERENCE_AXIS_READ_FIX.apk"
+          sha256sum "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.100_REFERENCE_AXIS_READ_FIX.apk" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
       - name: Upload APK and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.99-REFERENCE-AXIS-READ-FIX
+          name: SurveyQuant-v1.0.100-REFERENCE-AXIS-READ-FIX
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.99_REFERENCE_AXIS_READ_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.100_REFERENCE_AXIS_READ_FIX.apk
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
