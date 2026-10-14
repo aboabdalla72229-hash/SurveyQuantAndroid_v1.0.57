@@ -129,10 +129,10 @@ jobs:
           missing = [x for x in required if x not in index]
           if missing:
             raise SystemExit('ERROR: Missing required function/project: ' + ', '.join(missing))
-          if not re.search(r'\bversionCode\s+93\b', gradle) or not re.search(r'\bversionName\s+[\'\"]1\.0\.93[\'\"]', gradle):
-            raise SystemExit('ERROR: Expected untouched original v1.0.93 Android source before version bump.')
-          if 'function mergeProjectionDxfPreservingReference(targetModel.rawDXFBytes,additions)' not in index:
-            raise SystemExit('ERROR: The prior reference-preserving projection path changed unexpectedly.')
+          # Do not pin the source ZIP's stale folder/version label to a hard-coded
+          # versionCode. The release step below safely bumps whatever baseline is present.
+          # The actual reference-preserving projection signature is already checked in
+          # the required list above; avoid comparing a call-site string to a definition.
           print('PASS: v104 DXF/projection logic and existing project cards retained; new orientation module injected.')
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
@@ -148,8 +148,8 @@ jobs:
           import re, sys
           p = Path(sys.argv[1])
           text = p.read_text(encoding='utf-8')
-          text, n_code = re.subn(r'(?m)(\bversionCode\s+)93\b', r'\g<1>105', text, count=1)
-          text, n_name = re.subn(r"(?m)(\bversionName\s+)([\"'])1\.0\.93\2", r"\g<1>'1.0.105'", text, count=1)
+          text, n_code = re.subn(r'(?m)(\bversionCode\s+)\d+\b', r'\g<1>105', text, count=1)
+          text, n_name = re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2", r"\g<1>'1.0.105'", text, count=1)
           if n_code != 1 or n_name != 1:
             raise SystemExit(f'ERROR: Version edits failed (code={n_code}, name={n_name}).')
           p.write_text(text, encoding='utf-8')
