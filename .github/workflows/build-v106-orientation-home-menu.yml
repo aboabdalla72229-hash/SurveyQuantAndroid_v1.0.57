@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.105 - Two Point CAD Orientation
+name: Build SurveyQuant v1.0.106 - Orientation Home Menu Fix
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v105-orientation-two-point.yml"
+      - "SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v106-orientation-home-menu.yml"
 
 permissions:
   contents: read
@@ -47,16 +47,16 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y unzip zip
 
-      - name: Unpack original source, v104 baseline and the two-point module
+      - name: Unpack original source, v104 baseline and home-menu fix
         shell: bash
         run: |
           set -euo pipefail
           SOURCE_NAME="SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
           BASE_PATCH_NAME="SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
-          MODULE_PACKAGE="SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_PATCH_PACKAGE.zip"
-          test -s "$SOURCE_NAME" || { echo "ERROR: Missing original Android source: $SOURCE_NAME"; exit 1; }
+          MODULE_PACKAGE="SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+          test -s "$SOURCE_NAME" || { echo "ERROR: Missing Android source: $SOURCE_NAME"; exit 1; }
           test -s "$BASE_PATCH_NAME" || { echo "ERROR: Missing v104 baseline patch: $BASE_PATCH_NAME"; exit 1; }
-          test -s "$MODULE_PACKAGE" || { echo "ERROR: Upload the v105 orientation patch package to the repository root."; exit 1; }
+          test -s "$MODULE_PACKAGE" || { echo "ERROR: Upload the v106 orientation home-menu patch package to the repository root."; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-orientation-patch"
           mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-orientation-patch"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
@@ -64,13 +64,13 @@ jobs:
           unzip -q "$MODULE_PACKAGE" -d "$RUNNER_TEMP/sq-orientation-patch"
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'index.html' -print -quit)"
-          MODULE_JS="$(find "$RUNNER_TEMP/sq-orientation-patch" -type f -name 'SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_MODULE.js' -print -quit)"
-          TEST_JS="$(find "$RUNNER_TEMP/sq-orientation-patch" -type f -name 'SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_TEST.js' -print -quit)"
+          MODULE_JS="$(find "$RUNNER_TEMP/sq-orientation-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js' -print -quit)"
+          TEST_JS="$(find "$RUNNER_TEMP/sq-orientation-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js' -print -quit)"
           DXF_TEST="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'dxf-parser-restoration-test.js' -print -quit)"
           test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
           test -s "$PATCH_INDEX" || { echo "ERROR: v104 index.html is missing."; exit 1; }
-          test -s "$MODULE_JS" || { echo "ERROR: Two-point orientation module is missing from the package."; exit 1; }
-          test -s "$TEST_JS" || { echo "ERROR: Two-point orientation regression test is missing from the package."; exit 1; }
+          test -s "$MODULE_JS" || { echo "ERROR: v106 orientation module is missing from the package."; exit 1; }
+          test -s "$TEST_JS" || { echo "ERROR: v106 home-menu regression test is missing from the package."; exit 1; }
           test -s "$DXF_TEST" || { echo "ERROR: Existing v104 DXF regression test is missing."; exit 1; }
           test -s "$PROJECT/settings.gradle"
           test -s "$PROJECT/build.gradle"
@@ -85,13 +85,13 @@ jobs:
           module = module_path.read_text(encoding='utf-8')
           marker = '<script id="sq-orientation-module">'
           if marker in html:
-              raise SystemExit('ERROR: v105 orientation module appears to have been injected already.')
+              raise SystemExit('ERROR: v106 orientation module appears to have been injected already.')
           if '</body>' not in html:
               raise SystemExit('ERROR: Could not locate body end in index.html.')
           html = html.replace('</body>', marker + '\n' + module + '\n</script>\n</body>', 1)
-          html = html.replace('const SQ_APP_VERSION_CODE = 104;', 'const SQ_APP_VERSION_CODE = 105;')
-          if 'const SQ_APP_VERSION_CODE = 105;' not in html:
-              raise SystemExit('ERROR: Failed to set HTML app version code to 105.')
+          html = html.replace('const SQ_APP_VERSION_CODE = 104;', 'const SQ_APP_VERSION_CODE = 106;')
+          if 'const SQ_APP_VERSION_CODE = 106;' not in html:
+              raise SystemExit('ERROR: Failed to set HTML app version code to 106.')
           html_path.write_text(html, encoding='utf-8')
           PY
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
@@ -100,15 +100,14 @@ jobs:
           echo "MODULE_JS=$MODULE_JS" >> "$GITHUB_ENV"
           echo "TEST_JS=$TEST_JS" >> "$GITHUB_ENV"
           echo "DXF_TEST=$DXF_TEST" >> "$GITHUB_ENV"
-          echo "PATCH_DIR=$RUNNER_TEMP/sq-orientation-patch" >> "$GITHUB_ENV"
 
-      - name: Verify existing projects and two-point orientation are both present
+      - name: Verify legacy projects and orientation navigation
         shell: bash
         run: |
           set -euo pipefail
           python3 - "$INDEX_PATH" "$PROJECT_DIR/app/build.gradle" <<'PY'
           from pathlib import Path
-          import re, sys
+          import sys
           index = Path(sys.argv[1]).read_text(encoding='utf-8')
           gradle = Path(sys.argv[2]).read_text(encoding='utf-8')
           required = [
@@ -120,27 +119,31 @@ jobs:
             'id="roadCard"',
             'id="dropFilesCard"',
             'id="paymentCard"',
-            'const SQ_APP_VERSION_CODE = 105;',
+            'const SQ_APP_VERSION_CODE = 106;',
             'id="sq-orientation-module"',
             "card.id = 'sqOrientationCard'",
+            'sqOrientationMenuButton',
+            "window.openProjectPage('sqOrientationCard')",
             'window.sqOpenOrientationProject',
             'function sqOriTransformBytes(input, transform)',
             'لم يتم إخراج الملف لأن به عناصر تحتاج محرك CAD أصليًا',
           ]
           missing = [x for x in required if x not in index]
           if missing:
-            raise SystemExit('ERROR: Missing required function/project: ' + ', '.join(missing))
-          # Do not pin the source ZIP's stale folder/version label to a hard-coded
-          # versionCode. The release step below safely bumps whatever baseline is present.
-          # The actual reference-preserving projection signature is already checked in
-          # the required list above; avoid comparing a call-site string to a definition.
-          print('PASS: v104 DXF/projection logic and existing project cards retained; new orientation module injected.')
+            raise SystemExit('ERROR: Missing required project/functionality: ' + ', '.join(missing))
+          if 'function openProjectPage(id)' not in index or "classList.add('active-project')" not in index:
+            raise SystemExit('ERROR: Existing project navigation cannot activate the orientation card.')
+          if 'project-card{display:none' not in index.replace(' ', ''):
+            raise SystemExit('ERROR: Project-card visibility behavior changed unexpectedly.')
+          if not gradle:
+            raise SystemExit('ERROR: Gradle configuration is empty.')
+          print('PASS: Existing project cards and DXF logic are retained; orientation mounts a home-menu route and opens its active project card.')
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.105
+      - name: Set Android release version to 1.0.106
         shell: bash
         run: |
           set -euo pipefail
@@ -149,24 +152,22 @@ jobs:
           import re, sys
           p = Path(sys.argv[1])
           text = p.read_text(encoding='utf-8')
-          text, n_code = re.subn(r'(?m)(\bversionCode\s+)\d+\b', r'\g<1>105', text, count=1)
-          text, n_name = re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2", r"\g<1>'1.0.105'", text, count=1)
+          text, n_code = re.subn(r'(?m)(\bversionCode\s+)\d+\b', r'\g<1>106', text, count=1)
+          text, n_name = re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2", r"\g<1>'1.0.106'", text, count=1)
           if n_code != 1 or n_name != 1:
             raise SystemExit(f'ERROR: Version edits failed (code={n_code}, name={n_name}).')
           p.write_text(text, encoding='utf-8')
           PY
-          grep -Eq 'versionCode[[:space:]]+105([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.105['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 105;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+106([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.106['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 106;' "$INDEX_PATH"
 
-      - name: Validate JavaScript syntax and orientation regression tests
+      - name: Run JavaScript syntax, home-menu integration, and DXF regression tests
         shell: bash
         run: |
           set -euo pipefail
           node --check "$MODULE_JS"
           node "$TEST_JS" "$MODULE_JS"
-          # This regression test explicitly checks the untouched v104 baseline marker.
-          # Test the original v104 patch, not the app index already upgraded to v105.
           node "$DXF_TEST" "$BASE_PATCH_INDEX"
           python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
@@ -209,31 +210,29 @@ jobs:
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           RELEASE="$RUNNER_TEMP/sq-release"
           mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT.apk"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk"
           cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
-          cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_MODULE.js"
-          cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_TEST.js"
+          cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
+          cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
           cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
           cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.105: Two Point CAD Orientation
-          This source patch is based on the repository's v1.0.104 DXF/projection restoration HTML.
-          The module adds a separate project card and performs a similarity transform using two matching points.
-          It writes a new text-DXF file and keeps the original input and reference untouched.
-          To protect data, this implementation stops on unsupported/custom/CAD-native entities.
-          The currently bundled LibreDWG module is read-only for this app; native DWG output and full Civil 3D proxy-object preservation are not claimed.
+          SurveyQuant v1.0.106: Orientation Home Menu Fix
+          This patch adds the two-point CAD orientation project to the home project menu and routes the menu click through the existing openProjectPage navigation. It preserves the other project cards and the existing v104 DXF/projection baseline.
+          Regression tests cover two-point transforms, DXF text-byte and unsupported-object safety, and the home-menu click activating sqOrientationCard.
+          The current module writes a new text DXF for supported 2D entities. It does not write native DWG and does not claim preservation of Civil 3D proxy objects.
           TXT
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT.apk" "$RELEASE/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
           cat "$RELEASE/SHA256SUMS.txt"
           echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Upload APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.105-ORIENTATION-TWO-POINT
+          name: SurveyQuant-v1.0.106-ORIENTATION-HOME-MENU
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.105_ORIENTATION_TWO_POINT_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
