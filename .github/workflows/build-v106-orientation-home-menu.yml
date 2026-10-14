@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.106 - Orientation Home Menu Fix
+name: Build SurveyQuant v1.0.106 - Two Point Orientation DWG Input Fix
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v106-orientation-home-menu.yml"
+      - "SurveyQuant_v1.0.106_ORIENTATION_DWG_CONVERSION_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v106-orientation-dwg-support.yml"
 
 permissions:
   contents: read
@@ -53,10 +53,10 @@ jobs:
           set -euo pipefail
           SOURCE_NAME="SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
           BASE_PATCH_NAME="SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
-          MODULE_PACKAGE="SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+          MODULE_PACKAGE="SurveyQuant_v1.0.106_ORIENTATION_DWG_CONVERSION_PATCH_PACKAGE.zip"
           test -s "$SOURCE_NAME" || { echo "ERROR: Missing Android source: $SOURCE_NAME"; exit 1; }
           test -s "$BASE_PATCH_NAME" || { echo "ERROR: Missing v104 baseline patch: $BASE_PATCH_NAME"; exit 1; }
-          test -s "$MODULE_PACKAGE" || { echo "ERROR: Upload the v106 orientation home-menu patch package to the repository root."; exit 1; }
+          test -s "$MODULE_PACKAGE" || { echo "ERROR: Upload the v1.0.106 DWG-conversion orientation package to the repository root."; exit 1; }
           rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-orientation-patch"
           mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-orientation-patch"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
@@ -126,6 +126,9 @@ jobs:
             "window.openProjectPage('sqOrientationCard')",
             'window.sqOpenOrientationProject',
             'function sqOriTransformBytes(input, transform)',
+            'async function sqOriConvertTargetToDxf(targetFile, loaderOverride)',
+            'dwg_write_dxf(buffer)',
+            'اللوحة المطلوب توجيهها (DWG / DXF)',
             'لم يتم إخراج الملف لأن به عناصر تحتاج محرك CAD أصليًا',
           ]
           missing = [x for x in required if x not in index]
@@ -162,7 +165,7 @@ jobs:
           grep -Eq "versionName[[:space:]]+['\"]1\.0\.106['\"]" "$PROJECT_DIR/app/build.gradle"
           grep -Fq 'const SQ_APP_VERSION_CODE = 106;' "$INDEX_PATH"
 
-      - name: Run JavaScript syntax, home-menu integration, and DXF regression tests
+      - name: Run JavaScript syntax, DWG conversion, home-menu integration, and DXF regression tests
         shell: bash
         run: |
           set -euo pipefail
@@ -210,29 +213,29 @@ jobs:
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           RELEASE="$RUNNER_TEMP/sq-release"
           mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT.apk"
           cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
           cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
           cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
           cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
           cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.106: Orientation Home Menu Fix
-          This patch adds the two-point CAD orientation project to the home project menu and routes the menu click through the existing openProjectPage navigation. It preserves the other project cards and the existing v104 DXF/projection baseline.
-          Regression tests cover two-point transforms, DXF text-byte and unsupported-object safety, and the home-menu click activating sqOrientationCard.
-          The current module writes a new text DXF for supported 2D entities. It does not write native DWG and does not claim preservation of Civil 3D proxy objects.
+          SurveyQuant v1.0.106: Two-Point Orientation + DWG Input Support
+          This patch adds a home-menu route for two-point CAD orientation, then converts a temporary DWG copy to DXF using the existing LibreDWG Web conversion method before applying the two-point transform. The original input/reference drawings are never overwritten.
+          Regression tests cover two-point transforms, DXF text-byte and unsupported-object safety, the home-menu click activating sqOrientationCard, and the DWG-to-DXF conversion pipeline.
+          The output is DXF. The transform still refuses to export if custom or native CAD objects cannot be preserved safely, rather than silently dropping them.
           TXT
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT.apk" "$RELEASE/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
           cat "$RELEASE/SHA256SUMS.txt"
           echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Upload APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.106-ORIENTATION-HOME-MENU
+          name: SurveyQuant-v1.0.106-ORIENTATION-DWG-SUPPORT
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.106_ORIENTATION_DWG_SUPPORT_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
