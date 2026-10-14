@@ -96,6 +96,7 @@ jobs:
           PY
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
           echo "INDEX_PATH=$PROJECT/app/src/main/assets/index.html" >> "$GITHUB_ENV"
+          echo "BASE_PATCH_INDEX=$PATCH_INDEX" >> "$GITHUB_ENV"
           echo "MODULE_JS=$MODULE_JS" >> "$GITHUB_ENV"
           echo "TEST_JS=$TEST_JS" >> "$GITHUB_ENV"
           echo "DXF_TEST=$DXF_TEST" >> "$GITHUB_ENV"
@@ -164,7 +165,9 @@ jobs:
           set -euo pipefail
           node --check "$MODULE_JS"
           node "$TEST_JS" "$MODULE_JS"
-          node "$DXF_TEST" "$INDEX_PATH"
+          # This regression test explicitly checks the untouched v104 baseline marker.
+          # Test the original v104 patch, not the app index already upgraded to v105.
+          node "$DXF_TEST" "$BASE_PATCH_INDEX"
           python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
           import re, sys
