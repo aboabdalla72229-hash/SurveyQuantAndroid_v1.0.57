@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.107 - Orientation Axis Reader Fix
+name: Build SurveyQuant v1.0.108 - Manual Two-Point Orientation + Output Fix
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v107-orientation-axis-reader-fix.yml"
+      - "SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v108-orientation-manual-points-fix.yml"
 
 permissions:
   contents: read
@@ -55,22 +55,27 @@ jobs:
           BASE_PATCH_NAME="SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
           MENU_PACKAGE="SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
           AXIS_PACKAGE="SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
+          MANUAL_PACKAGE="SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_PATCH_PACKAGE.zip"
           test -s "$SOURCE_NAME" || { echo "ERROR: Missing Android source: $SOURCE_NAME"; exit 1; }
           test -s "$BASE_PATCH_NAME" || { echo "ERROR: Missing v104 baseline patch: $BASE_PATCH_NAME"; exit 1; }
           test -s "$MENU_PACKAGE" || { echo "ERROR: Missing v106 home-menu module package: $MENU_PACKAGE"; exit 1; }
           test -s "$AXIS_PACKAGE" || { echo "ERROR: Upload the v1.0.107 axis-reader package to the repository root."; exit 1; }
-          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch"
-          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch"
+          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch"
+          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
           unzip -q "$BASE_PATCH_NAME" -d "$RUNNER_TEMP/sq-base-patch"
           unzip -q "$MENU_PACKAGE" -d "$RUNNER_TEMP/sq-menu-patch"
           unzip -q "$AXIS_PACKAGE" -d "$RUNNER_TEMP/sq-axis-patch"
+          test -s "$MANUAL_PACKAGE" || { echo "ERROR: Upload the v1.0.108 manual-points patch package to the repository root."; exit 1; }
+          unzip -q "$MANUAL_PACKAGE" -d "$RUNNER_TEMP/sq-manual-patch"
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'index.html' -print -quit)"
           MODULE_JS="$(find "$RUNNER_TEMP/sq-menu-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js' -print -quit)"
           TEST_JS="$(find "$RUNNER_TEMP/sq-menu-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js' -print -quit)"
           AXIS_MODULE="$(find "$RUNNER_TEMP/sq-axis-patch" -type f -name 'SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH.js' -print -quit)"
           AXIS_TEST="$(find "$RUNNER_TEMP/sq-axis-patch" -type f -name 'SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_TEST.js' -print -quit)"
+          MANUAL_MODULE="$(find "$RUNNER_TEMP/sq-manual-patch" -type f -name 'SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_MODULE.js' -print -quit)"
+          MANUAL_TEST="$(find "$RUNNER_TEMP/sq-manual-patch" -type f -name 'SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_TEST.js' -print -quit)"
           DXF_TEST="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'dxf-parser-restoration-test.js' -print -quit)"
           test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
           test -s "$PATCH_INDEX" || { echo "ERROR: v104 index.html is missing."; exit 1; }
@@ -78,29 +83,33 @@ jobs:
           test -s "$TEST_JS" || { echo "ERROR: v106 home-menu regression test is missing."; exit 1; }
           test -s "$AXIS_MODULE" || { echo "ERROR: v107 axis-reader module is missing."; exit 1; }
           test -s "$AXIS_TEST" || { echo "ERROR: v107 axis-reader regression test is missing."; exit 1; }
+          test -s "$MANUAL_MODULE" || { echo "ERROR: v108 manual-points module is missing."; exit 1; }
+          test -s "$MANUAL_TEST" || { echo "ERROR: v108 manual-points test is missing."; exit 1; }
           test -s "$DXF_TEST" || { echo "ERROR: Existing v104 DXF regression test is missing."; exit 1; }
           test -s "$PROJECT/settings.gradle"
           test -s "$PROJECT/build.gradle"
           test -s "$PROJECT/app/src/main/AndroidManifest.xml"
           mkdir -p "$PROJECT/app/src/main/assets"
           cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
-          python3 - "$PROJECT/app/src/main/assets/index.html" "$MODULE_JS" "$AXIS_MODULE" <<'PY'
+          python3 - "$PROJECT/app/src/main/assets/index.html" "$MODULE_JS" "$AXIS_MODULE" "$MANUAL_MODULE" <<'PY'
           from pathlib import Path
           import sys
-          html_path,module_path,axis_path=map(Path,sys.argv[1:])
+          html_path,module_path,axis_path,manual_path=map(Path,sys.argv[1:])
           html=html_path.read_text(encoding='utf-8')
           module=module_path.read_text(encoding='utf-8')
           axis=axis_path.read_text(encoding='utf-8')
+          manual=manual_path.read_text(encoding='utf-8')
           marker='<script id="sq-orientation-module">'
           axis_marker='<script id="sq-orientation-axis-reader-module">'
-          if marker in html or axis_marker in html:
+          manual_marker='<script id="sq-orientation-manual-points-module">'
+          if marker in html or axis_marker in html or manual_marker in html:
             raise SystemExit('ERROR: Orientation scripts were already injected into the baseline.')
           if '</body>' not in html:
             raise SystemExit('ERROR: Could not locate body end in index.html.')
-          html=html.replace('</body>', marker+'\n'+module+'\n</script>\n'+axis_marker+'\n'+axis+'\n</script>\n</body>',1)
-          html=html.replace('const SQ_APP_VERSION_CODE = 104;','const SQ_APP_VERSION_CODE = 107;')
-          if 'const SQ_APP_VERSION_CODE = 107;' not in html:
-            raise SystemExit('ERROR: Failed to set HTML app version code to 107.')
+          html=html.replace('</body>', marker+'\n'+module+'\n</script>\n'+axis_marker+'\n'+axis+'\n</script>\n'+manual_marker+'\n'+manual+'\n</script>\n</body>',1)
+          html=html.replace('const SQ_APP_VERSION_CODE = 104;','const SQ_APP_VERSION_CODE = 108;')
+          if 'const SQ_APP_VERSION_CODE = 108;' not in html:
+            raise SystemExit('ERROR: Failed to set HTML app version code to 108.')
           html_path.write_text(html,encoding='utf-8')
           PY
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
@@ -110,9 +119,11 @@ jobs:
           echo "TEST_JS=$TEST_JS" >> "$GITHUB_ENV"
           echo "AXIS_MODULE=$AXIS_MODULE" >> "$GITHUB_ENV"
           echo "AXIS_TEST=$AXIS_TEST" >> "$GITHUB_ENV"
+          echo "MANUAL_MODULE=$MANUAL_MODULE" >> "$GITHUB_ENV"
+          echo "MANUAL_TEST=$MANUAL_TEST" >> "$GITHUB_ENV"
           echo "DXF_TEST=$DXF_TEST" >> "$GITHUB_ENV"
 
-      - name: Verify existing projects, menu navigation, and axis reader integration
+      - name: Verify existing projects, menu navigation, and manual two-point orientation integration
         shell: bash
         run: |
           set -euo pipefail
@@ -126,11 +137,12 @@ jobs:
             'function mergeProjectionDxfPreservingReference(rawBytes, additions)',
             'async function dropFilesMerge(){',
             'id="project1Card"','id="profileCard"','id="roadCard"','id="dropFilesCard"','id="paymentCard"',
-            'const SQ_APP_VERSION_CODE = 107;',
-            'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"',
+            'const SQ_APP_VERSION_CODE = 108;',
+            'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"',
             "card.id = 'sqOrientationCard'",'sqOrientationMenuButton',
             "window.openProjectPage('sqOrientationCard')",'window.sqOpenOrientationProject',
             'sqOriReadAxesBtn','function sqOriDetectIntersections(model)',
+            'sq108Canvas','sq108P1X','sq108P2Y','window.safeDownloadFile(result.bytes',
             'async function sqOriConvertTargetToDxf(targetFile, loaderOverride)',
             'lib.dwg_write_dxf(bytes.buffer)','window.parseFile(file)',
           ]
@@ -141,13 +153,13 @@ jobs:
           if 'project-card{display:none' not in index.replace(' ',''):
             raise SystemExit('ERROR: Existing project-card visibility rule changed unexpectedly.')
           if not gradle: raise SystemExit('ERROR: Gradle configuration is empty.')
-          print('PASS: baseline projects, original DXF logic, orientation menu, and v107 axis reader are present.')
+          print('PASS: existing projects/DXF logic remain; v106/v107 modules and v108 manual-pick workflow are integrated.')
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.107
+      - name: Set Android release version to 1.0.108
         shell: bash
         run: |
           set -euo pipefail
@@ -155,16 +167,16 @@ jobs:
           from pathlib import Path
           import re,sys
           p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
-          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>107',s,count=1)
-          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.107'",s,count=1)
+          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>108',s,count=1)
+          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.108'",s,count=1)
           if nc!=1 or nn!=1: raise SystemExit(f'ERROR: Version edits failed (code={nc}, name={nn}).')
           p.write_text(s,encoding='utf-8')
           PY
-          grep -Eq 'versionCode[[:space:]]+107([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.107['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 107;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+108([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.108['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 108;' "$INDEX_PATH"
 
-      - name: Run JavaScript syntax and regression tests
+      - name: Run JavaScript syntax, manual-point transform and download integration tests
         shell: bash
         run: |
           set -euo pipefail
@@ -172,6 +184,8 @@ jobs:
           node "$TEST_JS" "$MODULE_JS"
           node --check "$AXIS_MODULE"
           node "$AXIS_TEST" "$AXIS_MODULE"
+          node --check "$MANUAL_MODULE"
+          node "$MANUAL_TEST" "$MANUAL_MODULE" "$MODULE_JS"
           node "$DXF_TEST" "$PATCH_INDEX"
           python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
@@ -213,29 +227,31 @@ jobs:
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           RELEASE="$RUNNER_TEMP/sq-release"
           mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX.apk"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_FIX.apk"
           cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
           cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
           cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
           cp "$AXIS_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH.js"
           cp "$AXIS_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_TEST.js"
+          cp "$MANUAL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_MODULE.js"
+          cp "$MANUAL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.108_ORIENTATION_MANUAL_POINTS_TEST.js"
           cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
           cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.107 - Orientation Axis Reader Fix
-          Adds an automatic reader for labeled axis-line intersections in both reference and target CAD boards. It selects two far-apart shared grid intersections and fills the coordinate fields. Input drawings are not overwritten. DWG target conversion uses a temporary DXF copy; proxy/Civil 3D-specific objects may not survive conversion, so validate output on a copy.
+          SurveyQuant v1.0.108 - Manual Two-Point Orientation
+          The user selects one DXF/DWG target board, taps two locations on the drawing preview, and enters the real X/Y coordinates for each selected point. The module derives the 2D similarity transform and writes a new DXF with safeDownloadFile (Android Download/SurveyQuant bridge where available). No reference board is required. The original file is not overwritten. If native/proxy/Civil 3D entities are unsupported, export is stopped with an explanation to avoid a partial drawing.
           TXT
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX.apk" "$RELEASE/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_FIX.apk" "$RELEASE/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
           cat "$RELEASE/SHA256SUMS.txt"
           echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Upload APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.107-ORIENTATION-AXIS-READER-FIX
+          name: SurveyQuant-v1.0.108-MANUAL-TWO-POINT-ORIENTATION-FIX
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_FIX_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.108_MANUAL_TWO_POINT_ORIENTATION_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
