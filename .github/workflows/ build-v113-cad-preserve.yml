@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.112 - Faithful DXF Recovery + Preview/Export Validation
+name: Build SurveyQuant v1.0.113 - CAD Preview Preserve + Strict DXF Export
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v112-dxf-faithful-recovery.yml"
+      - "SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v113-cad-preserve.yml"
 
 permissions:
   contents: read
@@ -47,7 +47,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y unzip zip
 
-      - name: Unpack source and orientation modules
+      - name: Unpack source, previous patches, and v113 CAD-preserve patch
         shell: bash
         run: |
           set -euo pipefail
@@ -58,22 +58,20 @@ jobs:
           MANUAL_PACKAGE="SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_PATCH_PACKAGE.zip"
           REFERENCE_PACKAGE="SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_PATCH_PACKAGE.zip"
           FAITHFUL_PACKAGE="SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
-          test -s "$SOURCE_NAME" || { echo "ERROR: Missing Android source: $SOURCE_NAME"; exit 1; }
-          test -s "$BASE_PATCH_NAME" || { echo "ERROR: Missing v104 baseline patch: $BASE_PATCH_NAME"; exit 1; }
-          test -s "$MENU_PACKAGE" || { echo "ERROR: Missing v106 home-menu module package: $MENU_PACKAGE"; exit 1; }
-          test -s "$AXIS_PACKAGE" || { echo "ERROR: Upload the v1.0.107 axis-reader package to the repository root."; exit 1; }
-          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch"
-          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch"
+          PRESERVE_PACKAGE="SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
+          for f in "$SOURCE_NAME" "$BASE_PATCH_NAME" "$MENU_PACKAGE" "$AXIS_PACKAGE" "$MANUAL_PACKAGE" "$REFERENCE_PACKAGE" "$FAITHFUL_PACKAGE" "$PRESERVE_PACKAGE"; do
+            test -s "$f" || { echo "ERROR: Required source/patch archive missing: $f"; exit 1; }
+          done
+          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch" "$RUNNER_TEMP/sq-preserve-patch"
+          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch" "$RUNNER_TEMP/sq-preserve-patch"
           unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
           unzip -q "$BASE_PATCH_NAME" -d "$RUNNER_TEMP/sq-base-patch"
           unzip -q "$MENU_PACKAGE" -d "$RUNNER_TEMP/sq-menu-patch"
           unzip -q "$AXIS_PACKAGE" -d "$RUNNER_TEMP/sq-axis-patch"
-          test -s "$MANUAL_PACKAGE" || { echo "ERROR: Missing v1.0.109 zoom/OSNAP/ID-point patch package."; exit 1; }
           unzip -q "$MANUAL_PACKAGE" -d "$RUNNER_TEMP/sq-manual-patch"
-          test -s "$REFERENCE_PACKAGE" || { echo "ERROR: Upload the v1.0.111 DXF recovery/delete-pick patch package to repository root."; exit 1; }
           unzip -q "$REFERENCE_PACKAGE" -d "$RUNNER_TEMP/sq-reference-patch"
-          test -s "$FAITHFUL_PACKAGE" || { echo "ERROR: Upload the v1.0.112 faithful DXF recovery package to repository root."; exit 1; }
           unzip -q "$FAITHFUL_PACKAGE" -d "$RUNNER_TEMP/sq-faithful-patch"
+          unzip -q "$PRESERVE_PACKAGE" -d "$RUNNER_TEMP/sq-preserve-patch"
           PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
           PATCH_INDEX="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'index.html' -print -quit)"
           MODULE_JS="$(find "$RUNNER_TEMP/sq-menu-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js' -print -quit)"
@@ -86,48 +84,44 @@ jobs:
           REFERENCE_TEST="$(find "$RUNNER_TEMP/sq-reference-patch" -type f -name 'SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_TEST.js' -print -quit)"
           FAITHFUL_MODULE="$(find "$RUNNER_TEMP/sq-faithful-patch" -type f -name 'SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js' -print -quit)"
           FAITHFUL_TEST="$(find "$RUNNER_TEMP/sq-faithful-patch" -type f -name 'SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_TEST.js' -print -quit)"
+          PRESERVE_MODULE="$(find "$RUNNER_TEMP/sq-preserve-patch" -type f -name 'SurveyQuant_v1.0.113_CAD_PRESERVE_MODULE.js' -print -quit)"
+          PRESERVE_TEST="$(find "$RUNNER_TEMP/sq-preserve-patch" -type f -name 'SurveyQuant_v1.0.113_CAD_PRESERVE_TEST.js' -print -quit)"
           DXF_TEST="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'dxf-parser-restoration-test.js' -print -quit)"
           test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
-          test -s "$PATCH_INDEX" || { echo "ERROR: v104 index.html is missing."; exit 1; }
-          test -s "$MODULE_JS" || { echo "ERROR: v106 home-menu module is missing."; exit 1; }
-          test -s "$TEST_JS" || { echo "ERROR: v106 home-menu regression test is missing."; exit 1; }
-          test -s "$AXIS_MODULE" || { echo "ERROR: v107 axis-reader module is missing."; exit 1; }
-          test -s "$AXIS_TEST" || { echo "ERROR: v107 axis-reader regression test is missing."; exit 1; }
-          test -s "$MANUAL_MODULE" || { echo "ERROR: v109 zoom/OSNAP/ID-point module is missing."; exit 1; }
-          test -s "$MANUAL_TEST" || { echo "ERROR: v109 zoom/OSNAP/ID-point test is missing."; exit 1; }
-          test -s "$REFERENCE_MODULE" || { echo "ERROR: v111 resilient DXF/reference module is missing."; exit 1; }
-          test -s "$REFERENCE_TEST" || { echo "ERROR: v111 DXF recovery/delete regression test is missing."; exit 1; }
-          test -s "$FAITHFUL_MODULE" || { echo "ERROR: v112 faithful DXF recovery module is missing."; exit 1; }
-          test -s "$FAITHFUL_TEST" || { echo "ERROR: v112 recovery/preview/export regression test is missing."; exit 1; }
-          test -s "$DXF_TEST" || { echo "ERROR: Existing v104 DXF regression test is missing."; exit 1; }
+          for f in "$PATCH_INDEX" "$MODULE_JS" "$TEST_JS" "$AXIS_MODULE" "$AXIS_TEST" "$MANUAL_MODULE" "$MANUAL_TEST" "$REFERENCE_MODULE" "$REFERENCE_TEST" "$FAITHFUL_MODULE" "$FAITHFUL_TEST" "$PRESERVE_MODULE" "$PRESERVE_TEST" "$DXF_TEST"; do
+            test -s "$f" || { echo "ERROR: Required source/module/test missing: $f"; exit 1; }
+          done
           test -s "$PROJECT/settings.gradle"
           test -s "$PROJECT/build.gradle"
           test -s "$PROJECT/app/src/main/AndroidManifest.xml"
           mkdir -p "$PROJECT/app/src/main/assets"
           cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
-          python3 - "$PROJECT/app/src/main/assets/index.html" "$MODULE_JS" "$AXIS_MODULE" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE" <<'PY'
+          python3 - "$PROJECT/app/src/main/assets/index.html" "$MODULE_JS" "$AXIS_MODULE" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE" <<'PY'
           from pathlib import Path
           import sys
-          html_path,module_path,axis_path,manual_path,reference_path,faithful_path=map(Path,sys.argv[1:])
+          html_path,module_path,axis_path,manual_path,reference_path,faithful_path,preserve_path=map(Path,sys.argv[1:])
           html=html_path.read_text(encoding='utf-8')
           module=module_path.read_text(encoding='utf-8')
           axis=axis_path.read_text(encoding='utf-8')
           manual=manual_path.read_text(encoding='utf-8')
           reference=reference_path.read_text(encoding='utf-8')
           faithful=faithful_path.read_text(encoding='utf-8')
+          preserve=preserve_path.read_text(encoding='utf-8')
           marker='<script id="sq-orientation-module">'
           axis_marker='<script id="sq-orientation-axis-reader-module">'
           manual_marker='<script id="sq-orientation-manual-points-module">'
           reference_marker='<script id="sq-orientation-reference-board-module">'
           faithful_marker='<script id="sq-orientation-dxf-faithful-recovery-module">'
-          if marker in html or axis_marker in html or manual_marker in html or reference_marker in html or faithful_marker in html:
-            raise SystemExit('ERROR: Orientation scripts were already injected into the baseline.')
+          preserve_marker='<script id="sq-orientation-cad-preserve-module">'
+          if any(x in html for x in (marker,axis_marker,manual_marker,reference_marker,faithful_marker,preserve_marker)):
+            raise SystemExit('ERROR: Orientation scripts are already injected in baseline HTML.')
           if '</body>' not in html:
             raise SystemExit('ERROR: Could not locate body end in index.html.')
-          html=html.replace('</body>', marker+'\n'+module+'\n</script>\n'+axis_marker+'\n'+axis+'\n</script>\n'+manual_marker+'\n'+manual+'\n</script>\n'+reference_marker+'\n'+reference+'\n</script>\n'+faithful_marker+'\n'+faithful+'\n</script>\n</body>',1)
-          html=html.replace('const SQ_APP_VERSION_CODE = 104;','const SQ_APP_VERSION_CODE = 112;')
-          if 'const SQ_APP_VERSION_CODE = 112;' not in html:
-            raise SystemExit('ERROR: Failed to set HTML app version code to 112.')
+          injected=(marker+'\n'+module+'\n</script>\n'+axis_marker+'\n'+axis+'\n</script>\n'+manual_marker+'\n'+manual+'\n</script>\n'+reference_marker+'\n'+reference+'\n</script>\n'+faithful_marker+'\n'+faithful+'\n</script>\n'+preserve_marker+'\n'+preserve+'\n</script>\n</body>')
+          html=html.replace('</body>',injected,1)
+          html=html.replace('const SQ_APP_VERSION_CODE = 104;','const SQ_APP_VERSION_CODE = 113;')
+          if 'const SQ_APP_VERSION_CODE = 113;' not in html:
+            raise SystemExit('ERROR: Failed to set HTML app version code to 113.')
           html_path.write_text(html,encoding='utf-8')
           PY
           echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
@@ -143,9 +137,11 @@ jobs:
           echo "REFERENCE_TEST=$REFERENCE_TEST" >> "$GITHUB_ENV"
           echo "FAITHFUL_MODULE=$FAITHFUL_MODULE" >> "$GITHUB_ENV"
           echo "FAITHFUL_TEST=$FAITHFUL_TEST" >> "$GITHUB_ENV"
+          echo "PRESERVE_MODULE=$PRESERVE_MODULE" >> "$GITHUB_ENV"
+          echo "PRESERVE_TEST=$PRESERVE_TEST" >> "$GITHUB_ENV"
           echo "DXF_TEST=$DXF_TEST" >> "$GITHUB_ENV"
 
-      - name: Verify existing projects, menu navigation, and manual two-point orientation integration
+      - name: Verify original projects and CAD orientation integration
         shell: bash
         run: |
           set -euo pipefail
@@ -159,30 +155,30 @@ jobs:
             'function mergeProjectionDxfPreservingReference(rawBytes, additions)',
             'async function dropFilesMerge(){',
             'id="project1Card"','id="profileCard"','id="roadCard"','id="dropFilesCard"','id="paymentCard"',
-            'const SQ_APP_VERSION_CODE = 112;',
-            'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"','id="sq-orientation-reference-board-module"','id="sq-orientation-dxf-faithful-recovery-module"','window.__sqOrientation112API','valid-pairs-full-renderer',
+            'const SQ_APP_VERSION_CODE = 113;',
+            'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"','id="sq-orientation-reference-board-module"','id="sq-orientation-dxf-faithful-recovery-module"','id="sq-orientation-cad-preserve-module"',
+            'window.__sqOrientation113API','normalizeBlankPairLines','v113Validation',
             "card.id = 'sqOrientationCard'",'sqOrientationMenuButton',
             "window.openProjectPage('sqOrientationCard')",'window.sqOpenOrientationProject',
             'sqOriReadAxesBtn','function sqOriDetectIntersections(model)',
-            'sq108Canvas','sq108P1X','sq108P2Y','window.safeDownloadFile(result.bytes','sq109IdPoint','sq109IdReadout','sq109CopyId','sq109ToolMode','pointerdown','pointermove','pointerup','gestureMode===\'pinch\'','findNearestIntersection','zoomTransformAt','pinchZoom','تقاطع تلقائي (OSNAP)',
+            'sq108Canvas','sq108P1X','sq108P2Y','window.safeDownloadFile(result.bytes','sq109IdPoint','sq109CopyId','sq109ToolMode','pointerdown','pointermove','pointerup',"gestureMode==='pinch'",'findNearestIntersection','zoomTransformAt','pinchZoom','تقاطع تلقائي (OSNAP)',
             'sq110TargetCanvas','sq110ReferenceCanvas','sq110T1X','sq110R1X','sq110ToReference','sq110Export','sq110Delete','sq110UndoDelete','function universalTransformBytes(input,t)','window.__sqOrientation111API',
-            'async function sqOriConvertTargetToDxf(targetFile, loaderOverride)',
-            'lib.dwg_write_dxf(bytes.buffer)','window.parseFile(file)',
+            'async function sqOriConvertTargetToDxf(targetFile, loaderOverride)','lib.dwg_write_dxf(bytes.buffer)','window.parseFile(file)',
           ]
           missing=[x for x in required if x not in index]
-          if missing: raise SystemExit('ERROR: Missing required existing or v111 functionality: '+', '.join(missing))
+          if missing: raise SystemExit('ERROR: Missing required baseline or orientation functionality: '+', '.join(missing))
           if 'function openProjectPage(id)' not in index or "classList.add('active-project')" not in index:
-            raise SystemExit('ERROR: Existing project navigation cannot activate the orientation card.')
+            raise SystemExit('ERROR: Existing project navigation cannot activate orientation card.')
           if 'project-card{display:none' not in index.replace(' ',''):
             raise SystemExit('ERROR: Existing project-card visibility rule changed unexpectedly.')
           if not gradle: raise SystemExit('ERROR: Gradle configuration is empty.')
-          print('PASS: original projects/DXF logic remain; v106-v111 orientation modules and v112 strict-pair recovery/full-renderer/repaired-export workflow are integrated.')
+          print('PASS: baseline projects plus v106-v113 orientation modules integrated.')
           PY
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.112
+      - name: Set Android release version to 1.0.113
         shell: bash
         run: |
           set -euo pipefail
@@ -190,16 +186,16 @@ jobs:
           from pathlib import Path
           import re,sys
           p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
-          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>112',s,count=1)
-          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.112'",s,count=1)
+          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>113',s,count=1)
+          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.113'",s,count=1)
           if nc!=1 or nn!=1: raise SystemExit(f'ERROR: Version edits failed (code={nc}, name={nn}).')
           p.write_text(s,encoding='utf-8')
           PY
-          grep -Eq 'versionCode[[:space:]]+112([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.112['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 112;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+113([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.113['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 113;' "$INDEX_PATH"
 
-      - name: Run JavaScript syntax, point matching, unrestricted 2D transform, deletion, and preservation tests
+      - name: Run JavaScript and CAD-preservation regression tests
         shell: bash
         run: |
           set -euo pipefail
@@ -214,6 +210,8 @@ jobs:
           node --check "$FAITHFUL_MODULE"
           node "$FAITHFUL_TEST" "$MODULE_JS" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE"
           node "$DXF_TEST" "$PATCH_INDEX"
+          node --check "$PRESERVE_MODULE"
+          node "$PRESERVE_TEST" "$MODULE_JS" "$AXIS_MODULE" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE"
           python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
           from pathlib import Path
           import re,sys
@@ -254,7 +252,7 @@ jobs:
           test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
           RELEASE="$RUNNER_TEMP/sq-release"
           mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_FIX.apk"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.113_CAD_PRESERVE_FIX.apk"
           cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
           cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
           cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
@@ -266,23 +264,26 @@ jobs:
           cp "$REFERENCE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_TEST.js"
           cp "$FAITHFUL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js"
           cp "$FAITHFUL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_TEST.js"
+          cp "$PRESERVE_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_MODULE.js"
+          cp "$PRESERVE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_TEST.js"
           cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
           cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.112 - DXF Faithful Recovery + Full Preview + Verified Export
-          When a DXF parser fails at malformed group-pair alignment, v112 reassembles complete source pair byte ranges and retries the full drawing parser instead of showing the sparse point-and-line fallback. Valid DXF retains the original byte-preserving transform path. If repair is required, output is normalized from complete recoverable group pairs and validated with the full renderer before download. The original target/reference bytes are never overwritten.
+          SurveyQuant v1.0.113 - CAD Preview Preserve + Strict DXF Export
+          This patch normalizes provable extra blank physical lines that shift DXF group-code/value alignment, supplements preview geometry omitted by the prior canvas renderer, and validates entity types/count, layer assignments, and text content before export. Export is refused if it requires discarding malformed non-empty data.
+          Synthetic regression tests are included. The two uploaded STORM drawings are DWG (AC1032 and AC1024) and were not directly converted/tested by this workflow. A successful build is not evidence that the actual STORM drawings render and orient correctly; verify both files in the app and compare the resulting DXF in CAD before treating this as complete.
           TXT
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_FIX.apk" "$RELEASE/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.113_CAD_PRESERVE_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.113_CAD_PRESERVE_FIX.apk" "$RELEASE/SurveyQuant_v1.0.113_CAD_PRESERVE_SOURCE_PATCH.zip" > "$RELEASE/SHA256SUMS.txt"
           cat "$RELEASE/SHA256SUMS.txt"
           echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Upload APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.112-DXF-FAITHFUL-RECOVERY-FIX
+          name: SurveyQuant-v1.0.113-CAD-PRESERVE-FIX
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.113_CAD_PRESERVE_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.113_CAD_PRESERVE_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
