@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v115-orientation-storm.yml"
+      - ".github/workflows/build-v116-orientation-full-fidelity.yml"
 
 permissions:
   contents: write
@@ -552,9 +552,11 @@ jobs:
            const ordered=Array.from(edits.values()).sort((a,b)=>a.pair.valueStart-b.pair.valueStart),chunks=[];let cursor=0,total=0;
            for(const item of ordered){chunks.push(bytes.slice(cursor,item.pair.valueStart));const replacement=new TextEncoder().encode(item.value);chunks.push(replacement);total+=item.pair.valueStart-cursor+replacement.length;cursor=item.pair.valueEnd;}
            chunks.push(bytes.slice(cursor));total+=bytes.length-cursor;const output=new Uint8Array(total);let offset=0;for(const chunk of chunks){output.set(chunk,offset);offset+=chunk.length;}
-           const outText=ascii(output,0,Math.min(output.length,64*1024));
-           if(!outText.includes('SECTION')||!outText.includes('ENTITIES')||!ascii(output,Math.max(0,output.length-1024),output.length).includes('EOF'))throw new Error('ناتج الإسقاط لم يجتز فحص SECTION/ENTITIES/EOF؛ لم يتم تنزيل DXF غير مكتمل.');
-           const outPairs=splitPairs(output).pairs,outRecords=sectionRecords(outPairs,'ENTITIES');
+           const outPairs=splitPairs(output).pairs;
+           const entitiesSectionIndex=outPairs.findIndex((p,i)=>p.code===0&&String(p.value).toUpperCase()==='SECTION'&&outPairs[i+1]?.code===2&&String(outPairs[i+1]?.value).toUpperCase()==='ENTITIES');
+           const outRecords=sectionRecords(outPairs,'ENTITIES');
+           const terminalPair=outPairs[outPairs.length-1];
+           if(!outPairs.some(p=>p.code===0&&String(p.value).toUpperCase()==='SECTION')||entitiesSectionIndex<0||!outRecords.length||terminalPair?.code!==0||String(terminalPair?.value).toUpperCase()!=='EOF')throw new Error('ناتج الإسقاط لم يجتز فحص SECTION/ENTITIES/EOF؛ لم يتم تنزيل DXF غير مكتمل.');
            if(outRecords.length!==all.length)throw new Error('عدد كيانات ENTITIES تغيّر أثناء الإسقاط ('+all.length+' إلى '+outRecords.length+'). تم إلغاء التصدير حفاظًا على اللوحة كاملة.');
            return {bytes:output,transformedCount:transformedEntities,changedEntityCount,changedFields:ordered.length,unchangedOpaque,coordinateEntities,entitiesBefore:all.length,entitiesAfter:outRecords.length,layersPreserved:true,dimensionBlocksTransformed:dimensionBlockEntities.length,paperSpaceFallback:paperFallback};
           }'''
@@ -935,6 +937,91 @@ jobs:
           Path(sys.argv[2]).write_text(source,encoding='utf-8')
           PY
           node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
+          # The v116 exporter deliberately updates known CAD view/extents HEADER variables and
+          # the geometry inside anonymous BLOCKS referenced by DIMENSION entities. The old
+          # v115 audit mislabeled those valid fidelity-preserving edits as unrelated data loss.
+          python3 - "$STORM_TRANSFORM_TEST" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding="utf-8")
+          old_sectioned = """function sectioned(pairs) {
+            let section = '', afterSection = false;
+            return pairs.map((p, i) => {
+              const old = section;
+              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') afterSection = true;
+              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; }
+              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; }
+              return { ...p, section: old || section, index: i };
+            });
+          }"""
+          new_sectioned = """function sectioned(pairs) {
+            let section = '', afterSection = false, headerVariable = '', blockName = '', blockEntity = '', entityType = '';
+            return pairs.map((p, i) => {
+              const old = section;
+              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') { afterSection = true; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else {
+                if (section === 'HEADER' && p.code === 9) headerVariable = p.value.toUpperCase();
+                if (section === 'ENTITIES' && p.code === 0) entityType = p.value.toUpperCase();
+                if (section === 'BLOCKS' && p.code === 0) {
+                  const type = p.value.toUpperCase();
+                  if (type === 'BLOCK') { blockEntity = 'BLOCK'; blockName = ''; }
+                  else if (type === 'ENDBLK') blockEntity = 'ENDBLK';
+                  else blockEntity = type;
+                }
+                if (section === 'BLOCKS' && p.code === 2 && blockEntity === 'BLOCK' && !blockName) blockName = p.value.toUpperCase();
+              }
+              const result = { ...p, section: old || section, headerVariable, blockName, blockEntity, entityType, index: i };
+              if (section === 'BLOCKS' && p.code === 0 && p.value.toUpperCase() === 'ENDBLK') { blockEntity = ''; blockName = ''; }
+              return result;
+            });
+          }
+          function referencedDimensionBlocks(pairs) {
+            const parsed = sectioned(pairs), names = new Set();
+            let currentEntity = '';
+            for (const p of parsed) {
+              if (p.section !== 'ENTITIES') continue;
+              if (p.code === 0) currentEntity = p.value.toUpperCase();
+              else if (currentEntity === 'DIMENSION' && p.code === 2 && p.value.trim()) names.add(p.value.trim().toUpperCase());
+            }
+            return names;
+          }
+          const allowedHeaderCodes = {
+            '$EXTMIN': [10,20], '$EXTMAX': [10,20], '$LIMMIN': [10,20], '$LIMMAX': [10,20],
+            '$PEXTMIN': [10,20], '$PEXTMAX': [10,20], '$VIEWCTR': [10,20], '$INSBASE': [10,20],
+            '$SNAPBASE': [10,20], '$UCSORG': [10,20], '$VIEWSIZE': [40]
+          };
+          function isAllowedViewHeaderUpdate(p) {
+            return p.section === 'HEADER' && Array.isArray(allowedHeaderCodes[p.headerVariable]) && allowedHeaderCodes[p.headerVariable].includes(p.code);
+          }"""
+          old_audit_setup = """  const a = sectioned(decodeDxf(beforeBytes)), b = sectioned(decodeDxf(afterBytes));
+            const errors = [];"""
+          new_audit_setup = """  const beforePairs = decodeDxf(beforeBytes);
+            const a = sectioned(beforePairs), b = sectioned(decodeDxf(afterBytes));
+            const dimensionBlocks = referencedDimensionBlocks(beforePairs);
+            const errors = [];"""
+          old_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
+                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
+          new_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
+                else if (a[i].section === 'BLOCKS' && b[i].section === 'BLOCKS' && dimensionBlocks.has(a[i].blockName) && a[i].blockEntity && !['BLOCK','ENDBLK'].includes(a[i].blockEntity) && geomCodes(a[i].code)) geometryChanged++;
+                else if (isAllowedViewHeaderUpdate(a[i]) && a[i].headerVariable === b[i].headerVariable) { /* Expected CAD view/extents update. */ }
+                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, section ${a[i].section}, block ${a[i].blockName}/${a[i].blockEntity}, type ${a[i].entityType}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
+          # Exact replace the three logical sections. Indentation inside template literals is ignored by
+          # checking their stripped content and replacing the raw blocks exactly once.
+          for old, new, label in [
+            (old_sectioned, new_sectioned, 'section metadata parser'),
+            (old_audit_setup, new_audit_setup, 'audit metadata setup'),
+            (old_audit_body, new_audit_body, 'audit allowed-change rules'),
+          ]:
+            if s.count(old) != 1:
+              raise SystemExit(f'ERROR: expected one {label} in STORM regression script; found {s.count(old)}')
+            s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          print('PASS: STORM regression audit now allows only v116 CAD view-header updates and coordinates in referenced DIMENSION graphics.')
+          PY
           node --check "$STORM_TRANSFORM_TEST"
           node "$STORM_TRANSFORM_TEST" "$REFERENCE_MODULE" "$MANUAL_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE" "$STORM_OUTPUT_DIR" "$STORM_OUTPUT_DIR" "$STORM_REPORT"
 
