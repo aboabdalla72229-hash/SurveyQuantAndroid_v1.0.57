@@ -130,4 +130,35 @@ jobs:
           if(!wasmBefore)throw new Error('LibreDWG build:wasm script missing');
           // Emscripten's --emit-tsd fails on LibreDWG's uint64_t APIs in this pinned version.
           // Keep the checked-in declaration file instead of generating a new one during WASM link.
-          const wasmNoTsd=wasmBefore.replace
+          const wasmNoTsd=wasmBefore.replace('--emit-tsd libredwg-web.d.ts','');
+          if(wasmNoTsd===wasmBefore)throw new Error('Could not remove unsupported --emit-tsd declaration generation');
+          const wasmOptimized=wasmNoTsd.replace(/-O2(?=\s+-lembind)/,'-Os');
+          if(wasmOptimized===wasmNoTsd)throw new Error('Could not change LibreDWG WASM link from -O2 to -Os');
+          j.scripts[wasmKey]=wasmOptimized;
+          // Build only the LibreDWG library objects needed by the JS/WASM binding.
+          // The default top-level make also builds CLI programs, including dwgread.wasm.
+          const objKey='build:obj'; const objBefore=j.scripts[objKey];
+          if(!objBefore)throw new Error('LibreDWG build:obj script missing');
+          const objAfter=objBefore.replace(/emmake\s+make(?=\s|$)/, 'emmake make -C src');
+          if(objAfter===objBefore && !/emmake\s+make\s+-C\s+src/.test(objBefore))throw new Error('Could not restrict LibreDWG object build to src/');
+          j.scripts[objKey]=objAfter;
+          fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+          console.log('Writer-enabled configure command:',j.scripts[key]);
+          console.log('Library-only object build command:',j.scripts[objKey]);
+          console.log('WASM link command:',j.scripts[wasmKey]);
+          NODE
+          pnpm install --frozen-lockfile
+          pnpm build:prepare
+          pnpm build:obj
+          test -s ../../build-wasm/src/out_dxf.o || { echo "ERROR: DXF writer object out_dxf.o was not compiled."; exit 1; }
+          test -s ../../build-wasm/src/encode.o || { echo "ERROR: DWG/DXF write support object encode.o was not compiled."; exit 1; }
+          if ! pnpm build:wasm; then
+            echo "WARN: LibreDWG WASM link failed at -Os; retrying with smaller -Oz output."
+            node <<'NODE'
+          const fs=require('node:fs');
+          const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8'));
+          const key='build:wasm'; const before=j.scripts[key];
+          const after=before.replace(/-Os(?=\s+-lembind)/,'-Oz');
+          if(after===before)throw new Error('Could not switch WASM link optimization from -Os to -Oz');
+          j.scripts[key]=after; fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+          console.log('Retry
