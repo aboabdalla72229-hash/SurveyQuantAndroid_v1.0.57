@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export (Library-only WASM build)
+name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export (Library-only WASM build with -Os/-Oz local-count fallback)
 
 on:
   workflow_dispatch:
@@ -121,6 +121,15 @@ jobs:
           if(!before)throw new Error('LibreDWG build:prepare script missing');
           j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
           if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
+          // Large generated LibreDWG functions can exceed Binaryen's local-variable parsing limits at -O2.
+          // -Os reduces the generated local count and output size; the WASM link retries at -Oz if required.
+          const prepareBefore=j.scripts[key];
+          j.scripts[key]=j.scripts[key].replace(/-O2(?=\s+-sUSE_ZLIB=1)/,'-Os');
+          if(j.scripts[key]===prepareBefore)throw new Error('Could not change LibreDWG CFLAGS from -O2 to -Os');
+          const wasmKey='build:wasm'; const wasmBefore=j.scripts[wasmKey];
+          if(!wasmBefore)throw new Error('LibreDWG build:wasm script missing');
+          j.scripts[wasmKey]=wasmBefore.replace(/-O2(?=\s+-lembind)/,'-Os');
+          if(j.scripts[wasmKey]===wasmBefore)throw new Error('Could not change LibreDWG WASM link from -O2 to -Os');
           // Build only the LibreDWG library objects needed by the JS/WASM binding.
           // The default top-level `make` also builds CLI programs (not needed here),
           // including dwgread.wasm, which can fail in Emscripten with "too many locals".
@@ -132,6 +141,7 @@ jobs:
           fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
           console.log('Writer-enabled configure command:',j.scripts[key]);
           console.log('Library-only object build command:',j.scripts[objKey]);
+          console.log('WASM link command:',j.scripts[wasmKey]);
           NODE
           pnpm install --frozen-lockfile
           pnpm build:prepare
@@ -139,7 +149,20 @@ jobs:
           pnpm build:obj
           test -s ../../build-wasm/src/out_dxf.o || { echo "ERROR: DXF writer object out_dxf.o was not compiled."; exit 1; }
           test -s ../../build-wasm/src/encode.o || { echo "ERROR: DWG/DXF write support object encode.o was not compiled."; exit 1; }
-          pnpm build:wasm
+          if ! pnpm build:wasm; then
+            echo "WARN: LibreDWG WASM link failed at -Os; retrying with smaller -Oz output."
+            node <<'NODE'
+          const fs=require('node:fs');
+          const p='package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8'));
+          const key='build:wasm'; const before=j.scripts[key];
+          const after=before.replace(/-Os(?=\s+-lembind)/,'-Oz');
+          if(after===before)throw new Error('Could not switch WASM link optimization from -Os to -Oz');
+          j.scripts[key]=after; fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+          console.log('Retrying link command:',after);
+          NODE
+            rm -f ../../build-wasm/libredwg-web.js ../../build-wasm/libredwg-web.wasm ../../build-wasm/libredwg-web.d.ts
+            pnpm build:wasm
+          fi
           pnpm copy
           pnpm build
           test -s dist/libredwg-web.js
@@ -179,7 +202,7 @@ jobs:
           cat > "$DEST/BUILD_CONFIGURATION.txt" <<'TXT'
           Built from mlightcad/libredwg-web tag v0.7.14.
           The corresponding source is included in libredwg-web-v0.7.14-source.zip.
-          The only build-configuration change is removing --disable-write (and --disable-dxf if present) from bindings/javascript/package.json -> scripts.build:prepare so dwg_write_dxf is linked into the WebAssembly module.
+          Build configuration enables LibreDWG DWG/DXF writing by removing --disable-write (and --disable-dxf if present). The WASM objects and link use -Os to reduce excessive generated local variables; if the first WASM link fails, the workflow retries the link using -Oz. The generated DWG/DXF writer is exercised on both original STORM DWG files before the Android APK build.
           Upstream project license: GPL-3.0. Please review README_UPSTREAM.md and the included upstream license file.
           TXT
           SOURCE_ZIP="$DEST/libredwg-web-v0.7.14-source.zip"
