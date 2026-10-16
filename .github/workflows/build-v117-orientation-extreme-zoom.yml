@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.116 - CAD Full-Fidelity Projection + Compact Board Zoom
+name: Build SurveyQuant v1.0.117 - Extreme In-Board Zoom (Preserve Original CAD)
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v116-orientation-full-fidelity.yml"
+      - ".github/workflows/build-v117-orientation-extreme-zoom.yml"
 
 permissions:
   contents: write
@@ -760,9 +760,9 @@ jobs:
           html=html.replace('</body>',injected,1)
 
           import re
-          html,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 116;', html, count=1)
-          if n != 1 or 'const SQ_APP_VERSION_CODE = 116;' not in html:
-            raise SystemExit('ERROR: Failed to set HTML app version code to 115.')
+          html,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 117;', html, count=1)
+          if n != 1 or 'const SQ_APP_VERSION_CODE = 117;' not in html:
+            raise SystemExit('ERROR: Failed to set HTML app version code to 117.')
 
           html_path.write_text(html,encoding='utf-8')
           PY
@@ -802,7 +802,7 @@ jobs:
             'function mergeProjectionDxfPreservingReference(rawBytes, additions)',
             'async function dropFilesMerge(){',
             'id="project1Card"','id="profileCard"','id="roadCard"','id="dropFilesCard"','id="paymentCard"',
-            'const SQ_APP_VERSION_CODE = 116;',
+            'const SQ_APP_VERSION_CODE = 117;',
             'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"','id="sq-orientation-reference-board-module"','id="sq-orientation-dxf-faithful-recovery-module"','id="sq-orientation-cad-preserve-module"','id="sq-orientation-v115-tools-module"',
             'window.__sqOrientation113API','normalizeBlankPairLines','v115Diagnostics','window.__sqOrientation115Tools','SQ_WRITER_ENGINE_URL','sq110ReadAxesBtn','sq110TZoomRange','sq110TSnapMode','refreshVisibleCadCanvas','new window.ResizeObserver(()=>resize())',
             "card.id = 'sqOrientationCard'",'sqOrientationMenuButton',
@@ -830,7 +830,75 @@ jobs:
           test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
           cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
 
-      - name: Set Android release version to 1.0.116
+      - name: Enable extreme board-only zoom without modifying the DXF data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/patch-v117-zoom.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          module_path, index_path = map(Path, sys.argv[1:])
+          pairs = [
+            ("v.zoom=Math.max(.1584893,Math.min(1000,Number(value)||1));",
+             "v.zoom=Math.max(.1584893,Math.min(1000000,Number(value)||1));", 1, "slider/button zoom limit"),
+            ("v.zoom=Math.max(.15,Math.min(1000,v.pinch.zoom*distance/v.pinch.distance));",
+             "v.zoom=Math.max(.15,Math.min(1000000,v.pinch.zoom*distance/v.pinch.distance));const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));", 1, "pinch zoom limit and slider sync"),
+            ("v.zoom=Math.max(.15,Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2)));",
+             "v.zoom=Math.max(.15,Math.min(1000000,v.zoom*(e.deltaY<0?1.2:1/1.2)));const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));", 1, "wheel zoom limit and slider sync"),
+            ('max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"',
+             'max="6" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1,000,000 مرة"', 2, "logarithmic slider range"),
+            ("تكبير ×5</button>", "تكبير ×10</button>", 2, "zoom boost label"),
+            ("v.zoom*5);});el('sq110'+prefix+'ZoomRange'", "v.zoom*10);});el('sq110'+prefix+'ZoomRange'", 1, "zoom boost factor"),
+          ]
+          for path in (module_path, index_path):
+              text = path.read_text(encoding="utf-8")
+              for old, new, expected, label in pairs:
+                  count = text.count(old)
+                  if count != expected:
+                      raise SystemExit(f"ERROR: {path.name}: expected {expected} matches for {label}, found {count}")
+                  text = text.replace(old, new)
+              for forbidden in (
+                  "Math.min(1000,Number(value)||1)",
+                  "Math.min(1000,v.pinch.zoom*distance/v.pinch.distance)",
+                  "Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2))",
+                  'max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"',
+              ):
+                  if forbidden in text:
+                      raise SystemExit(f"ERROR: old zoom limit remains in {path.name}: {forbidden}")
+              path.write_text(text, encoding="utf-8")
+          print("PASS v117: zoom cap is 1,000,000x, slider has six logarithmic decades, ×10 boost works, and zoom stays view-only.")
+          PY
+          python3 "$RUNNER_TEMP/patch-v117-zoom.py" "$REFERENCE_MODULE" "$INDEX_PATH"
+
+          cat > "$RUNNER_TEMP/test-v117-zoom.js" <<'NODE'
+          'use strict';
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const [modulePath, indexPath] = process.argv.slice(2);
+          const moduleText = fs.readFileSync(modulePath, 'utf8');
+          const index = fs.readFileSync(indexPath, 'utf8');
+          for (const text of [
+            'Math.min(1000000,Number(value)||1)',
+            'Math.min(1000000,v.pinch.zoom*distance/v.pinch.distance)',
+            'Math.min(1000000,v.zoom*(e.deltaY<0?1.2:1/1.2))',
+            'max="6" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1,000,000 مرة"',
+            "v.zoom*10);});el('sq110'+prefix+'ZoomRange'",
+          ]) {
+            assert(moduleText.includes(text), 'zoom module missing: ' + text);
+            assert(index.includes(text), 'integrated app missing: ' + text);
+          }
+          const setter = moduleText.match(/function setZoom\(side,value\)\{[^}]*\}/);
+          assert(setter, 'board zoom setter not found');
+          assert(!/v\.bytes\s*=|v\.drawing\.[\w$]+\s*=/.test(setter[0]),
+            'zoom must not mutate original DXF bytes or CAD entity data');
+          assert(moduleText.includes('function universalTransformBytes(input,t)'),
+            'the original byte-preserving DXF transform path must remain present');
+          console.log('PASS v117 zoom regression: up to 1,000,000x, synchronized wheel/pinch slider, ×10 boost, original DXF data untouched.');
+          NODE
+          node "$RUNNER_TEMP/test-v117-zoom.js" "$REFERENCE_MODULE" "$INDEX_PATH"
+
+      - name: Set Android release version to 1.0.117
         shell: bash
         run: |
           set -euo pipefail
@@ -840,16 +908,16 @@ jobs:
 
           p=Path(sys.argv[1])
           s=p.read_text(encoding='utf-8')
-          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>116',s,count=1)
-          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.116'",s,count=1)
+          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>117',s,count=1)
+          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.117'",s,count=1)
           if nc!=1 or nn!=1:
             raise SystemExit(f'ERROR: Version edits failed (code={nc}, name={nn}).')
           p.write_text(s,encoding='utf-8')
           PY
 
-          grep -Eq 'versionCode[[:space:]]+116([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.116['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 116;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+117([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.117['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 117;' "$INDEX_PATH"
 
       - name: Run JavaScript and CAD-preservation regression tests
         shell: bash
@@ -924,7 +992,7 @@ jobs:
           import sys
           source=Path(sys.argv[1]).read_text(encoding='utf-8')
           replacements=[
-            ("const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 116;"),
+            ("const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 117;"),
             ("height:520px", "height:230px;min-height:230px;max-height:230px"),
           ]
           for old,new in replacements:
@@ -1074,7 +1142,7 @@ jobs:
 
           RELEASE="$RUNNER_TEMP/sq-release"
           mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.116_CAD_FIDELITY_ORIENTATION_FIX.apk"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk"
           cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
           cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
           cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
@@ -1087,6 +1155,8 @@ jobs:
           cp "$RUNNER_TEMP/sq-canvas-display-test.js" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_REGRESSION_TEST.js"
           cp "$RUNNER_TEMP/patch-v115-board-display.py" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_PATCH.py"
           cp "$RUNNER_TEMP/test-v116-cad.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_TEST.js"
+          cp "$RUNNER_TEMP/patch-v117-zoom.py" "$RELEASE/source-patch/SurveyQuant_v1.0.117_ZOOM_PRESERVATION_PATCH.py"
+          cp "$RUNNER_TEMP/test-v117-zoom.js" "$RELEASE/source-patch/SurveyQuant_v1.0.117_ZOOM_PRESERVATION_TEST.js"
           cp "$RUNNER_TEMP/patch-v116-cad.py" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_PATCH.py"
           cp "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_ORIENTATION_INTEGRATION_TEST.js"
           cp "$FAITHFUL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js"
@@ -1103,7 +1173,8 @@ jobs:
           cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
 
           cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.116 - إصلاح الإسقاط ومعاينة CAD
+          SurveyQuant v1.0.117 - تكبير أكبر داخل اللوحة مع الحفاظ على بيانات CAD
+          - رفع حد التكبير داخل المعاينة إلى 1,000,000× دون تعديل بيانات DXF الأصلية بسبب التكبير.
           - يتضمن الاختبار ملفي STORM DWG الأصليين.
           - تم تفعيل دعم كتابة DXF في LibreDWG-Web v0.7.14.
           - تم إصلاح إنهاء النص في cquote() حتى لا تُضاف بقايا الذاكرة إلى DXF.
@@ -1118,18 +1189,18 @@ jobs:
           - اختبارات البناء تتحقق من الملفين الحقيقيين قبل إنشاء APK.
           TXT
 
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.116_CAD_FIDELITY_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.116_CAD_FIDELITY_ORIENTATION_FIX.apk" "$RELEASE/SurveyQuant_v1.0.116_CAD_FIDELITY_SOURCE_PATCH.zip" "$RELEASE/STORM_CONVERTED_DXF.zip" > "$RELEASE/SHA256SUMS.txt"
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk" "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip" "$RELEASE/STORM_CONVERTED_DXF.zip" > "$RELEASE/SHA256SUMS.txt"
           cat "$RELEASE/SHA256SUMS.txt"
           echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
 
       - name: Upload APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.116-CAD-FIDELITY-ORIENTATION-FIX
+          name: SurveyQuant-v1.0.117-EXTREME-ZOOM-CAD-PRESERVED
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.116_CAD_FIDELITY_ORIENTATION_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.116_CAD_FIDELITY_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
@@ -1140,7 +1211,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.116-STORM-DIAGNOSTICS-${{ github.run_id }}
+          name: SurveyQuant-v1.0.117-STORM-DIAGNOSTICS-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
             ${{ runner.temp }}/sq-storm-output/**
