@@ -93,4 +93,41 @@ jobs:
           test -s "$PATCH_DIR/STORM.zip" || { echo "ERROR: The real STORM.zip source boards are missing from the patch package."; exit 1; }
           unzip -q "$PATCH_DIR/STORM.zip" -d "$STORM_DIR"
           DWG_COUNT="$(find "$STORM_DIR" -type f -iname '*.dwg' | wc -l)"
-          test "$DWG_COUNT" -eq 2 || { echo "ERROR: Expected
+          test "$DWG_COUNT" -eq 2 || { echo "ERROR: Expected the two original STORM DWGs, found $DWG_COUNT."; find "$STORM_DIR" -type f -print; exit 1; }
+          echo "V115_PACKAGE_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
+          echo "V115_PATCHER=$PATCH_DIR/SurveyQuant_v1.0.115_APPLY_PATCH.py" >> "$GITHUB_ENV"
+          echo "V115_MODULE=$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js" >> "$GITHUB_ENV"
+          echo "V115_TEST=$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js" >> "$GITHUB_ENV"
+          echo "STORM_TEST_MODULE=$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs" >> "$GITHUB_ENV"
+          echo "STORM_TRANSFORM_TEST=$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs" >> "$GITHUB_ENV"
+          echo "STORM_INPUT_DIR=$STORM_DIR" >> "$GITHUB_ENV"
+          echo "STORM_OUTPUT_DIR=$STORM_OUTPUT_DIR" >> "$GITHUB_ENV"
+          echo "STORM_REPORT=$RUNNER_TEMP/STORM_CONVERSION_REPORT.md" >> "$GITHUB_ENV"
+          echo "STORM_OUTPUT_ZIP=$RUNNER_TEMP/STORM_CONVERTED_DXF.zip" >> "$GITHUB_ENV"
+
+      - name: Build LibreDWG-Web with DXF writing enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIBREDWG_DIR="$GITHUB_WORKSPACE/external/libredwg-web"
+          test -s "$LIBREDWG_DIR/configure.ac" || { echo "ERROR: Pinned LibreDWG source was not checked out."; exit 1; }
+          cd "$LIBREDWG_DIR"
+          ./autogen.sh
+          cd bindings/javascript
+          node <<'NODE'
+          const fs=require('node:fs');
+          const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));
+          const key='build:prepare';const before=j.scripts[key];
+          if(!before)throw new Error('LibreDWG build:prepare script missing');
+          j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
+          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
+          // Large generated LibreDWG functions can exceed Binaryen's local-variable parsing limits at -O2.
+          // -Os reduces the generated local count and output size; the WASM link retries at -Oz if required.
+          const prepareBefore=j.scripts[key];
+          j.scripts[key]=j.scripts[key].replace(/-O2(?=\s+-sUSE_ZLIB=1)/,'-Os');
+          if(j.scripts[key]===prepareBefore)throw new Error('Could not change LibreDWG CFLAGS from -O2 to -Os');
+          const wasmKey='build:wasm'; const wasmBefore=j.scripts[wasmKey];
+          if(!wasmBefore)throw new Error('LibreDWG build:wasm script missing');
+          // Emscripten's --emit-tsd fails on LibreDWG's uint64_t APIs in this pinned version.
+          // Keep the checked-in declaration file instead of generating a new one during WASM link.
+          const wasmNoTsd=wasmBefore.replace
