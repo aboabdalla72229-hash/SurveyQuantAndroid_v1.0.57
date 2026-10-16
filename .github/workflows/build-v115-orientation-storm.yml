@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export (Library-only WASM build with -Os/-Oz local-count fallback)
+name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export (CQuote heap-leak fix)
 
 on:
   workflow_dispatch:
@@ -105,7 +105,7 @@ jobs:
           echo "STORM_REPORT=$RUNNER_TEMP/STORM_CONVERSION_REPORT.md" >> "$GITHUB_ENV"
           echo "STORM_OUTPUT_ZIP=$RUNNER_TEMP/STORM_CONVERTED_DXF.zip" >> "$GITHUB_ENV"
 
-      - name: Build LibreDWG-Web with DXF writing enabled
+      - name: Build LibreDWG-Web with DXF writing enabled and cquote heap fix
         shell: bash
         run: |
           set -euo pipefail
@@ -113,7 +113,51 @@ jobs:
           test -s "$LIBREDWG_DIR/configure.ac" || { echo "ERROR: Pinned LibreDWG source was not checked out."; exit 1; }
           cd "$LIBREDWG_DIR"
           ./autogen.sh
-          cd bindings/javascript
+
+          # FIX: upstream cquote() terminated at the end of its allocation,
+          # rather than immediately after the converted text. dxf_fixup_string()
+          # then used strlen() and could append stale heap bytes to DXF strings.
+          # Those bytes can corrupt group-code/value pairing (observed as </MapLib>).
+          python3 - src/out_dxf.c <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+          old = "\n".join([
+              "      else",
+              "        *dest++ = c;",
+              "    }",
+              "  d[len - 1] = '\\0'; // add final delim, skipped above",
+              "  return d;",
+              "}",
+          ])
+          new = "\n".join([
+              "      else",
+              "        *dest++ = c;",
+              "    }",
+              "  /* SurveyQuant v115 fix: terminate at the last byte actually written. */",
+              "  if (dest >= dend)",
+              "    dest = d + len - 1;",
+              "  *dest = '\\0';",
+              "  d[len - 1] = '\\0'; // retain the final allocation sentinel",
+              "  return d;",
+              "}",
+          ])
+          occurrences = source.count(old)
+          if occurrences != 1:
+              raise SystemExit(
+                  f"ERROR: Expected exactly one cquote() terminator block in {path}; found {occurrences}. "
+                  "Do not continue with an unpatched LibreDWG source."
+              )
+          patched = source.replace(old, new, 1)
+          if "if (dest >= dend)" not in patched or "*dest = '\\0';" not in patched:
+              raise SystemExit("ERROR: cquote() NUL-termination patch verification failed.")
+          path.write_text(patched, encoding="utf-8")
+          print("PASS: patched cquote() to stop strlen() at the actual output end.")
+          PY
+
+          cd "$LIBREDWG_DIR/bindings/javascript"
           node <<'NODE'
           const fs=require('node:fs');
           const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));
@@ -202,6 +246,7 @@ jobs:
           for f in LICENSE COPYING COPYING.LESSER; do if [ -s "$LIBROOT/$f" ]; then cp "$LIBROOT/$f" "$DEST/$f"; fi; done
           cat > "$DEST/BUILD_CONFIGURATION.txt" <<'TXT'
           Built from mlightcad/libredwg-web tag v0.7.14.
+          Source patch: terminate cquote() after the last byte written so strlen() cannot include stale heap bytes.
           The corresponding source is included in libredwg-web-v0.7.14-source.zip.
           Build configuration enables LibreDWG DWG/DXF writing by removing --disable-write and --disable-dxf if present.
           The WASM objects and link use -Os; if linking fails, the workflow retries with -Oz.
@@ -212,7 +257,7 @@ jobs:
           (cd "$LIBROOT" && zip -qr "$SOURCE_ZIP" . -x '.git/*' 'bindings/javascript/node_modules/*' 'bindings/javascript/dist/*' 'bindings/javascript/wasm/*' 'bindings/javascript/src/libredwg-web.js' 'build-wasm/*' 'examples/dist/*' 'examples/wasm/*')
           git -C "$REPO" add -f libredwg-writer
           if ! git -C "$REPO" diff --cached --quiet; then
-            git -C "$REPO" commit -m "Add STORM-tested writer-enabled LibreDWG WebAssembly engine"
+            git -C "$REPO" commit -m "Add STORM-tested writer-enabled LibreDWG WebAssembly engine with cquote fix"
             git -C "$REPO" push origin HEAD:main
           fi
           WRITER_SHA="$(git -C "$REPO" rev-parse HEAD)"
@@ -511,6 +556,7 @@ jobs:
           SurveyQuant v1.0.115 - إصلاح توجيه STORM
           - يتضمن الاختبار ملفي STORM DWG الأصليين.
           - تم تفعيل دعم كتابة DXF في LibreDWG-Web v0.7.14.
+          - تم إصلاح إنهاء النص في cquote() حتى لا تُضاف بقايا الذاكرة إلى DXF.
           - الناتج DXF جديد ولا تتم الكتابة فوق الملف الأصلي.
           - يُراجع تقرير التحويل مع CAD للكائنات الوكيلة أو المتخصصة.
           - اختبارات البناء تتحقق من الملفين الحقيقيين قبل إنشاء APK.
