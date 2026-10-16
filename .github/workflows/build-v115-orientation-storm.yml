@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export
+name: Build SurveyQuant v1.0.115 - STORM DWG Writer + OSNAP + Nonblocking Export (Library-only WASM build)
 
 on:
   workflow_dispatch:
@@ -121,12 +121,24 @@ jobs:
           if(!before)throw new Error('LibreDWG build:prepare script missing');
           j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
           if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
+          // Build only the LibreDWG library objects needed by the JS/WASM binding.
+          // The default top-level `make` also builds CLI programs (not needed here),
+          // including dwgread.wasm, which can fail in Emscripten with "too many locals".
+          const objKey='build:obj'; const objBefore=j.scripts[objKey];
+          if(!objBefore)throw new Error('LibreDWG build:obj script missing');
+          const objAfter=objBefore.replace(/emmake\s+make(?=\s|$)/, 'emmake make -C src');
+          if(objAfter===objBefore && !/emmake\s+make\s+-C\s+src/.test(objBefore))throw new Error('Could not restrict LibreDWG object build to src/');
+          j.scripts[objKey]=objAfter;
           fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
-          console.log('Writer-enabled build command:',j.scripts[key]);
+          console.log('Writer-enabled configure command:',j.scripts[key]);
+          console.log('Library-only object build command:',j.scripts[objKey]);
           NODE
           pnpm install --frozen-lockfile
           pnpm build:prepare
+          # Only compile src/ and src/codepages. Do not build programs/dwgread.wasm.
           pnpm build:obj
+          test -s ../../build-wasm/src/out_dxf.o || { echo "ERROR: DXF writer object out_dxf.o was not compiled."; exit 1; }
+          test -s ../../build-wasm/src/encode.o || { echo "ERROR: DWG/DXF write support object encode.o was not compiled."; exit 1; }
           pnpm build:wasm
           pnpm copy
           pnpm build
