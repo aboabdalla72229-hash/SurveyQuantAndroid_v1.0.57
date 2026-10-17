@@ -594,7 +594,6 @@ jobs:
           ref, draw_count = pattern.subn(lambda m: new_draw + '\nfunction setupCanvas(v)', ref, count=1)
           if draw_count != 1: raise SystemExit(f'ERROR: expected to replace one complete draw(v) body; found {draw_count}')
           
-          # The supplemental fallback path retains the DXF layer styles too; point snapping respects layer visibility.
           ref = sub_once(ref,
           "function nearestSnap(v,world,screen){\n const mode=state.snapMode?.[v.side]||'auto',api=window.__sqManualOrientation109,m=metrics(v),segs=v.drawing.segs,projector=p=>project(v,p,m);",
           "function nearestSnap(v,world,screen){\n const mode=state.snapMode?.[v.side]||'auto',api=window.__sqManualOrientation109,m=metrics(v),segs=(v.drawing.segs||[]).filter(s=>layerVisible(v,s.layer)),anchors=(v.drawing.anchors||[]).filter(p=>layerVisible(v,p.layer)),projector=p=>project(v,p,m);",
@@ -603,12 +602,9 @@ jobs:
           "for(const p of v.drawing.anchors)test(p,'رأس/نهاية',42);",
           "for(const p of anchors)test(p,'رأس/نهاية',42);",
           'hide-layer anchors from OSNAP')
-          
-          # Use a smaller drawing viewport; fit/zoom affect the CAD transform within this fixed rectangle.
           ref = ref.replace('height:520px;min-height:520px;border:1px solid #42536b','height:230px;min-height:230px;max-height:230px;border:1px solid #42536b')
           if ref.count('height:230px;min-height:230px;max-height:230px;border:1px solid #42536b') != 2:
               raise SystemExit('ERROR: both board canvases were not reduced to the requested compact size')
-          # Add collapsed layer selectors below each drawing canvas, not extra screen area until expanded.
           ref = sub_once(ref,
           'background:#0b1220"></canvas><p id="sq110TargetInfo"',
           'background:#0b1220;touch-action:none"></canvas><details id="sq110TLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة (إظهار/إخفاء)</summary><div id="sq110TLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110TargetInfo"',
@@ -617,7 +613,6 @@ jobs:
           'background:#0b1220"></canvas><p id="sq110ReferenceInfo"',
           'background:#0b1220;touch-action:none"></canvas><details id="sq110RLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة المرجعية (إظهار/إخفاء)</summary><div id="sq110RLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110ReferenceInfo"',
           'compact reference layer controls')
-          # Give each view its own layer state and fill the panel after parse / import.
           ref = sub_once(ref,
           "const viewer={side,bytes,name,drawing,canvas:el(canvasId),ctx:null,zoom:1,panX:0,panY:0,pointerMap:new Map(),mode:'',drag:null,pinch:null,didDrag:false,suppressTap:false};",
           "const viewer={side,bytes,name,drawing,canvas:el(canvasId),ctx:null,zoom:1,panX:0,panY:0,pointerMap:new Map(),mode:'',drag:null,pinch:null,didDrag:false,suppressTap:false,layerVisibility:Object.create(null)};",
@@ -626,31 +621,23 @@ jobs:
           "state.views[side]=viewer;setupCanvas(viewer);return viewer;}",
           "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);return viewer;}",
           'build layer controls after board loads')
-          # prevent WebView/page zoom; pointer and wheel gestures remain scoped to the canvas.
           ref = sub_once(ref,
           "const overlay=el('sqOriOverlay');if(!overlay)return;const dialog=overlay.querySelector('.sqori-dialog');if(!dialog)return;",
           "const overlay=el('sqOriOverlay');if(!overlay)return;const dialog=overlay.querySelector('.sqori-dialog');if(!dialog)return;dialog.style.maxHeight='86dvh';dialog.style.overflowY='auto';dialog.style.width='min(96vw,760px)';dialog.style.boxSizing='border-box';const viewport=document.querySelector('meta[name=\"viewport\"]');if(viewport)viewport.setAttribute('content','width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no');",
           'compact orientation dialog and board-only zoom')
-          # Keep drawing zoom finite and do not change the HTML layout when zooming.
           ref = ref.replace('Math.min(5000,', 'Math.min(1000,')
           ref = ref.replace('Math.max(.15,Math.min(120,', 'Math.max(.1,Math.min(1000,')
-          # Zoom slider declared by the previous generation must remain mapped to the same board-only zoom.
           ref = ref.replace('max="3.7" step="0.01" value="0" aria-label="تكبير دقيق حتى 5000 مرة"', 'max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"')
           ref = ref.replace("v.zoom=Math.max(.1584893,Math.min(5000,Number(value)||1));", "v.zoom=Math.max(.1,Math.min(1000,Number(value)||1));")
           ref = ref.replace("v.zoom=Math.max(.15,Math.min(120,v.zoom*(e.deltaY<0?1.2:1/1.2)));", "v.zoom=Math.max(.1,Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2)));\n  const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));")
           ref = ref.replace("v.zoom=Math.max(.15,Math.min(120,v.pinch.zoom*distance/v.pinch.distance));", "v.zoom=Math.max(.1,Math.min(1000,v.pinch.zoom*distance/v.pinch.distance));\n  const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));")
-          # Update UI text and include validation / preserved-layer diagnostics after export.
           ref = ref.replace('تكبير حتى 5000 مرة','تكبير اللوحة حتى 1000 مرة')
           ref = ref.replace("' | عناصر بلا إحداثيات مكشوفة بقيت ببياناتها الأصلية: '+result.unchangedOpaque", "' | طبقات محفوظة: '+(result.layersPreserved?'نعم':'تحقق مطلوب')+' | كيانات قبل/بعد: '+(result.entitiesBefore||'?')+'/'+(result.entitiesAfter||'?')+(result.paperSpaceFallback?' | تم توجيه محتوى Paper Space لعدم وجود هندسة Model Space':'')+' | عناصر بلا إحداثيات مكشوفة بقيت ببياناتها الأصلية: '+result.unchangedOpaque")
-          # Version mark.
-          
-          # Ensure important anchors didn't silently fail.
           manual = manual.replace('.trim().slice(0,32);', '.trim().slice(0,250);', 1)
-          
           required_manual=['layers=Object.create(null)','trueColor','pointEntity','linetype','fills','drawHatchPolylineBoundary',"e.type==='DIMENSION'",'return {segs,anchors,texts,fills,layers']
           missing=[x for x in required_manual if x not in manual]
           if missing: raise SystemExit('ERROR: manual parser missing expected layer/style outputs: '+', '.join(missing))
-          required_ref=['function layerDefinitions(pairs)','function buildLayerPanel(v)','function layerVisible(v,name)','تكبير داخل اللوحة','sq110TLayerPanel','sq110RLayerPanel','dimensionBlockEntities','paperSpaceFallback','geometryChangedFields',"updateHeaderBounds('$EXTMIN','$EXTMAX')","'$VIEWCTR'",'Math.min(1000,','height:230px;min-height:230px;max-height:230px','c.globalAlpha=.22']
+          required_ref=['function layerDefinitions(pairs)','function buildLayerPanel(v)','function layerVisible(v,name)','تكبير داخل اللوحة','sq110TLayerPanel','sq110RLayerPanel','dimensionBlockEntities','paperSpaceFallback','Math.min(1000,','height:230px;min-height:230px;max-height:230px','c.globalAlpha=.22']
           missing=[x for x in required_ref if x not in ref]
           if missing: raise SystemExit('ERROR: reference display/transform patch missing: '+', '.join(missing))
           manual_path.write_text(manual,encoding='utf-8')
@@ -678,7 +665,6 @@ jobs:
           vm.runInContext(fs.readFileSync(referencePath,'utf8'),h.ctx,{filename:'reference-v116'});
           const manual=h.window.__sqManualOrientation109,api=h.window.__sqOrientation111API;
           assert(manual&&api,'reader and orientation API initialize');
-          // Layer records and inline entity styles must be visible to the real renderer.
           const styled=dxf([
           '0','SECTION','2','HEADER','9','$EXTMIN','10','0','20','0','30','0','9','$EXTMAX','10','10','20','10','30','0','9','$VIEWCTR','10','5','20','5','9','$VIEWSIZE','40','10','0','ENDSEC',
           '0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','2',
@@ -1031,7 +1017,6 @@ jobs:
            const dimBlockNames=new Set(records.filter(r=>r.type==='DIMENSION').map(r=>recordString(r,2).toUpperCase()).filter(Boolean));"""
           reference = once(reference, old, new, "transformer shared space choice")
           
-          # Preview supplemental entities must come from the exact same chosen space.
           old = "const parsed=splitPairs(bytes),all=sectionRecords(parsed.pairs,'ENTITIES'),blocks=blockDefinitions(parsed.pairs),usedFallback=!base;const parsedLayers=layerDefinitions(parsed.pairs);"
           new = "const parsed=splitPairs(bytes),allRecords=sectionRecords(parsed.pairs,'ENTITIES'),selector=api.selectDrawingSpace,selection=typeof selector==='function'?selector(allRecords):{entities:allRecords,spaceMode:'MODEL_SPACE',layoutName:'Model',modelCount:allRecords.length,paperCount:0},all=selection.entities,blocks=blockDefinitions(parsed.pairs),usedFallback=!base;const parsedLayers=layerDefinitions(parsed.pairs);"
           reference = once(reference, old, new, "preview shared space choice")
@@ -1051,18 +1036,14 @@ jobs:
           "if(info)info.textContent='الملف: '+file.name+' | العناصر: '+view.drawing.entityCount+' | ملاحظة: جميع بيانات DXF الأصلية محفوظة عند الإخراج؛ المعاينة هنا هندسية.';status('تم فتح '+file.name+'. اختر النقطة 1 ثم 2؛ سيظهر رقم كل نقطة تلقائيًا على الرسم.'+(view.drawing.previewRecoveryMessage?' '+view.drawing.previewRecoveryMessage:''));",
           "if(info)info.textContent='الملف: '+file.name+' | مساحة العرض: '+(view.drawing.spaceMode==='PAPER_SPACE'?'Layout '+(view.drawing.spaceLayout||''):'Model Space')+' | العناصر: '+view.drawing.entityCount+' | ملاحظة: بيانات DXF الأصلية محفوظة عند الإخراج؛ المعاينة هندسية.';status('تم فتح '+file.name+' في '+(view.drawing.spaceMode==='PAPER_SPACE'?'Layout '+(view.drawing.spaceLayout||''):'Model Space')+'. اختر النقطة 1 ثم 2؛ سيظهر رقم كل نقطة تلقائيًا على الرسم.'+(view.drawing.previewRecoveryMessage?' '+view.drawing.previewRecoveryMessage:''));",
           "show chosen space when loading board")
-          # Open exported DXF around the chosen fit bounds while preserving true full extents.
           reference = once(reference,
           " const viewSize=headerVars.get('$VIEWSIZE')?.find(p=>p.code===40);if(viewSize){const n=numeric(viewSize.value);if(n!==null&&n>0)writeHeader(viewSize,n*t.scale);}\n if(!identity&&geometryChangedFields===0)",
           " const viewSize=headerVars.get('$VIEWSIZE')?.find(p=>p.code===40);if(viewSize){const n=numeric(viewSize.value);if(n!==null&&n>0)writeHeader(viewSize,n*t.scale);}\n if(t.viewBounds&&['minX','minY','maxX','maxY'].every(k=>Number.isFinite(t.viewBounds[k]))){const b=t.viewBounds,corners=[t.point(b.minX,b.minY),t.point(b.minX,b.maxY),t.point(b.maxX,b.minY),t.point(b.maxX,b.maxY)],xs=corners.map(p=>p.x),ys=corners.map(p=>p.y),cx=(Math.min(...xs)+Math.max(...xs))/2,cy=(Math.min(...ys)+Math.max(...ys))/2,height=Math.max(1e-6,(Math.max(...ys)-Math.min(...ys))*1.12),center=headerPoint('$VIEWCTR');if(center){writeHeader(center.x,cx);writeHeader(center.y,cy);}if(viewSize)writeHeader(viewSize,height);}\n if(!identity&&geometryChangedFields===0)",
           "save initial viewport around main board")
-          
           reference = once(reference,
           "const t=review();if(!t)return;const engine=window.__sqOrientTest;",
           "const t=review();if(!t)return;const activeView=state.views.target&&state.views.target.drawing;if(activeView)t.viewBounds=activeView.fitBounds||activeView.bounds;const engine=window.__sqOrientTest;",
           "pass fit bounds to DXF export")
-          
-          # Offer a detailed main-board fit and a separate full-extents view without deleting anything.
           reference = once(reference,
           '<button id="sq110TFit" class="sqori-preview" type="button">ملاءمة</button>',
           '<button id="sq110TFit" class="sqori-preview" type="button">ملاءمة اللوحة</button><button id="sq110TFitAll" class="sqori-preview" type="button">عرض كل العناصر</button>',
@@ -1075,14 +1056,10 @@ jobs:
           "el('sq110'+prefix+'Fit').addEventListener('click',()=>{const v=state.views[side];if(v){resetView(v);setZoom(side,1);}});",
           "el('sq110'+prefix+'Fit').addEventListener('click',()=>{const v=state.views[side];if(v)fitView(v,'main');});el('sq110'+prefix+'FitAll').addEventListener('click',()=>{const v=state.views[side];if(v)fitView(v,'all');});",
           "main-fit and full-extents actions")
-          
-          # After supplementing the primary parser with CAD-specific elements, recompute both full and fit extents.
           reference = once(reference,
           "if(pts.length){let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}if(maxX-minX<1e-9){minX-=.5;maxX+=.5;}if(maxY-minY<1e-9){minY-=.5;maxY+=.5;}base.bounds={minX,minY,maxX,maxY};}\n else{base.bounds={minX:0,minY:0,maxX:1,maxY:1};base.previewWarning='تعذر رسم بعض أنواع العناصر هندسيًا في المعاينة؛ بيانات DXF الأصلية محفوظة. جرّب حفظ نسخة DXF نصية من برنامج CAD لعرض العناصر.';}",
           "if(pts.length){let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}if(maxX-minX<1e-9){minX-=.5;maxX+=.5;}if(maxY-minY<1e-9){minY-=.5;maxY+=.5;}base.bounds={minX,minY,maxX,maxY};const fit=typeof api.fitBoundsForPoints==='function'?api.fitBoundsForPoints(pts,base.bounds,typeof api.headerBoundsFromPairs==='function'?api.headerBoundsFromPairs(parsed.pairs):null):{bounds:base.bounds,excluded:{xLow:0,xHigh:0,yLow:0,yHigh:0}};base.fitBounds=fit.bounds;base.fitOutliersExcluded=fit.excluded;base.fitBoundsBasis=fit.basis||'ROBUST_GEOMETRY';}\n else{base.bounds={minX:0,minY:0,maxX:1,maxY:1};base.fitBounds=base.bounds;base.fitOutliersExcluded={xLow:0,xHigh:0,yLow:0,yHigh:0};base.previewWarning='تعذر رسم بعض أنواع العناصر هندسيًا في المعاينة؛ بيانات DXF الأصلية محفوظة. جرّب حفظ نسخة DXF نصية من برنامج CAD لعرض العناصر.';}",
           "focus initial view on dominant board without dropping elements")
-          
-          # Add robust fit-to-board after loading a board: reset pan and fit the selected-space bounds.
           reference = once(reference,
           "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);return viewer;}",
           "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);fitView(viewer,'main');return viewer;}",
@@ -1327,43 +1304,29 @@ jobs:
           Path(sys.argv[2]).write_text(source,encoding='utf-8')
           PY
           node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
+
+      - name: Set up Gradle (source archive does not include gradlew)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
       - name: Build Android APK v1.0.118
         shell: bash
         run: |
           set -euo pipefail
-
           test -d "$PROJECT_DIR"
           test -s "$PROJECT_DIR/app/build.gradle"
-
-          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
-            echo "ERROR: Gradle wrapper is missing from the Android source."
+          gradle --version
+          gradle --no-daemon --stacktrace -p "$PROJECT_DIR" :app:assembleDebug
+          APK_SOURCE="$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' -print -quit)"
+          if [ -z "$APK_SOURCE" ] || [ ! -s "$APK_SOURCE" ]; then
+            echo "ERROR: Gradle finished but no APK was found under app/build/outputs/apk."
+            find "$PROJECT_DIR/app/build/outputs" -type f -print 2>/dev/null || true
             exit 1
           fi
-
-          chmod +x "$PROJECT_DIR/gradlew"
-
-          "$PROJECT_DIR/gradlew" \
-            --no-daemon \
-            --stacktrace \
-            -p "$PROJECT_DIR" \
-            :app:assembleDebug
-
-          APK_SOURCE="$(
-            find "$PROJECT_DIR/app/build/outputs/apk/debug" \
-              -type f -name '*.apk' -print -quit
-          )"
-
-          test -n "$APK_SOURCE"
-          test -s "$APK_SOURCE"
-
           mkdir -p "$RUNNER_TEMP/surveyquant-apk"
-
-          cp "$APK_SOURCE" \
-            "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk"
-
-          sha256sum \
-            "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk" \
-            > "$RUNNER_TEMP/surveyquant-apk/SHA256SUMS.txt"
+          cp "$APK_SOURCE" "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk"
+          sha256sum "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk" > "$RUNNER_TEMP/surveyquant-apk/SHA256SUMS.txt"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
