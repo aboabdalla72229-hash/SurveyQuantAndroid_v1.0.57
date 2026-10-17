@@ -160,7 +160,7 @@ jobs:
           const key='build:prepare';const before=j.scripts[key];
           if(!before)throw new Error('LibreDWG build:prepare script missing');
           j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
-          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG');
+          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
           const prepareBefore=j.scripts[key];
           j.scripts[key]=j.scripts[key].replace(/-O2(?=\s+-sUSE_ZLIB=1)/,'-Os');
           if(j.scripts[key]===prepareBefore)throw new Error('Could not change LibreDWG CFLAGS from -O2 to -Os');
@@ -214,8 +214,28 @@ jobs:
           export STORM_INPUT_DIR STORM_OUTPUT_DIR STORM_REPORT STORM_OUTPUT_ZIP
           mkdir -p "$STORM_OUTPUT_DIR"
           cd "$V115_PACKAGE_DIR"
-          echo "Running the bundled orientation regression test..."
-          node "$V115_TEST"
+          echo "Locating the four required orientation regression-test inputs..."
+          find_test_input() {
+            local name="$1"
+            local found=""
+            found="$(find "$V115_PACKAGE_DIR" "$GITHUB_WORKSPACE" \
+              -type f -name "$name" \
+              ! -path "$GITHUB_WORKSPACE/.git/*" \
+              ! -path "$GITHUB_WORKSPACE/external/*" \
+              -print -quit 2>/dev/null || true)"
+            if [ -z "$found" ]; then
+              echo "ERROR: Orientation test requires '$name', but it was not found in the patch bundle or repository." >&2
+              echo "The v115 ZIP/repository must include reference.js, preserve.js, tools.js, and index.html." >&2
+              return 1
+            fi
+            printf '%s' "$found"
+          }
+          REFERENCE_JS="$(find_test_input reference.js)"
+          PRESERVE_JS="$(find_test_input preserve.js)"
+          TOOLS_JS="$(find_test_input tools.js)"
+          INDEX_HTML="$(find_test_input index.html)"
+          echo "Running the bundled orientation regression test with all four required arguments..."
+          node "$V115_TEST" "$REFERENCE_JS" "$PRESERVE_JS" "$TOOLS_JS" "$INDEX_HTML"
           echo "Running conversion test against the two original STORM DWG files..."
           node "$STORM_TEST_MODULE"
           echo "Running STORM transform/orientation assertions..."
@@ -282,6 +302,7 @@ jobs:
               env[key] = str(app_root)
 
           command = [sys.executable, str(patcher)]
+          # Pass a project-root parameter only when the bundled patcher defines it.
           option_patterns = (
               ("--project-root", r"add_argument\s*\(\s*['\"]--project-root['\"]"),
               ("--project-dir", r"add_argument\s*\(\s*['\"]--project-dir['\"]"),
@@ -299,7 +320,7 @@ jobs:
                   r"add_argument\s*\(\s*['\"](project_root|project_dir|app_root|source_root|root)['\"]",
                   source,
               )
-              if positional or re.search(r"\bsys\.argv\[\s*1\s*\]", source):
+              if positional:
                   command.append(str(app_root))
 
           print("Applying patch from:", patcher)
