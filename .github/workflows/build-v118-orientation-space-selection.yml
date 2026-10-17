@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.117 - Extreme In-Board Zoom (Preserve Original CAD)
+name: Build SurveyQuant v1.0.118 - Correct Board Preview and Orientation Space (Preserve Original CAD)
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v117-orientation-extreme-zoom.yml"
+      - ".github/workflows/build-v118-orientation-space-selection.yml"
 
 permissions:
   contents: write
@@ -760,9 +760,9 @@ jobs:
           html=html.replace('</body>',injected,1)
 
           import re
-          html,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 117;', html, count=1)
-          if n != 1 or 'const SQ_APP_VERSION_CODE = 117;' not in html:
-            raise SystemExit('ERROR: Failed to set HTML app version code to 117.')
+          html,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 118;', html, count=1)
+          if n != 1 or 'const SQ_APP_VERSION_CODE = 118;' not in html:
+            raise SystemExit('ERROR: Failed to set HTML app version code to 118.')
 
           html_path.write_text(html,encoding='utf-8')
           PY
@@ -802,7 +802,7 @@ jobs:
             'function mergeProjectionDxfPreservingReference(rawBytes, additions)',
             'async function dropFilesMerge(){',
             'id="project1Card"','id="profileCard"','id="roadCard"','id="dropFilesCard"','id="paymentCard"',
-            'const SQ_APP_VERSION_CODE = 117;',
+            'const SQ_APP_VERSION_CODE = 118;',
             'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"','id="sq-orientation-reference-board-module"','id="sq-orientation-dxf-faithful-recovery-module"','id="sq-orientation-cad-preserve-module"','id="sq-orientation-v115-tools-module"',
             'window.__sqOrientation113API','normalizeBlankPairLines','v115Diagnostics','window.__sqOrientation115Tools','SQ_WRITER_ENGINE_URL','sq110ReadAxesBtn','sq110TZoomRange','sq110TSnapMode','refreshVisibleCadCanvas','new window.ResizeObserver(()=>resize())',
             "card.id = 'sqOrientationCard'",'sqOrientationMenuButton',
@@ -898,7 +898,329 @@ jobs:
           NODE
           node "$RUNNER_TEMP/test-v117-zoom.js" "$REFERENCE_MODULE" "$INDEX_PATH"
 
-      - name: Set Android release version to 1.0.117
+      - name: Select one CAD drawing space for preview and orientation (v118)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/patch-v118-space-selection.py" <<'PY'
+          from pathlib import Path
+          import re, sys
+          manual_path, reference_path, index_path = map(Path, sys.argv[1:4])
+          manual = manual_path.read_text(encoding='utf-8')
+          reference = reference_path.read_text(encoding='utf-8')
+          
+          def once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'ERROR: expected one {label} anchor; found {n}')
+              return text.replace(old, new, 1)
+          
+          helpers = r'''
+          function entitySpace(rec){
+           const pairs=rec&&Array.isArray(rec.pairs)?rec.pairs:[];
+           const flag=pairs.find(p=>p.code===67);
+           if(flag&&Number(flag.value)===1)return 'PAPER_SPACE';
+           const layout=pairs.find(p=>p.code===410);
+           if(layout){const name=String(layout.value||'').trim().toUpperCase();if(name&&name!=='MODEL'&&name!=='*MODEL_SPACE'&&name!=='MODEL_SPACE')return 'PAPER_SPACE';}
+           return 'MODEL_SPACE';
+          }
+          function hasDrawingCoordinates(rec){
+           const type=String(rec&&rec.type||'').toUpperCase();
+           if(!type||['VIEWPORT','SEQEND','ENDBLK','BLOCK','ENDSEC','ENDTAB','VERTEX','DICTIONARY','XRECORD'].includes(type))return false;
+           const pairs=rec.pairs||[];
+           const isNumeric=code=>pairs.some(p=>p.code===code&&Number.isFinite(Number(p.value)));
+           for(let x=10;x<=18;x++)if(isNumeric(x)&&isNumeric(x+10))return true;
+           if(['HATCH','DIMENSION','INSERT','POINT','IMAGE','WIPEOUT'].includes(type))return isNumeric(10)&&isNumeric(20);
+           return false;
+          }
+          function spaceWeight(rec){
+           if(!hasDrawingCoordinates(rec))return 0;
+           const type=String(rec.type||'').toUpperCase();
+           if(['LWPOLYLINE','POLYLINE','SPLINE','HATCH','INSERT','MLINE','3DFACE','SOLID','TRACE'].includes(type))return 3;
+           if(['LINE','CIRCLE','ARC','ELLIPSE','DIMENSION','IMAGE','WIPEOUT'].includes(type))return 2;
+           if(['TEXT','MTEXT','ATTRIB','ATTDEF','POINT','LEADER','MLEADER'].includes(type))return 1;
+           return 1;
+          }
+          function selectDrawingSpace(entities){
+           const all=Array.isArray(entities)?entities:[];
+           const model=all.filter(e=>entitySpace(e)==='MODEL_SPACE');
+           const paper=all.filter(e=>entitySpace(e)==='PAPER_SPACE');
+           const modelScore=model.reduce((n,e)=>n+spaceWeight(e),0);
+           const modelGeometry=model.filter(e=>spaceWeight(e)>0).length;
+           if(modelGeometry>0)return {entities:model,spaceMode:'MODEL_SPACE',modelCount:model.length,paperCount:paper.length,layoutName:'Model'};
+           if(!paper.length)return {entities:modelGeometry?model:[],spaceMode:'MODEL_SPACE',modelCount:model.length,paperCount:0,layoutName:'Model'};
+           // Do not combine multiple layouts. Choose the single paper layout containing the
+           // most actual geometry, excluding viewport boundary entities from the score.
+           const layouts=new Map();
+           for(const rec of paper){const lp=(rec.pairs||[]).find(p=>p.code===410);const layoutName=lp?String(lp.value||'').trim():'*PAPERSPACE';if(!layouts.has(layoutName))layouts.set(layoutName,[]);layouts.get(layoutName).push(rec);}
+           let bestName='',bestEntities=[],bestScore=-1;
+           for(const [name,items] of layouts){const score=items.reduce((n,e)=>n+spaceWeight(e),0);if(score>bestScore){bestName=name;bestEntities=items;bestScore=score;}}
+           // If no code 410 values were present, all Paper Space entities form one legacy layout.
+           if(layouts.size===1&&bestScore===0)bestEntities=paper;
+           return {entities:bestEntities,spaceMode:'PAPER_SPACE',modelCount:model.length,paperCount:paper.length,layoutName:bestName||'*PAPERSPACE'};
+          }
+          // Keep full entity bounds for data fidelity but focus the initial view on the dominant drawing cluster.
+          // This viewport-only calculation never deletes or moves an entity.
+          function headerBoundsFromPairs(pairs){
+           const read=name=>{const all=Array.isArray(pairs)?pairs:[],i=all.findIndex(p=>p.code===9&&String(p.value||'').trim().toUpperCase()===name);if(i<0)return null;let x=null,y=null;for(let j=i+1;j<all.length&&all[j].code!==9&&all[j].code!==0;j++){if(all[j].code===10&&x===null)x=Number(all[j].value);if(all[j].code===20&&y===null)y=Number(all[j].value);}return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;};
+           const lo=read('$EXTMIN'),hi=read('$EXTMAX');if(!lo||!hi||!(hi.x>lo.x)||!(hi.y>lo.y))return null;return {minX:lo.x,minY:lo.y,maxX:hi.x,maxY:hi.y};
+          }
+          function fitBoundsForPoints(points,fullBounds,headerBounds=null){
+           const source=(Array.isArray(points)?points:[]).filter(p=>p&&Number.isFinite(Number(p.x))&&Number.isFinite(Number(p.y)));
+           const full=fullBounds||{minX:0,minY:0,maxX:1,maxY:1};
+           // Trust the original CAD header's saved extents only when it contains almost all
+           // parsed geometry. A small number of block/annotation artifacts must not shrink
+           // the whole board to a line, but all source entities remain present in the DXF.
+           if(headerBounds&&source.length>=20&&[headerBounds.minX,headerBounds.minY,headerBounds.maxX,headerBounds.maxY].every(Number.isFinite)&&headerBounds.maxX>headerBounds.minX&&headerBounds.maxY>headerBounds.minY){
+            const wx=(headerBounds.maxX-headerBounds.minX)*.01,wy=(headerBounds.maxY-headerBounds.minY)*.01;let inside=0,xLow=0,xHigh=0,yLow=0,yHigh=0;
+            for(const p of source){const x=Number(p.x),y=Number(p.y);if(x<headerBounds.minX-wx)xLow++;if(x>headerBounds.maxX+wx)xHigh++;if(y<headerBounds.minY-wy)yLow++;if(y>headerBounds.maxY+wy)yHigh++;if(x>=headerBounds.minX-wx&&x<=headerBounds.maxX+wx&&y>=headerBounds.minY-wy&&y<=headerBounds.maxY+wy)inside++;}
+            if(inside/source.length>=.98){const px=(headerBounds.maxX-headerBounds.minX)*.02,py=(headerBounds.maxY-headerBounds.minY)*.02;return {bounds:{minX:headerBounds.minX-px,minY:headerBounds.minY-py,maxX:headerBounds.maxX+px,maxY:headerBounds.maxY+py},excluded:{xLow,xHigh,yLow,yHigh},basis:'DXF_HEADER_EXTENTS',insideRatio:inside/source.length};}
+           }
+           function trimAxis(values,lowKey,highKey){
+            const a=values.filter(Number.isFinite).sort((x,y)=>x-y);if(a.length<20)return {low:full[lowKey],high:full[highKey],lowRemoved:0,highRemoved:0};
+            const span=a[a.length-1]-a[0];if(!(span>1e-9))return {low:full[lowKey],high:full[highKey],lowRemoved:0,highRemoved:0};
+            const tailLimit=Math.max(3,Math.floor(a.length*.01));let best=null;
+            for(let i=1;i<=tailLimit&&i<a.length/2;i++){const gap=a[i]-a[i-1],rest=a[a.length-1]-a[i];if(gap>Math.max(span*.1,rest*4)&&(!best||gap>best.gap))best={gap,side:'low',index:i,cut:a[i]};}
+            for(let i=Math.max(1,a.length-tailLimit);i<a.length;i++){const gap=a[i]-a[i-1],rest=a[i-1]-a[0];if(gap>Math.max(span*.1,rest*4)&&(!best||gap>best.gap))best={gap,side:'high',index:i,cut:a[i-1]};}
+            let low=full[lowKey],high=full[highKey],lowRemoved=0,highRemoved=0;
+            if(best&&best.side==='low'){low=best.cut;lowRemoved=best.index;}
+            if(best&&best.side==='high'){high=best.cut;highRemoved=a.length-best.index;}
+            const remaining=Math.max(1e-9,high-low),pad=remaining*.02;
+            return {low:low-pad,high:high+pad,lowRemoved,highRemoved};
+           }
+           const x=trimAxis(source.map(p=>Number(p.x)),'minX','maxX'),y=trimAxis(source.map(p=>Number(p.y)),'minY','maxY');
+           const b={minX:x.low,minY:y.low,maxX:x.high,maxY:y.high};
+           if(!(b.maxX>b.minX)||!(b.maxY>b.minY))return {bounds:{...full},excluded:{xLow:0,xHigh:0,yLow:0,yHigh:0}};
+           return {bounds:b,excluded:{xLow:x.lowRemoved,xHigh:x.highRemoved,yLow:y.lowRemoved,yHigh:y.highRemoved}};
+          }
+          '''
+          manual = once(manual,
+          "flush();if(!sections.ENTITIES)throw new Error('لم يتم العثور على قسم ENTITIES داخل DXF.');return sections;\n}",
+          "flush();if(!sections.ENTITIES)throw new Error('لم يتم العثور على قسم ENTITIES داخل DXF.');return sections;\n}\n"+helpers,
+          "shared model/paper-space selector")
+          manual = once(manual,
+          " expand(sections.ENTITIES,makeMatrix());",
+          " const spaceSelection=selectDrawingSpace(sections.ENTITIES);\n expand(spaceSelection.entities,makeMatrix());",
+          "use one selected drawing space for preview")
+          manual = once(manual,
+          "return {segs,anchors,texts,fills,layers,bounds:{minX,minY,maxX,maxY},entityCount,unsupported,sourceFormat:'DXF'};",
+          "const bounds={minX,minY,maxX,maxY},fit=fitBoundsForPoints(anchors,bounds,headerBoundsFromPairs(pairs));return {segs,anchors,texts,fills,layers,bounds,fitBounds:fit.bounds,fitOutliersExcluded:fit.excluded,fitBoundsBasis:fit.basis||'ROBUST_GEOMETRY',entityCount,unsupported,sourceFormat:'DXF',spaceMode:spaceSelection.spaceMode,spaceLayout:spaceSelection.layoutName,modelEntityCount:spaceSelection.modelCount,paperEntityCount:spaceSelection.paperCount};",
+          "expose preview space info")
+          manual = once(manual,
+          "window.__sqManualOrientation109={parseDrawing,solve,segmentIntersection,findNearestIntersection,zoomTransformAt,pinchZoom,clampZoom,nearestOnDrawing:()=>drawing?nearestOnDrawing({x:(drawing.bounds.minX+drawing.bounds.maxX)/2,y:(drawing.bounds.minY+drawing.bounds.maxY)/2}):null,VERSION};",
+          "window.__sqManualOrientation109={parseDrawing,selectDrawingSpace,headerBoundsFromPairs,fitBoundsForPoints,solve,segmentIntersection,findNearestIntersection,zoomTransformAt,pinchZoom,clampZoom,nearestOnDrawing:()=>drawing?nearestOnDrawing({x:(drawing.bounds.minX+drawing.bounds.maxX)/2,y:(drawing.bounds.minY+drawing.bounds.maxY)/2}):null,VERSION};",
+          "expose shared selector API")
+          
+          # The byte-preserving transformer must target the same space the preview chose.
+          old = """ const isPaper=rec=>rec.pairs.some(p=>p.code===67&&Number(p.value)===1);
+           const hasXY=rec=>{const codes=new Set(rec.pairs.map(p=>p.code));for(let x=10;x<=18;x++)if(codes.has(x)&&codes.has(x+10))return true;return rec.type==='POINT'||rec.type==='INSERT'||rec.type==='HATCH'||rec.type==='DIMENSION';};
+           const model=all.filter(r=>!isPaper(r)),paper=all.filter(isPaper);
+           const modelHasGeometry=model.some(hasXY),paperFallback=!modelHasGeometry&&paper.some(hasXY);
+           const records=modelHasGeometry?model:(paperFallback?paper:[]);
+           if(!records.length)throw new Error('لم أجد كيانات هندسية قابلة للتحويل في Model Space أو Paper Space. قد تكون اللوحة مرجعًا خارجيًا أو محتوى CAD خاصًا لا يكشف إحداثياته. لم يتم حفظ إسقاط فارغ.');
+           const dimBlockNames=new Set(all.filter(r=>r.type==='DIMENSION').map(r=>recordString(r,2).toUpperCase()).filter(Boolean));"""
+          new = """ const selector=window.__sqManualOrientation109&&window.__sqManualOrientation109.selectDrawingSpace;
+           const selectedSpace=typeof selector==='function'?selector(all):null;
+           const isPaper=rec=>rec.pairs.some(p=>p.code===67&&Number(p.value)===1);
+           const hasXY=rec=>{const codes=new Set(rec.pairs.map(p=>p.code));for(let x=10;x<=18;x++)if(codes.has(x)&&codes.has(x+10))return true;return rec.type==='POINT'||rec.type==='INSERT'||rec.type==='HATCH'||rec.type==='DIMENSION';};
+           const model=all.filter(r=>!isPaper(r)),paper=all.filter(isPaper);
+           const modelHasGeometry=model.some(hasXY),legacyPaperFallback=!modelHasGeometry&&paper.some(hasXY);
+           const records=selectedSpace?selectedSpace.entities:(modelHasGeometry?model:(legacyPaperFallback?paper:[]));
+           const paperFallback=selectedSpace?selectedSpace.spaceMode==='PAPER_SPACE':legacyPaperFallback;
+           if(!records.length)throw new Error('لم أجد كيانات هندسية قابلة للتحويل في Model Space أو في صفحة Layout بديلة. لم يتم حفظ ملف ناقص.');
+           const dimBlockNames=new Set(records.filter(r=>r.type==='DIMENSION').map(r=>recordString(r,2).toUpperCase()).filter(Boolean));"""
+          reference = once(reference, old, new, "transformer shared space choice")
+          
+          # Preview supplemental entities must come from the exact same chosen space.
+          old = "const parsed=splitPairs(bytes),all=sectionRecords(parsed.pairs,'ENTITIES'),blocks=blockDefinitions(parsed.pairs),usedFallback=!base;const parsedLayers=layerDefinitions(parsed.pairs);"
+          new = "const parsed=splitPairs(bytes),allRecords=sectionRecords(parsed.pairs,'ENTITIES'),selector=api.selectDrawingSpace,selection=typeof selector==='function'?selector(allRecords):{entities:allRecords,spaceMode:'MODEL_SPACE',layoutName:'Model',modelCount:allRecords.length,paperCount:0},all=selection.entities,blocks=blockDefinitions(parsed.pairs),usedFallback=!base;const parsedLayers=layerDefinitions(parsed.pairs);"
+          reference = once(reference, old, new, "preview shared space choice")
+          reference = once(reference,
+          "base.entityCount=Math.max(base.entityCount||0,all.length);base.originalEntityRecords=all.length;base.recoveredPairs=parsed.recoveryCount||0;",
+          "base.entityCount=Math.max(base.entityCount||0,all.length);base.originalEntityRecords=all.length;base.spaceMode=base.spaceMode||selection.spaceMode;base.spaceLayout=base.spaceLayout||selection.layoutName;base.modelEntityCount=selection.modelCount;base.paperEntityCount=selection.paperCount;base.recoveredPairs=parsed.recoveryCount||0;",
+          "preview active space metadata")
+          reference = once(reference,
+          "if(count)count.textContent='كيانات: '+v.drawing.entityCount+' | مقاطع: '+(v.drawing.segs||[]).length+' | طبقات: '+Object.keys(v.drawing.layers||{}).length+' | تكبير داخل اللوحة ×'+v.zoom.toFixed(2)+(v.drawing.unsupported?' | عناصر CAD خاصة: '+v.drawing.unsupported:'');",
+          "if(count)count.textContent='مساحة العرض: '+(v.drawing.spaceMode==='PAPER_SPACE'?'Layout '+(v.drawing.spaceLayout||''):'Model Space')+' | كيانات: '+v.drawing.entityCount+' | مقاطع: '+(v.drawing.segs||[]).length+' | طبقات: '+Object.keys(v.drawing.layers||{}).length+' | الإطار: '+(v.fitMode==='all'?'كل العناصر':'اللوحة الأساسية')+' | تكبير داخل اللوحة ×'+v.zoom.toFixed(2)+(v.drawing.unsupported?' | عناصر CAD خاصة: '+v.drawing.unsupported:'');",
+          "show active drawing space in readout")
+          reference = once(reference,
+          " return {bytes:output,transformedCount:transformedEntities,changedEntityCount,changedFields:ordered.length,unchangedOpaque,coordinateEntities,entitiesBefore:all.length,entitiesAfter:outRecords.length,layersPreserved:true,dimensionBlocksTransformed:dimensionBlockEntities.length,paperSpaceFallback:paperFallback};",
+          " return {bytes:output,transformedCount:transformedEntities,changedEntityCount,changedFields:ordered.length,unchangedOpaque,coordinateEntities,entitiesBefore:all.length,entitiesAfter:outRecords.length,layersPreserved:true,dimensionBlocksTransformed:dimensionBlockEntities.length,paperSpaceFallback:paperFallback,spaceMode:selectedSpace?selectedSpace.spaceMode:(paperFallback?'PAPER_SPACE':'MODEL_SPACE'),spaceLayout:selectedSpace?selectedSpace.layoutName:'Model'};",
+          "include chosen space in export result")
+          reference = once(reference,
+          "if(info)info.textContent='الملف: '+file.name+' | العناصر: '+view.drawing.entityCount+' | ملاحظة: جميع بيانات DXF الأصلية محفوظة عند الإخراج؛ المعاينة هنا هندسية.';status('تم فتح '+file.name+'. اختر النقطة 1 ثم 2؛ سيظهر رقم كل نقطة تلقائيًا على الرسم.'+(view.drawing.previewRecoveryMessage?' '+view.drawing.previewRecoveryMessage:''));",
+          "if(info)info.textContent='الملف: '+file.name+' | مساحة العرض: '+(view.drawing.spaceMode==='PAPER_SPACE'?'Layout '+(view.drawing.spaceLayout||''):'Model Space')+' | العناصر: '+view.drawing.entityCount+' | ملاحظة: بيانات DXF الأصلية محفوظة عند الإخراج؛ المعاينة هندسية.';status('تم فتح '+file.name+' في '+(view.drawing.spaceMode==='PAPER_SPACE'?'Layout '+(view.drawing.spaceLayout||''):'Model Space')+'. اختر النقطة 1 ثم 2؛ سيظهر رقم كل نقطة تلقائيًا على الرسم.'+(view.drawing.previewRecoveryMessage?' '+view.drawing.previewRecoveryMessage:''));",
+          "show chosen space when loading board")
+          # Open exported DXF around the chosen fit bounds while preserving true full extents.
+          reference = once(reference,
+          " const viewSize=headerVars.get('$VIEWSIZE')?.find(p=>p.code===40);if(viewSize){const n=numeric(viewSize.value);if(n!==null&&n>0)writeHeader(viewSize,n*t.scale);}\n if(!identity&&geometryChangedFields===0)",
+          " const viewSize=headerVars.get('$VIEWSIZE')?.find(p=>p.code===40);if(viewSize){const n=numeric(viewSize.value);if(n!==null&&n>0)writeHeader(viewSize,n*t.scale);}\n if(t.viewBounds&&['minX','minY','maxX','maxY'].every(k=>Number.isFinite(t.viewBounds[k]))){const b=t.viewBounds,corners=[t.point(b.minX,b.minY),t.point(b.minX,b.maxY),t.point(b.maxX,b.minY),t.point(b.maxX,b.maxY)],xs=corners.map(p=>p.x),ys=corners.map(p=>p.y),cx=(Math.min(...xs)+Math.max(...xs))/2,cy=(Math.min(...ys)+Math.max(...ys))/2,height=Math.max(1e-6,(Math.max(...ys)-Math.min(...ys))*1.12),center=headerPoint('$VIEWCTR');if(center){writeHeader(center.x,cx);writeHeader(center.y,cy);}if(viewSize)writeHeader(viewSize,height);}\n if(!identity&&geometryChangedFields===0)",
+          "save initial viewport around main board")
+          
+          reference = once(reference,
+          "const t=review();if(!t)return;const engine=window.__sqOrientTest;",
+          "const t=review();if(!t)return;const activeView=state.views.target&&state.views.target.drawing;if(activeView)t.viewBounds=activeView.fitBounds||activeView.bounds;const engine=window.__sqOrientTest;",
+          "pass fit bounds to DXF export")
+          
+          # Offer a detailed main-board fit and a separate full-extents view without deleting anything.
+          reference = once(reference,
+          '<button id="sq110TFit" class="sqori-preview" type="button">ملاءمة</button>',
+          '<button id="sq110TFit" class="sqori-preview" type="button">ملاءمة اللوحة</button><button id="sq110TFitAll" class="sqori-preview" type="button">عرض كل العناصر</button>',
+          "target fit controls")
+          reference = once(reference,
+          '<button id="sq110RFit" class="sqori-preview" type="button">ملاءمة</button>',
+          '<button id="sq110RFit" class="sqori-preview" type="button">ملاءمة اللوحة</button><button id="sq110RFitAll" class="sqori-preview" type="button">عرض كل العناصر</button>',
+          "reference fit controls")
+          reference = once(reference,
+          "el('sq110'+prefix+'Fit').addEventListener('click',()=>{const v=state.views[side];if(v){resetView(v);setZoom(side,1);}});",
+          "el('sq110'+prefix+'Fit').addEventListener('click',()=>{const v=state.views[side];if(v)fitView(v,'main');});el('sq110'+prefix+'FitAll').addEventListener('click',()=>{const v=state.views[side];if(v)fitView(v,'all');});",
+          "main-fit and full-extents actions")
+          
+          # After supplementing the primary parser with CAD-specific elements, recompute both full and fit extents.
+          reference = once(reference,
+          "if(pts.length){let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}if(maxX-minX<1e-9){minX-=.5;maxX+=.5;}if(maxY-minY<1e-9){minY-=.5;maxY+=.5;}base.bounds={minX,minY,maxX,maxY};}\n else{base.bounds={minX:0,minY:0,maxX:1,maxY:1};base.previewWarning='تعذر رسم بعض أنواع العناصر هندسيًا في المعاينة؛ بيانات DXF الأصلية محفوظة. جرّب حفظ نسخة DXF نصية من برنامج CAD لعرض العناصر.';}",
+          "if(pts.length){let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const p of pts){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}if(maxX-minX<1e-9){minX-=.5;maxX+=.5;}if(maxY-minY<1e-9){minY-=.5;maxY+=.5;}base.bounds={minX,minY,maxX,maxY};const fit=typeof api.fitBoundsForPoints==='function'?api.fitBoundsForPoints(pts,base.bounds,typeof api.headerBoundsFromPairs==='function'?api.headerBoundsFromPairs(parsed.pairs):null):{bounds:base.bounds,excluded:{xLow:0,xHigh:0,yLow:0,yHigh:0}};base.fitBounds=fit.bounds;base.fitOutliersExcluded=fit.excluded;base.fitBoundsBasis=fit.basis||'ROBUST_GEOMETRY';}\n else{base.bounds={minX:0,minY:0,maxX:1,maxY:1};base.fitBounds=base.bounds;base.fitOutliersExcluded={xLow:0,xHigh:0,yLow:0,yHigh:0};base.previewWarning='تعذر رسم بعض أنواع العناصر هندسيًا في المعاينة؛ بيانات DXF الأصلية محفوظة. جرّب حفظ نسخة DXF نصية من برنامج CAD لعرض العناصر.';}",
+          "focus initial view on dominant board without dropping elements")
+          
+          # Add robust fit-to-board after loading a board: reset pan and fit the selected-space bounds.
+          reference = once(reference,
+          "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);return viewer;}",
+          "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);fitView(viewer,'main');return viewer;}",
+          "fit full selected board after load")
+          reference = once(reference,
+          "function metrics(v){const w=v.canvas.clientWidth||v.canvas.width||300,h=v.canvas.clientHeight||v.canvas.height||320,b=v.drawing.bounds,pad=18,base=Math.max(1e-12,Math.min((w-pad*2)/Math.max(1e-9,b.maxX-b.minX),(h-pad*2)/Math.max(1e-9,b.maxY-b.minY)));return {w,h,cx:(b.minX+b.maxX)/2,cy:(b.minY+b.maxY)/2,base,scale:base*v.zoom};}",
+          "function metrics(v){const w=v.canvas.clientWidth||v.canvas.width||300,h=v.canvas.clientHeight||v.canvas.height||320,b=v.fitMode==='all'?v.drawing.bounds:(v.drawing.fitBounds||v.drawing.bounds),pad=18,base=Math.max(1e-12,Math.min((w-pad*2)/Math.max(1e-9,b.maxX-b.minX),(h-pad*2)/Math.max(1e-9,b.maxY-b.minY)));return {w,h,cx:(b.minX+b.maxX)/2,cy:(b.minY+b.maxY)/2,base,scale:base*v.zoom};}\nfunction fitView(v,mode='main'){if(!v||!v.drawing||!v.canvas)return;v.fitMode=mode==='all'?'all':'main';v.zoom=1;v.panX=0;v.panY=0;draw(v);}",
+          "add fit-selected-space helper")
+          
+          manual_path.write_text(manual,encoding='utf-8')
+          reference_path.write_text(reference,encoding='utf-8')
+          html=index_path.read_text(encoding='utf-8')
+          def replace_script(html, marker, body, label):
+              if html.count(marker)!=1: raise SystemExit(f'ERROR: expected one {label} script marker, found {html.count(marker)}')
+              start=html.index(marker)+len(marker)
+              end=html.find('</script>',start)
+              if end<0: raise SystemExit(f'ERROR: closing script marker missing for {label}')
+              return html[:start]+'\n'+body+'\n'+html[end:]
+          html=replace_script(html,'<script id="sq-orientation-manual-points-module">',manual,'manual drawing parser')
+          html=replace_script(html,'<script id="sq-orientation-reference-board-module">',reference,'reference board/parser')
+          index_path.write_text(html,encoding='utf-8')
+          print('PATCH_OK: shared Model Space/Layout selector added to parser, preview extras, transform, HTML integration, and fit-on-load.')
+          PY
+          python3 "$RUNNER_TEMP/patch-v118-space-selection.py" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$INDEX_PATH"
+          node --check "$MANUAL_MODULE"
+          node --check "$REFERENCE_MODULE"
+          cat > "$RUNNER_TEMP/test-v118-space-selection.js" <<'NODE'
+          'use strict';
+          const assert=require('node:assert/strict');
+          const fs=require('node:fs');
+          const vm=require('node:vm');
+          const [enginePath,manualPath,referencePath,stormDirectory]=process.argv.slice(2);
+          assert(enginePath&&manualPath&&referencePath,'Usage: test.js v106.js v109.js v111.js');
+          const document={readyState:'loading',addEventListener(){},getElementById(){return null;}};
+          const window={addEventListener(){},removeEventListener(){},__sqOrientTest:{transformBytes:null}};
+          const ctx={window,document,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,DataView,Blob,URL,Math,Number,String,Map,Set,Array,Object,RegExp,Error,Infinity,Promise,JSON,parseInt,parseFloat,setTimeout,clearTimeout,console};
+          vm.createContext(ctx);
+          for(const path of [enginePath,manualPath,referencePath])vm.runInContext(fs.readFileSync(path,'utf8'),ctx,{filename:path});
+          const manual=window.__sqManualOrientation109;
+          const core=window.__sqOrientation111API;
+          assert(manual&&typeof manual.selectDrawingSpace==='function','shared drawing-space selector missing');
+          assert(core&&typeof core.parsePreview==='function','DXF preview API missing');
+          const enc=new TextEncoder(),dec=new TextDecoder();
+          function dxf(spacePairs){
+           const p=['0','SECTION','2','ENTITIES'];
+           for(const e of spacePairs)p.push(...e);
+           p.push('0','ENDSEC','0','EOF');
+           return enc.encode(p.join('\r\n')+'\r\n');
+          }
+          const mixed=dxf([
+           ['0','LINE','8','PLAN','67','0','10','0','20','0','11','10','21','0'],
+           ['0','LINE','8','PLAN','67','0','10','0','20','0','11','0','21','10'],
+           ['0','TEXT','8','LABELS','67','0','10','5','20','4','40','1','1','MODEL_BOARD_DETAIL'],
+           ['0','LINE','8','LAYOUT_BORDER','67','1','410','Layout1','10','1000','20','1000','11','1100','21','1000'],
+           ['0','LINE','8','LAYOUT_BORDER','67','1','410','Layout1','10','1000','20','1000','11','1000','21','1100'],
+           ['0','TEXT','8','PAPER_LABEL','67','1','410','Layout1','10','1020','20','1020','40','2','1','PAPERSPACE_TITLEBLOCK']
+          ]);
+          const parsed=manual.parseDrawing(mixed);
+          assert.equal(parsed.spaceMode,'MODEL_SPACE','preview must use model space when it contains drawing geometry');
+          assert.equal(parsed.segs.length,2,'preview must not add Layout1 linework');
+          assert(parsed.texts.some(t=>t.text.includes('MODEL_BOARD_DETAIL')),'model annotation should remain visible');
+          assert(!parsed.texts.some(t=>t.text.includes('PAPERSPACE_TITLEBLOCK')),'paper-space title block must not contaminate model preview');
+          assert.equal(parsed.bounds.minX,0);assert.equal(parsed.bounds.maxX,10);assert.equal(parsed.bounds.minY,0);assert.equal(parsed.bounds.maxY,10);
+          const preview=core.parsePreview(mixed);
+          assert.equal(preview.spaceMode,'MODEL_SPACE');assert.equal(preview.segs.length,2);assert.equal(preview.bounds.maxX,10);
+          const t={scale:1,angleDeg:0,tx:100,ty:200,point:(x,y)=>({x:x+100,y:y+200}),vector:(x,y)=>({x,y})};
+          const output=core.transformBytes(mixed,t);
+          assert(output.bytes&&output.bytes.length>0,'transform output missing');
+          const outText=dec.decode(output.bytes);
+          assert(outText.includes('MODEL_BOARD_DETAIL')&&outText.includes('PAPERSPACE_TITLEBLOCK'),'all non-selected space data must be preserved');
+          function entRecords(text){const lines=text.split(/\r?\n/).map(s=>s.trim());let section='',active=null;const out=[];for(let i=0;i+1<lines.length;i+=2){const code=Number(lines[i]),value=lines[i+1];if(code===0&&value==='SECTION'){section=lines[i+3]||'';i+=2;continue;}if(code===0&&value==='ENDSEC'){section='';active=null;continue;}if(section!=='ENTITIES')continue;if(code===0){if(active)out.push(active);active={type:value,pairs:[]};}else if(active)active.pairs.push({code,value});}if(active)out.push(active);return out;}
+          const outRecords=entRecords(outText);const modelLine=outRecords.find(e=>e.type==='LINE'&&e.pairs.some(p=>p.code===8&&p.value==='PLAN'));
+          assert(modelLine,'model line should remain');
+          const mx=Number(modelLine.pairs.find(p=>p.code===10).value),my=Number(modelLine.pairs.find(p=>p.code===20).value);
+          assert.equal(mx,100);assert.equal(my,200,'selected model geometry should be translated');
+          const paperLine=outRecords.find(e=>e.type==='LINE'&&e.pairs.some(p=>p.code===8&&p.value==='LAYOUT_BORDER'));
+          assert(paperLine,'paper-space geometry should be retained');
+          assert.equal(Number(paperLine.pairs.find(p=>p.code===10).value),1000,'non-selected layout geometry must not be transformed');
+          assert.equal(Number(paperLine.pairs.find(p=>p.code===20).value),1000);
+          const paperOnly=dxf([
+           ['0','LINE','8','PAPER_PLAN','67','1','410','Layout1','10','40','20','50','11','50','21','50'],
+           ['0','TEXT','8','PAPER_TEXT','67','1','410','Layout1','10','45','20','55','40','1','1','FALLBACK_LAYOUT']
+          ]);
+          const paperParsed=manual.parseDrawing(paperOnly);
+          assert.equal(paperParsed.spaceMode,'PAPER_SPACE','paper-space-only drawings must fall back to the best layout');
+          assert.equal(paperParsed.segs.length,1);assert.equal(paperParsed.bounds.minX,40);assert(paperParsed.texts.some(t=>t.text.includes('FALLBACK_LAYOUT')));
+          const paperOutput=core.transformBytes(paperOnly,t);
+          assert.equal(paperOutput.paperSpaceFallback,true,'paper-space fallback should be reported');
+          const paperOutputText=dec.decode(paperOutput.bytes);assert(paperOutputText.includes('FALLBACK_LAYOUT'));
+          assert(paperOutputText.includes('140')&&paperOutputText.includes('250'),'paper-space fallback geometry should be transformed');
+          // A valid saved CAD viewport should win over a few far-away annotation/block artifacts,
+          // while the full geometry and full bounds remain untouched in memory and in the DXF.
+          function headerDxf(entities){
+           const lines=['0','SECTION','2','HEADER','9','$EXTMIN','10','0','20','0','30','0','9','$EXTMAX','10','10','20','10','30','0','9','$VIEWCTR','10','5','20','5','9','$VIEWSIZE','40','10','0','ENDSEC','0','SECTION','2','ENTITIES'];
+           for(const e of entities)lines.push(...e);lines.push('0','ENDSEC','0','EOF');return enc.encode(lines.join('\r\n')+'\r\n');
+          }
+          const dense=[];for(let i=0;i<25;i++){const y=(i%5)*2,x=Math.floor(i/5)*2;dense.push(['0','LINE','8','BOARD','10',String(x),'20',String(y),'11',String(x+1),'21',String(y+1)]);}
+          dense.push(['0','POINT','8','FAR_ANNOTATION','10','999999','20','5','30','0']);
+          const withOutlier=headerDxf(dense),fitDrawing=manual.parseDrawing(withOutlier);
+          assert(fitDrawing.bounds.maxX>999000,'full geometry bounds must still include a remote INSERT/annotation');
+          assert(fitDrawing.fitBounds.maxX<11,'initial viewport should fit the saved main-board extents, not remote outliers');
+          assert.equal(fitDrawing.fitBoundsBasis,'DXF_HEADER_EXTENTS','the valid source CAD view extents should be preferred');
+          assert(fitDrawing.anchors.some(p=>p.x>999000),'outlier geometry stays present; only the viewport excludes it');
+          const fitTransform={...t,viewBounds:fitDrawing.fitBounds};
+          const fitOutput=dec.decode(core.transformBytes(withOutlier,fitTransform).bytes);
+          const headerVar=(txt,name)=>{const p=txt.split(/\r?\n/).map(x=>x.trim());const ix=p.findIndex((v,i)=>v==='9'&&p[i+1]===name);assert(ix>=0,'header '+name+' exists');const out={};for(let i=ix+2;i<p.length&&p[i]!=='9'&&p[i]!=='0';i+=2)out[p[i]]=Number(p[i+1]);return out;};
+          const fitCtr=headerVar(fitOutput,'$VIEWCTR'),fitSize=headerVar(fitOutput,'$VIEWSIZE'),fullMax=headerVar(fitOutput,'$EXTMAX');
+          assert(Math.abs(fitCtr['10']-105)<1e-7&&Math.abs(fitCtr['20']-205)<1e-7,'export opens centered on the selected main-board view');
+          assert(Math.abs(fitSize['40']-((fitDrawing.fitBounds.maxY-fitDrawing.fitBounds.minY)*1.12))<1e-7,'export uses the focused main-board fit window rather than the outlier-sized window');
+          assert.equal(fullMax['10'],110,'saved header fit extents transform around the main board');
+          assert(fitOutput.includes('FAR_ANNOTATION')&&fitOutput.includes('1000099'),'far-away CAD geometry is preserved in exported DXF even when the initial view is focused');
+          if(stormDirectory&&fs.existsSync(stormDirectory)){
+           for(const file of fs.readdirSync(stormDirectory).filter(f=>/^STORM_[12]_converted\.dxf$/.test(f))){
+            const bytes=new Uint8Array(fs.readFileSync(require('node:path').join(stormDirectory,file)));
+            const real=manual.parseDrawing(bytes);
+            assert.equal(real.spaceMode,'MODEL_SPACE',file+' should default to Model Space when model drawing entities exist');
+            assert(real.segs.length>0,file+' should render board linework');
+            assert(real.bounds.maxX>real.bounds.minX&&real.bounds.maxY>real.bounds.minY,file+' should retain nonzero full selected-space bounds');
+            assert(real.modelEntityCount>0,file+' should select model-space entities');
+            assert.equal(real.fitBoundsBasis,'DXF_HEADER_EXTENTS',file+' should prefer the original valid CAD viewport for initial fit');
+            assert(real.bounds.maxX-real.bounds.minX>(real.fitBounds.maxX-real.fitBounds.minX)*5,file+' full bounds should remain distinct from focused fit bounds');
+            assert(real.anchors.length>1000,file+' should retain detailed geometry anchors despite viewport fit');
+            const preview=core.parsePreview(bytes);
+            assert.equal(preview.spaceMode,'MODEL_SPACE',file+' preview must remain in Model Space');
+            assert.equal(preview.fitBoundsBasis,'DXF_HEADER_EXTENTS',file+' supplemental preview must use the same canonical fit');
+            assert(preview.segs.length>1000,file+' should retain many rendered details');
+            assert(preview.bounds.maxX-preview.bounds.minX>(preview.fitBounds.maxX-preview.fitBounds.minX)*5,file+' full preview bounds should not be rewritten to hide geometry');
+            console.log('PASS real STORM preview '+file+': model entities='+real.modelEntityCount+', layout entities='+real.paperEntityCount+', rendered segments='+preview.segs.length+', focused viewport='+preview.fitBoundsBasis);
+           }
+          }
+          console.log('PASS v118 regression: selected drawing space, CAD header viewport fit, full entity preservation, focused exported view, mixed Model/Paper Space, and Paper Space fallback.');
+          NODE
+          node --check "$RUNNER_TEMP/test-v118-space-selection.js"
+          node "$RUNNER_TEMP/test-v118-space-selection.js" "$MODULE_JS" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$STORM_OUTPUT_DIR"
+          grep -Fq 'function selectDrawingSpace(entities)' "$INDEX_PATH"
+          grep -Fq "spaceMode:selectedSpace?selectedSpace.spaceMode" "$REFERENCE_MODULE"
+
+      - name: Set Android release version to 1.0.118
         shell: bash
         run: |
           set -euo pipefail
@@ -908,16 +1230,16 @@ jobs:
 
           p=Path(sys.argv[1])
           s=p.read_text(encoding='utf-8')
-          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>117',s,count=1)
-          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.117'",s,count=1)
+          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>118',s,count=1)
+          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.118'",s,count=1)
           if nc!=1 or nn!=1:
             raise SystemExit(f'ERROR: Version edits failed (code={nc}, name={nn}).')
           p.write_text(s,encoding='utf-8')
           PY
 
-          grep -Eq 'versionCode[[:space:]]+117([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
-          grep -Eq "versionName[[:space:]]+['\"]1\.0\.117['\"]" "$PROJECT_DIR/app/build.gradle"
-          grep -Fq 'const SQ_APP_VERSION_CODE = 117;' "$INDEX_PATH"
+          grep -Eq 'versionCode[[:space:]]+118([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.118['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 118;' "$INDEX_PATH"
 
       - name: Run JavaScript and CAD-preservation regression tests
         shell: bash
@@ -985,14 +1307,14 @@ jobs:
 
           node "$DXF_TEST" "$RUNNER_TEMP/dxf-parser-restoration-test.html"
           node --check "$PRESERVE_MODULE"
-          echo "The old v113 hard-veto test is intentionally replaced by the v115 nonblocking-export test."
+          echo "The old v113 hard-veto test is intentionally replaced by the v115 nonblocking-export test. v118 separately verifies Model Space / Layout selection."
           node --check "$V115_MODULE"
           python3 - "$V115_TEST" "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" <<'PY'
           from pathlib import Path
           import sys
           source=Path(sys.argv[1]).read_text(encoding='utf-8')
           replacements=[
-            ("const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 117;"),
+            ("const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 118;"),
             ("height:520px", "height:230px;min-height:230px;max-height:230px"),
           ]
           for old,new in replacements:
@@ -1004,216 +1326,4 @@ jobs:
             raise SystemExit('ERROR: The historical v115 integration assertions are incomplete.')
           Path(sys.argv[2]).write_text(source,encoding='utf-8')
           PY
-          node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
-          # The v116 exporter deliberately updates known CAD view/extents HEADER variables and
-          # the geometry inside anonymous BLOCKS referenced by DIMENSION entities. The old
-          # v115 audit mislabeled those valid fidelity-preserving edits as unrelated data loss.
-          python3 - "$STORM_TRANSFORM_TEST" <<'PY'
-          from pathlib import Path
-          import sys
-
-          p = Path(sys.argv[1])
-          s = p.read_text(encoding="utf-8")
-          old_sectioned = """function sectioned(pairs) {
-            let section = '', afterSection = false;
-            return pairs.map((p, i) => {
-              const old = section;
-              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') afterSection = true;
-              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; }
-              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; }
-              return { ...p, section: old || section, index: i };
-            });
-          }"""
-          new_sectioned = """function sectioned(pairs) {
-            let section = '', afterSection = false, headerVariable = '', blockName = '', blockEntity = '', entityType = '';
-            return pairs.map((p, i) => {
-              const old = section;
-              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') { afterSection = true; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
-              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
-              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
-              else {
-                if (section === 'HEADER' && p.code === 9) headerVariable = p.value.toUpperCase();
-                if (section === 'ENTITIES' && p.code === 0) entityType = p.value.toUpperCase();
-                if (section === 'BLOCKS' && p.code === 0) {
-                  const type = p.value.toUpperCase();
-                  if (type === 'BLOCK') { blockEntity = 'BLOCK'; blockName = ''; }
-                  else if (type === 'ENDBLK') blockEntity = 'ENDBLK';
-                  else blockEntity = type;
-                }
-                if (section === 'BLOCKS' && p.code === 2 && blockEntity === 'BLOCK' && !blockName) blockName = p.value.toUpperCase();
-              }
-              const result = { ...p, section: old || section, headerVariable, blockName, blockEntity, entityType, index: i };
-              if (section === 'BLOCKS' && p.code === 0 && p.value.toUpperCase() === 'ENDBLK') { blockEntity = ''; blockName = ''; }
-              return result;
-            });
-          }
-          function referencedDimensionBlocks(pairs) {
-            const parsed = sectioned(pairs), names = new Set();
-            let currentEntity = '';
-            for (const p of parsed) {
-              if (p.section !== 'ENTITIES') continue;
-              if (p.code === 0) currentEntity = p.value.toUpperCase();
-              else if (currentEntity === 'DIMENSION' && p.code === 2 && p.value.trim()) names.add(p.value.trim().toUpperCase());
-            }
-            return names;
-          }
-          const allowedHeaderCodes = {
-            '$EXTMIN': [10,20], '$EXTMAX': [10,20], '$LIMMIN': [10,20], '$LIMMAX': [10,20],
-            '$PEXTMIN': [10,20], '$PEXTMAX': [10,20], '$VIEWCTR': [10,20], '$INSBASE': [10,20],
-            '$SNAPBASE': [10,20], '$UCSORG': [10,20], '$VIEWSIZE': [40]
-          };
-          function isAllowedViewHeaderUpdate(p) {
-            return p.section === 'HEADER' && Array.isArray(allowedHeaderCodes[p.headerVariable]) && allowedHeaderCodes[p.headerVariable].includes(p.code);
-          }"""
-          old_audit_setup = """  const a = sectioned(decodeDxf(beforeBytes)), b = sectioned(decodeDxf(afterBytes));
-            const errors = [];"""
-          new_audit_setup = """  const beforePairs = decodeDxf(beforeBytes);
-            const a = sectioned(beforePairs), b = sectioned(decodeDxf(afterBytes));
-            const dimensionBlocks = referencedDimensionBlocks(beforePairs);
-            const errors = [];"""
-          old_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
-                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
-          new_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
-                else if (a[i].section === 'BLOCKS' && b[i].section === 'BLOCKS' && dimensionBlocks.has(a[i].blockName) && a[i].blockEntity && !['BLOCK','ENDBLK'].includes(a[i].blockEntity) && geomCodes(a[i].code)) geometryChanged++;
-                else if (isAllowedViewHeaderUpdate(a[i]) && a[i].headerVariable === b[i].headerVariable) { /* Expected CAD view/extents update. */ }
-                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, section ${a[i].section}, block ${a[i].blockName}/${a[i].blockEntity}, type ${a[i].entityType}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
-          # Exact replace the three logical sections. Indentation inside template literals is ignored by
-          # checking their stripped content and replacing the raw blocks exactly once.
-          for old, new, label in [
-            (old_sectioned, new_sectioned, 'section metadata parser'),
-            (old_audit_setup, new_audit_setup, 'audit metadata setup'),
-            (old_audit_body, new_audit_body, 'audit allowed-change rules'),
-          ]:
-            if s.count(old) != 1:
-              raise SystemExit(f'ERROR: expected one {label} in STORM regression script; found {s.count(old)}')
-            s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
-          print('PASS: STORM regression audit now allows only v116 CAD view-header updates and coordinates in referenced DIMENSION graphics.')
-          PY
-          node --check "$STORM_TRANSFORM_TEST"
-          node "$STORM_TRANSFORM_TEST" "$REFERENCE_MODULE" "$MANUAL_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE" "$STORM_OUTPUT_DIR" "$STORM_OUTPUT_DIR" "$STORM_REPORT"
-
-          rm -f "$STORM_OUTPUT_ZIP"
-          (cd "$STORM_OUTPUT_DIR" && zip -q "$STORM_OUTPUT_ZIP" ./*.dxf)
-          test -s "$STORM_OUTPUT_ZIP"
-
-          python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
-          from pathlib import Path
-          import re,sys
-
-          html=Path(sys.argv[1]).read_text(encoding='utf-8')
-          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',html,re.I|re.S)
-          if not scripts:
-            raise SystemExit('ERROR: No inline JavaScript found.')
-          Path(sys.argv[2]).write_text('\n'.join(scripts),encoding='utf-8')
-          PY
-
-          node --check "$RUNNER_TEMP/surveyquant-inline.js"
-
-      - name: Restore release signing key
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          test -n "${KEYSTORE_BASE64:-}" || { echo "ERROR: Secret SURVEYQUANT_KEYSTORE_BASE64 is missing."; exit 1; }
-          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: Secret SURVEYQUANT_KEYSTORE_PASSWORD is missing."; exit 1; }
-          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: Secret SURVEYQUANT_KEY_ALIAS is missing."; exit 1; }
-          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: Secret SURVEYQUANT_KEY_PASSWORD is missing."; exit 1; }
-          KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-          test -s "$KEYSTORE_PATH"
-          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
-
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Build signed APK and source patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-          gradle --no-daemon clean assembleRelease --stacktrace
-
-          APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
-          test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
-
-          RELEASE="$RUNNER_TEMP/sq-release"
-          mkdir -p "$RELEASE/source-patch"
-          cp "$APK" "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk"
-          cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
-          cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
-          cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
-          cp "$AXIS_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH.js"
-          cp "$AXIS_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_TEST.js"
-          cp "$MANUAL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_MODULE.js"
-          cp "$MANUAL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_TEST.js"
-          cp "$REFERENCE_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_MODULE.js"
-          cp "$REFERENCE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_TEST.js"
-          cp "$RUNNER_TEMP/sq-canvas-display-test.js" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_REGRESSION_TEST.js"
-          cp "$RUNNER_TEMP/patch-v115-board-display.py" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_PATCH.py"
-          cp "$RUNNER_TEMP/test-v116-cad.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_TEST.js"
-          cp "$RUNNER_TEMP/patch-v117-zoom.py" "$RELEASE/source-patch/SurveyQuant_v1.0.117_ZOOM_PRESERVATION_PATCH.py"
-          cp "$RUNNER_TEMP/test-v117-zoom.js" "$RELEASE/source-patch/SurveyQuant_v1.0.117_ZOOM_PRESERVATION_TEST.js"
-          cp "$RUNNER_TEMP/patch-v116-cad.py" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_PATCH.py"
-          cp "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_ORIENTATION_INTEGRATION_TEST.js"
-          cp "$FAITHFUL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js"
-          cp "$FAITHFUL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_TEST.js"
-          cp "$PRESERVE_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_MODULE.js"
-          cp "$PRESERVE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_TEST.js"
-          cp "$V115_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js"
-          cp "$V115_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js"
-          cp "$V115_PATCHER" "$RELEASE/source-patch/SurveyQuant_v1.0.115_APPLY_PATCH.py"
-          cp "$STORM_TEST_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs"
-          cp "$STORM_TRANSFORM_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs"
-          cp "$STORM_REPORT" "$RELEASE/source-patch/STORM_CONVERSION_REPORT.md"
-          cp "$STORM_OUTPUT_ZIP" "$RELEASE/STORM_CONVERTED_DXF.zip"
-          cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
-
-          cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
-          SurveyQuant v1.0.117 - تكبير أكبر داخل اللوحة مع الحفاظ على بيانات CAD
-          - رفع حد التكبير داخل المعاينة إلى 1,000,000× دون تعديل بيانات DXF الأصلية بسبب التكبير.
-          - يتضمن الاختبار ملفي STORM DWG الأصليين.
-          - تم تفعيل دعم كتابة DXF في LibreDWG-Web v0.7.14.
-          - تم إصلاح إنهاء النص في cquote() حتى لا تُضاف بقايا الذاكرة إلى DXF.
-          - تم إصلاح حدود الرسم ومركز العرض في DXF بعد الإسقاط ($EXTMIN/$EXTMAX/$VIEWCTR/$VIEWSIZE)، حتى لا تفتح اللوحة خارج نطاق العرض.
-          - معاينة اللوحة أصغر (ارتفاع ثابت 230px)، والتكبير/التصغير داخل الرسم فقط مع منع تكبير صفحة WebView.
-          - معاينة بألوان ACI/TrueColor وأنماط الخطوط وسماكاتها مع قائمة إظهار/إخفاء الطبقات.
-          - المعاينة ترسم حدود HATCH متعددة الرؤوس والتهشير الصلب، وعناصر MLINE، وكتل الأبعاد والنصوص التابعة لها عندما تكون موجودة في DXF.
-          - تصدير DXF يحافظ على محتوى الملف والطبقات والنصوص الأصلية، ويحوّل الإحداثيات المكشوفة بدل إعادة بناء لوحة مبسطة.
-          - عناصر CAD/Proxy التي لا تتيح صيغة التحويل إظهار هندستها قد لا تظهر كاملة في المعاينة، لكن الاختبار يمنع نجاح إسقاط فارغ.
-          - الناتج DXF جديد ولا تتم الكتابة فوق الملف الأصلي.
-          - يُراجع تقرير التحويل مع CAD للكائنات الوكيلة أو المتخصصة.
-          - اختبارات البناء تتحقق من الملفين الحقيقيين قبل إنشاء APK.
-          TXT
-
-          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip" .)
-          sha256sum "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk" "$RELEASE/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip" "$RELEASE/STORM_CONVERTED_DXF.zip" > "$RELEASE/SHA256SUMS.txt"
-          cat "$RELEASE/SHA256SUMS.txt"
-          echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
-
-      - name: Upload APK and source patch
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.117-EXTREME-ZOOM-CAD-PRESERVED
-          path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.117_EXTREME_ZOOM_CAD_PRESERVED.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.117_EXTREME_ZOOM_SOURCE_PATCH.zip
-            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
-            ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload STORM conversion diagnostics even if the real-file test fails
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.117-STORM-DIAGNOSTICS-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
-            ${{ runner.temp }}/sq-storm-output/**
-          if-no-files-found: warn
-          retention-days: 14
+          node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REF
