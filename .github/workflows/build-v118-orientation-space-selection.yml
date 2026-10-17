@@ -1326,4 +1326,4 @@ jobs:
             raise SystemExit('ERROR: The historical v115 integration assertions are incomplete.')
           Path(sys.argv[2]).write_text(source,encoding='utf-8')
           PY
-          node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REF
+          node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
