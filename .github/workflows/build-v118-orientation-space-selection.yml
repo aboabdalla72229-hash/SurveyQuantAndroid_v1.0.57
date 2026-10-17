@@ -1327,3 +1327,50 @@ jobs:
           Path(sys.argv[2]).write_text(source,encoding='utf-8')
           PY
           node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
+      - name: Build Android APK v1.0.118
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d "$PROJECT_DIR"
+          test -s "$PROJECT_DIR/app/build.gradle"
+
+          if [ ! -f "$PROJECT_DIR/gradlew" ]; then
+            echo "ERROR: Gradle wrapper is missing from the Android source."
+            exit 1
+          fi
+
+          chmod +x "$PROJECT_DIR/gradlew"
+
+          "$PROJECT_DIR/gradlew" \
+            --no-daemon \
+            --stacktrace \
+            -p "$PROJECT_DIR" \
+            :app:assembleDebug
+
+          APK_SOURCE="$(
+            find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+              -type f -name '*.apk' -print -quit
+          )"
+
+          test -n "$APK_SOURCE"
+          test -s "$APK_SOURCE"
+
+          mkdir -p "$RUNNER_TEMP/surveyquant-apk"
+
+          cp "$APK_SOURCE" \
+            "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk"
+
+          sha256sum \
+            "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk" \
+            > "$RUNNER_TEMP/surveyquant-apk/SHA256SUMS.txt"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.118-APK
+          path: |
+            ${{ runner.temp }}/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk
+            ${{ runner.temp }}/surveyquant-apk/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
