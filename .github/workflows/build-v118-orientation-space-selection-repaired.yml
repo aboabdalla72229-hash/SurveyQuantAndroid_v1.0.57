@@ -85,11 +85,11 @@ jobs:
           STORM_OUTPUT_DIR="$RUNNER_TEMP/sq-storm-output"
           mkdir -p "$PATCH_DIR" "$STORM_DIR" "$STORM_OUTPUT_DIR"
           unzip -q "$PATCH_ARCHIVE" -d "$PATCH_DIR"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_APPLY_PATCH.py"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_APPLY_PATCH.py" || { echo "ERROR: Patch ZIP is missing SurveyQuant_v1.0.115_APPLY_PATCH.py"; exit 1; }
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js" || { echo "ERROR: Patch ZIP is missing the orientation tools module."; exit 1; }
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js" || { echo "ERROR: Patch ZIP is missing the orientation test."; exit 1; }
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs" || { echo "ERROR: Patch ZIP is missing the STORM DWG test."; exit 1; }
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs" || { echo "ERROR: Patch ZIP is missing the STORM transform test."; exit 1; }
           test -s "$PATCH_DIR/STORM.zip" || { echo "ERROR: The real STORM.zip source boards are missing from the patch package."; exit 1; }
           unzip -q "$PATCH_DIR/STORM.zip" -d "$STORM_DIR"
           DWG_COUNT="$(find "$STORM_DIR" -type f -iname '*.dwg' | wc -l)"
@@ -160,20 +160,17 @@ jobs:
           const key='build:prepare';const before=j.scripts[key];
           if(!before)throw new Error('LibreDWG build:prepare script missing');
           j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
-          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
-          // Reduce generated local-variable count when compiling LibreDWG.
+          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG');
           const prepareBefore=j.scripts[key];
           j.scripts[key]=j.scripts[key].replace(/-O2(?=\s+-sUSE_ZLIB=1)/,'-Os');
           if(j.scripts[key]===prepareBefore)throw new Error('Could not change LibreDWG CFLAGS from -O2 to -Os');
           const wasmKey='build:wasm'; const wasmBefore=j.scripts[wasmKey];
           if(!wasmBefore)throw new Error('LibreDWG build:wasm script missing');
-          // Avoid Emscripten declaration generation, which fails on uint64_t APIs.
           const wasmNoTsd=wasmBefore.replace('--emit-tsd libredwg-web.d.ts','');
           if(wasmNoTsd===wasmBefore)throw new Error('Could not remove unsupported --emit-tsd declaration generation');
           const wasmOptimized=wasmNoTsd.replace(/-O2(?=\s+-lembind)/,'-Os');
           if(wasmOptimized===wasmNoTsd)throw new Error('Could not change LibreDWG WASM link from -O2 to -Os');
           j.scripts[wasmKey]=wasmOptimized;
-          // Build only library objects required by the JavaScript/WASM binding.
           const objKey='build:obj'; const objBefore=j.scripts[objKey];
           if(!objBefore)throw new Error('LibreDWG build:obj script missing');
           const objAfter=objBefore.replace(/emmake\s+make(?=\s|$)/, 'emmake make -C src');
@@ -184,6 +181,7 @@ jobs:
           console.log('Library-only object build command:',j.scripts[objKey]);
           console.log('WASM link command:',j.scripts[wasmKey]);
           NODE
+
           pnpm install --frozen-lockfile
           pnpm build:prepare
           pnpm build:obj
@@ -195,4 +193,233 @@ jobs:
           else
             echo "WARN: LibreDWG WASM link failed at -Os; retrying with -Oz."
             node -e 'const fs=require("node:fs"); const p="package.json"; const j=JSON.parse(fs.readFileSync(p,"utf8")); const key="build:wasm"; const before=j.scripts[key]; const after=before.replace(/-Os(?=\s+-lembind)/,"-Oz"); if(after===before) throw new Error("Could not switch WASM link optimization from -Os to -Oz"); j.scripts[key]=after; fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n"); console.log("Retrying link command:",after);'
-            rm -f ../../build-wasm/libredwg-web.js ../../build-wasm/libredwg
+            rm -f ../../build-wasm/libredwg-web.js ../../build-wasm/libredwg-web.wasm ../../build-wasm/libredwg-web.d.ts
+            pnpm build:wasm
+          fi
+
+          test -s ../../build-wasm/libredwg-web.js || { echo "ERROR: libredwg-web.js was not generated."; exit 1; }
+          test -s ../../build-wasm/libredwg-web.wasm || { echo "ERROR: libredwg-web.wasm was not generated."; exit 1; }
+          cp ../../build-wasm/libredwg-web.js "$V115_PACKAGE_DIR/libredwg-web.js"
+          cp ../../build-wasm/libredwg-web.wasm "$V115_PACKAGE_DIR/libredwg-web.wasm"
+          echo "PASS: writer-enabled LibreDWG JS/WASM files generated and copied into the test package."
+
+      - name: Run orientation regression and real STORM DWG conversion tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LIBREDWG_WEB_MODULE="$V115_PACKAGE_DIR/libredwg-web.js"
+          export LIBREDWG_WEB_JS="$V115_PACKAGE_DIR/libredwg-web.js"
+          export LIBREDWG_WEB_WASM="$V115_PACKAGE_DIR/libredwg-web.wasm"
+          export LIBREDWG_WASM_PATH="$V115_PACKAGE_DIR/libredwg-web.wasm"
+          export STORM_INPUT_DIR STORM_OUTPUT_DIR STORM_REPORT STORM_OUTPUT_ZIP
+          mkdir -p "$STORM_OUTPUT_DIR"
+          cd "$V115_PACKAGE_DIR"
+          echo "Running the bundled orientation regression test..."
+          node "$V115_TEST"
+          echo "Running conversion test against the two original STORM DWG files..."
+          node "$STORM_TEST_MODULE"
+          echo "Running STORM transform/orientation assertions..."
+          node "$STORM_TRANSFORM_TEST"
+          DXF_COUNT="$(find "$STORM_OUTPUT_DIR" -type f -iname '*.dxf' | wc -l)"
+          test "$DXF_COUNT" -ge 1 || { echo "ERROR: The STORM tests produced no DXF files in $STORM_OUTPUT_DIR."; find "$STORM_OUTPUT_DIR" -maxdepth 4 -type f -print; exit 1; }
+          if [ ! -s "$STORM_OUTPUT_ZIP" ]; then
+            (cd "$STORM_OUTPUT_DIR" && zip -qr "$STORM_OUTPUT_ZIP" .)
+          fi
+          test -s "$STORM_OUTPUT_ZIP" || { echo "ERROR: STORM DXF archive was not created."; exit 1; }
+          if [ ! -s "$STORM_REPORT" ]; then
+            {
+              echo "# SurveyQuant v1.0.118 STORM conversion report"
+              echo
+              echo "- Original DWG files supplied: 2"
+              echo "- DXF files generated: $DXF_COUNT"
+              echo "- Orientation regression test: passed"
+              echo "- STORM transform test: passed"
+            } > "$STORM_REPORT"
+          fi
+          echo "PASS: STORM conversion produced $DXF_COUNT DXF file(s)."
+
+      - name: Locate Android Gradle project
+        id: locate_project
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLEW="$(find "$GITHUB_WORKSPACE" -type f -name gradlew \
+            ! -path "$GITHUB_WORKSPACE/external/*" \
+            ! -path "$GITHUB_WORKSPACE/.git/*" \
+            -print -quit)"
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: Could not find gradlew in the checked-out SurveyQuant Android source."
+            echo "The repository must contain the Android project and its Gradle wrapper, not only the patch ZIP."
+            find "$GITHUB_WORKSPACE" -maxdepth 4 \( -name settings.gradle -o -name settings.gradle.kts -o -name build.gradle -o -name build.gradle.kts \) -print | head -80
+            exit 1
+          fi
+          APP_ROOT="$(dirname "$GRADLEW")"
+          echo "APP_ROOT=$APP_ROOT" >> "$GITHUB_ENV"
+          echo "Android project root: $APP_ROOT"
+          test -s "$GRADLEW"
+
+      - name: Apply the complete v115 board-preview and orientation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$V115_PATCHER" || { echo "ERROR: Patch script is missing: $V115_PATCHER"; exit 1; }
+          export APP_ROOT
+          export PROJECT_ROOT="$APP_ROOT"
+          export SURVEYQUANT_PROJECT_ROOT="$APP_ROOT"
+          export SURVEYQUANT_APP_ROOT="$APP_ROOT"
+          python3 - "$V115_PATCHER" "$APP_ROOT" <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import sys
+
+          patcher = Path(sys.argv[1]).resolve()
+          app_root = Path(sys.argv[2]).resolve()
+          source = patcher.read_text(encoding="utf-8", errors="replace")
+          env = os.environ.copy()
+          for key in ("APP_ROOT", "PROJECT_ROOT", "SURVEYQUANT_PROJECT_ROOT", "SURVEYQUANT_APP_ROOT"):
+              env[key] = str(app_root)
+
+          command = [sys.executable, str(patcher)]
+          option_patterns = (
+              ("--project-root", r"add_argument\s*\(\s*['\"]--project-root['\"]"),
+              ("--project-dir", r"add_argument\s*\(\s*['\"]--project-dir['\"]"),
+              ("--app-root", r"add_argument\s*\(\s*['\"]--app-root['\"]"),
+              ("--source-root", r"add_argument\s*\(\s*['\"]--source-root['\"]"),
+              ("--project", r"add_argument\s*\(\s*['\"]--project['\"]"),
+              ("--target-dir", r"add_argument\s*\(\s*['\"]--target-dir['\"]"),
+              ("--root", r"add_argument\s*\(\s*['\"]--root['\"]"),
+          )
+          selected = next((flag for flag, pattern in option_patterns if re.search(pattern, source)), None)
+          if selected:
+              command.extend([selected, str(app_root)])
+          else:
+              positional = re.search(
+                  r"add_argument\s*\(\s*['\"](project_root|project_dir|app_root|source_root|root)['\"]",
+                  source,
+              )
+              if positional or re.search(r"\bsys\.argv\[\s*1\s*\]", source):
+                  command.append(str(app_root))
+
+          print("Applying patch from:", patcher)
+          print("Android project root:", app_root)
+          print("Patch invocation:", " ".join(command))
+          subprocess.run(command, cwd=str(app_root), env=env, check=True)
+          PY
+
+      - name: Set Android app version to 1.0.118 / versionCode 118
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$APP_ROOT" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          root = Path(sys.argv[1]).resolve()
+          candidates = []
+          for pattern in ("build.gradle", "build.gradle.kts"):
+              for path in root.rglob(pattern):
+                  if any(part in {"build", ".gradle", ".git", "external"} for part in path.parts):
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="replace")
+                  if re.search(r"\bversionCode\s*(?:=\s*)?\d+", text) and re.search(r"\bversionName\s*(?:=\s*)?['\"][^'\"]+['\"]", text):
+                      score = 0
+                      if "com.android.application" in text:
+                          score += 10
+                      if "applicationId" in text:
+                          score += 5
+                      candidates.append((score, path, text))
+          candidates.sort(key=lambda item: item[0], reverse=True)
+          if not candidates:
+              raise SystemExit("ERROR: Could not locate numeric versionCode and literal versionName in an Android Gradle file. Refusing to publish a v1.0.118-named APK with an unknown internal version.")
+
+          _, path, text = candidates[0]
+          updated, code_count = re.subn(r"(\bversionCode\s*(?:=\s*)?)\d+", r"\g<1>118", text, count=1)
+          updated, name_count = re.subn(r"(\bversionName\s*(?:=\s*)?)(['\"])[^'\"]*\2", r'\g<1>"1.0.118"', updated, count=1)
+          if code_count != 1 or name_count != 1:
+              raise SystemExit(f"ERROR: Failed to set versionCode/versionName in {path}")
+          path.write_text(updated, encoding="utf-8")
+          print(f"Updated {path}: versionCode=118, versionName=1.0.118")
+          PY
+
+      - name: Prepare release signing keystore
+        shell: bash
+        env:
+          SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SURVEYQUANT_KEYSTORE_BASE64:-}" ]; then
+            echo "ERROR: GitHub Actions secret SURVEYQUANT_KEYSTORE_BASE64 is empty or missing."
+            exit 1
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH" || { echo "ERROR: Decoded keystore is empty."; exit 1; }
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "PASS: release keystore prepared without printing secret values."
+
+      - name: Build signed Android release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${APP_ROOT:-}" || { echo "ERROR: APP_ROOT is empty; project discovery did not complete."; exit 1; }
+          test -s "$APP_ROOT/gradlew" || { echo "ERROR: Gradle wrapper not found at $APP_ROOT/gradlew"; exit 1; }
+          test -s "${SURVEYQUANT_KEYSTORE_FILE:-}" || { echo "ERROR: SURVEYQUANT_KEYSTORE_FILE is empty or missing."; exit 1; }
+          chmod +x "$APP_ROOT/gradlew"
+          cd "$APP_ROOT"
+          ./gradlew --no-daemon --stacktrace clean assembleRelease
+
+      - name: Collect APK and STORM test evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="$GITHUB_WORKSPACE/release-assets"
+          mkdir -p "$RELEASE_DIR"
+          mapfile -d '' APK_FILES < <(find "$APP_ROOT" -type f -path '*/build/outputs/apk/release/*.apk' -print0)
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "ERROR: Gradle completed but no release APK was found."
+            find "$APP_ROOT" -type f -path '*/build/outputs/apk/*' -print
+            exit 1
+          fi
+          if [ "${#APK_FILES[@]}" -eq 1 ]; then
+            cp "${APK_FILES[0]}" "$RELEASE_DIR/SurveyQuant_v1.0.118.apk"
+          else
+            index=1
+            for apk in "${APK_FILES[@]}"; do
+              cp "$apk" "$RELEASE_DIR/SurveyQuant_v1.0.118-${index}-$(basename "$apk")"
+              index=$((index + 1))
+            done
+          fi
+          test -n "$(find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.apk' -print -quit)" || { echo "ERROR: No APK was copied to release-assets."; exit 1; }
+          test -s "$STORM_REPORT" || { echo "ERROR: STORM conversion report is missing."; exit 1; }
+          test -s "$STORM_OUTPUT_ZIP" || { echo "ERROR: Converted STORM DXF ZIP is missing."; exit 1; }
+          echo "Release APK files:"
+          find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.apk' -printf '%f (%s bytes)\n'
+
+      - name: Upload APK and conversion-test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.118-APK-and-STORM-tests
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release-assets/*.apk
+            ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
+            ${{ runner.temp }}/STORM_CONVERTED_DXF.zip
+
+      - name: Publish GitHub Release v1.0.118
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.118
+          name: SurveyQuant v1.0.118
+          body: |
+            SurveyQuant Android v1.0.118
+
+            - Correct board preview/orientation workflow.
+            - Preserve the original CAD board instead of redrawing its geometry.
+            - Run orientation regression and STORM DWG conversion tests before release.
+          files: release-assets/*.apk
+          overwrite_files: true
+          fail_on_unmatched_files: true
