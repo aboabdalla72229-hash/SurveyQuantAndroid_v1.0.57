@@ -1305,13 +1305,30 @@ jobs:
           PY
           node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
 
-      - name: Confirm Android debug build prerequisites
+      - name: Create temporary debug keystore for CI build
         shell: bash
         run: |
           set -euo pipefail
-          test -d "$PROJECT_DIR"
-          test -s "$PROJECT_DIR/app/build.gradle"
-          echo "PASS: Android project exists; assembleDebug uses the standard Android debug signing config."
+          SIGNING_DIR="$RUNNER_TEMP/surveyquant-debug-signing"
+          KEYSTORE_PATH="$SIGNING_DIR/debug.keystore"
+          mkdir -p "$SIGNING_DIR"
+          keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          test -s "$KEYSTORE_PATH"
+          {
+            echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH"
+            echo "SURVEYQUANT_KEYSTORE_PASSWORD=android"
+            echo "SURVEYQUANT_KEY_ALIAS=androiddebugkey"
+            echo "SURVEYQUANT_KEY_PASSWORD=android"
+          } >> "$GITHUB_ENV"
+          echo "PASS: temporary CI debug keystore created; no release secrets are needed for assembleDebug."
 
       - name: Set up Gradle (source archive does not include gradlew)
         uses: gradle/actions/setup-gradle@v4
@@ -1327,18 +1344,4 @@ jobs:
           gradle --version
           gradle --no-daemon --stacktrace -p "$PROJECT_DIR" :app:assembleDebug
           APK_SOURCE="$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' -print -quit)"
-          if [ -z "$APK_SOURCE" ] || [ ! -s "$APK_SOURCE" ]; then
-            echo "ERROR: Gradle finished but no APK was found under app/build/outputs/apk."
-            find "$PROJECT_DIR/app/build/outputs" -type f -print 2>/dev/null || true
-            exit 1
-          fi
-          mkdir -p "$RUNNER_TEMP/surveyquant-apk"
-          cp "$APK_SOURCE" "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk"
-          sha256sum "$RUNNER_TEMP/surveyquant-apk/SurveyQuant-v1.0.118-debug.apk" > "$RUNNER_TEMP/surveyquant-apk/SHA256SUMS.txt"
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SurveyQuant-v1.0.118-APK
-          path: |
-            
+          i
