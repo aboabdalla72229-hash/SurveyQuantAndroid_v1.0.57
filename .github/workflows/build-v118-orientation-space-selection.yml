@@ -1315,25 +1315,27 @@ jobs:
           SURVEYQUANT_KEYSTORE: ${{ secrets.SURVEYQUANT_KEYSTORE }}
         run: |
           set -euo pipefail
+          python3 - <<'PYKEYSTORE'
+          import base64
+          import os
+          import pathlib
+          import sys
 
-          # Accept the primary secret name plus common aliases. Never print secret values.
-          KEYSTORE_B64="${SURVEYQUANT_KEYSTORE_BASE64:-}"
-          if [ -z "$KEYSTORE_B64" ]; then KEYSTORE_B64="${SURVEYQUANT_KEYSTORE_B64:-}"; fi
-          if [ -z "$KEYSTORE_B64" ]; then KEYSTORE_B64="${KEYSTORE_BASE64:-}"; fi
-          if [ -z "$KEYSTORE_B64" ]; then KEYSTORE_B64="${ANDROID_KEYSTORE_BASE64:-}"; fi
-          if [ -z "$KEYSTORE_B64" ]; then KEYSTORE_B64="${SURVEYQUANT_KEYSTORE:-}"; fi
-
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "ERROR: Keystore Base64 secret is empty. Set SURVEYQUANT_KEYSTORE_BASE64 in GitHub Actions Secrets."
-            exit 1
-          fi
-          if [ -z "${SURVEYQUANT_KEYSTORE_PASSWORD:-}" ]; then
-            echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD is missing."
-            exit 1
-          fi
-          if [ -z "${SURVEYQUANT_KEY_ALIAS:-}" ]; then
-            echo "ERROR: SURVEYQUANT_KEY_ALIAS is missing."
-            exit 1
-          fi
-          if [ -z "${SURVEYQUANT_KEY_PASSWORD:-}" ]; then
-            echo "ERRO
+          names = (
+              'SURVEYQUANT_KEYSTORE_BASE64',
+              'SURVEYQUANT_KEYSTORE_B64',
+              'KEYSTORE_BASE64',
+              'ANDROID_KEYSTORE_BASE64',
+              'SURVEYQUANT_KEYSTORE',
+          )
+          encoded = next((os.environ.get(name, '').strip() for name in names if os.environ.get(name, '').strip()), '')
+          if not encoded:
+              sys.exit('ERROR: Keystore Base64 secret is empty. Configure SURVEYQUANT_KEYSTORE_BASE64 in GitHub Actions Secrets.')
+          try:
+              data = base64.b64decode(''.join(encoded.split()), validate=True)
+          except Exception:
+              sys.exit('ERROR: Keystore Base64 secret is invalid. Re-encode the original JKS/keystore file as Base64.')
+          if not data:
+              sys.exit('ERROR: Decoded keystore is empty.')
+          out_dir = pathlib.Path(os.environ['RUNNER_TEMP']) / 'surveyquant-signing'
+          out_dir.mkdir(parents=True, exi
