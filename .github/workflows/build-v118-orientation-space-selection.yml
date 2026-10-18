@@ -607,11 +607,11 @@ jobs:
               raise SystemExit('ERROR: both board canvases were not reduced to the requested compact size')
           ref = sub_once(ref,
           'background:#0b1220"></canvas><p id="sq110TargetInfo"',
-          'background:#0b1220;touch-action:none"></canvas><details id="sq110TLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة (إظهار/إخفاء)</summary><div id="sq110TLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110TargetInfo"
+          'background:#0b1220;touch-action:none"></canvas><details id="sq110TLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة (إظهار/إخفاء)</summary><div id="sq110TLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110TargetInfo"',
           'compact target layer controls')
           ref = sub_once(ref,
           'background:#0b1220"></canvas><p id="sq110ReferenceInfo"',
-          'background:#0b1220;touch-action:none"></canvas><details id="sq110RLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة المرجعية (إظهار/إخفاء)</summary><div id="sq110RLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110ReferenceInfo"
+          'background:#0b1220;touch-action:none"></canvas><details id="sq110RLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة المرجعية (إظهار/إخفاء)</summary><div id="sq110RLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110ReferenceInfo"',
           'compact reference layer controls')
           ref = sub_once(ref,
           "const viewer={side,bytes,name,drawing,canvas:el(canvasId),ctx:null,zoom:1,panX:0,panY:0,pointerMap:new Map(),mode:'',drag:null,pinch:null,didDrag:false,suppressTap:false};",
@@ -1336,4 +1336,4 @@ jobs:
             exit 1
           fi
           if [ -z "${SURVEYQUANT_KEY_PASSWORD:-}" ]; then
-            echo "ERROR: S
+            echo "ERRO
