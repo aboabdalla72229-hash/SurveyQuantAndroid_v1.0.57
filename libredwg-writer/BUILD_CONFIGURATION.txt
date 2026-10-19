@@ -1,0 +1,7 @@
+Built from mlightcad/libredwg-web tag v0.7.14.
+Source patch: terminate cquote() after the last byte written so strlen() cannot include stale heap bytes.
+The corresponding source is included in libredwg-web-v0.7.14-source.zip.
+Build configuration enables LibreDWG DWG/DXF writing by removing --disable-write and --disable-dxf if present.
+The WASM objects and link use -Os; if linking fails, the workflow retries with -Oz.
+The generated writer is exercised on both original STORM DWG files before Android APK build.
+Upstream project license: GPL-3.0. See README_UPSTREAM.md and the included license file.
