@@ -1,0 +1,268 @@
+name: Prepare V117 universal DWG and DXF build workflow
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/prepare-v117-dwg-dxf-support.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate a separate V117 workflow from the current build pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, textwrap
+
+          source_path = Path('.github/workflows/build-v118-orientation-space-selection.yml')
+          output_path = Path('.github/workflows/build-v117-dwg-dxf-support.yml')
+          if not source_path.is_file():
+              raise SystemExit(f'ERROR: expected existing workflow not found: {source_path}')
+          text = source_path.read_text(encoding='utf-8')
+
+          # Remove the entire V118-only drawing-space selection implementation.
+          start = text.find('      - name: Select one CAD drawing space for preview and orientation (v118)')
+          version = text.find('      - name: Set Android release version to 1.0.118', start)
+          if start < 0 or version < 0 or version <= start:
+              raise SystemExit('ERROR: Could not safely isolate the V118-only step block. Nothing was written.')
+          text = text[:start] + text[version:]
+
+          text = text.replace(
+              'name: Build SurveyQuant v1.0.118 - Correct Board Preview and Orientation Space (Preserve Original CAD)',
+              'name: Build SurveyQuant v1.0.117 - Universal DWG and DXF support (V117 baseline)')
+          text = text.replace('build-v118-orientation-space-selection.yml', 'build-v117-dwg-dxf-support.yml')
+          text = text.replace('Set Android release version to 1.0.118', 'Set Android release version to 1.0.117')
+          text = text.replace('const SQ_APP_VERSION_CODE = 118;', 'const SQ_APP_VERSION_CODE = 117;')
+          text = text.replace('versionCode[[:space:]]+118([^0-9]|$)', 'versionCode[[:space:]]+117([^0-9]|$)')
+          text = text.replace(r'\g<1>118', r'\g<1>117')
+          text = text.replace('1.0.118', '1.0.117').replace('v118', 'v117').replace('V118', 'V117')
+          text = text.replace(
+              'const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 118;"',
+              'const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 117;"')
+          text = text.replace(
+              'The old v113 hard-veto test is intentionally replaced by the v115 nonblocking-export test. v118 separately verifies Model Space / Layout selection.',
+              'The V117 build retains view-only zoom and adds shared DWG-to-DXF conversion for all CAD file inputs.')
+
+          universal_step = r"""      - name: Enable universal DWG and DXF input for every project (V117)
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python3 - "$INDEX_PATH" "$RUNNER_TEMP/sq-universal-dwg-dxf-support.js" <<'PY'
+                    from pathlib import Path
+                    import re, sys
+
+                    html_path, js_path = map(Path, sys.argv[1:])
+                    html = html_path.read_text(encoding="utf-8")
+
+                    def expand_cad_accept(match):
+                        prefix, quote, value = match.groups()
+                        if not re.search(r'(\.dxf\b|\.dwg\b|application/dxf|application/acad|x-acad|image/vnd\.dwg|\bcad\b|drawing)', value, re.I):
+                            return match.group(0)
+                        additions = [".dxf", ".dwg", "application/dxf", "application/x-dxf", "application/acad", "application/x-acad", "image/vnd.dwg"]
+                        parts = [x.strip() for x in value.split(",") if x.strip()]
+                        lower = {x.lower() for x in parts}
+                        for item in additions:
+                            if item.lower() not in lower:
+                                parts.append(item)
+                                lower.add(item.lower())
+                        return prefix + quote + ",".join(parts) + quote
+
+                    accept_pattern = re.compile(r'''(\baccept\s*=\s*)(["'])([^"']*)\2''', re.I)
+                    html, filter_count = accept_pattern.subn(expand_cad_accept, html)
+                    if 'id="sq-universal-dwg-dxf-support"' in html:
+                        raise SystemExit("ERROR: Universal DWG/DXF handler already present; refusing duplicate injection.")
+                    if "</body>" not in html:
+                        raise SystemExit("ERROR: index.html does not contain </body>.")
+
+                    script = r'''<script id="sq-universal-dwg-dxf-support">
+                    (function () {
+                      'use strict';
+                      if (window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__) return;
+                      window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__ = true;
+                      var MIME = 'application/dxf';
+                      function outputName(file) { return String(file && file.name || 'drawing.dwg').replace(/\.dwg$/i, '.dxf'); }
+                      function normalizeResult(result, sourceFile) {
+                        if (result && result.ok === false) throw new Error(result.error || result.message || 'DWG conversion failed.');
+                        var value = result;
+                        if (value && typeof value === 'object' && !(value instanceof Blob) && !(value instanceof File) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value) && !Array.isArray(value)) {
+                          var keys = ['file', 'blob', 'bytes', 'dxfBytes', 'data', 'output', 'text', 'dxf', 'content', 'buffer'];
+                          for (var i = 0; i < keys.length; i++) if (value[keys[i]] != null) { value = value[keys[i]]; break; }
+                        }
+                        var name = outputName(sourceFile);
+                        if (value instanceof File) return new File([value], name, { type: MIME, lastModified: Date.now() });
+                        if (value instanceof Blob) { if (!value.size) throw new Error('The converted DXF is empty.'); return new File([value], name, { type: MIME, lastModified: Date.now() }); }
+                        if (typeof value === 'string') {
+                          if (!value.trim() || !/(SECTION|ENTITIES|HEADER|EOF)/i.test(value)) throw new Error('The DWG converter did not return valid DXF text.');
+                          return new File([value], name, { type: MIME, lastModified: Date.now() });
+                        }
+                        if (Array.isArray(value)) value = new Uint8Array(value);
+                        if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) { if (!value.byteLength) throw new Error('The converted DXF is empty.'); return new File([value], name, { type: MIME, lastModified: Date.now() }); }
+                        throw new Error('Unrecognized result from the DWG-to-DXF converter.');
+                      }
+                      function getConverter() {
+                        if (typeof window.sqOriConvertTargetToDxf === 'function') return window.sqOriConvertTargetToDxf;
+                        var api = window.__sqOrientation115Tools || window.__sqOrientation113API || {};
+                        var names = ['sqOriConvertTargetToDxf', 'convertTargetToDxf', 'convertDwgToDxf', 'dwgToDxf'];
+                        for (var i = 0; i < names.length; i++) if (typeof api[names[i]] === 'function') return api[names[i]].bind(api);
+                        try { if (typeof sqOriConvertTargetToDxf === 'function') return sqOriConvertTargetToDxf; } catch (_) {}
+                        return null;
+                      }
+                      async function convertFile(file) {
+                        var converter = getConverter();
+                        if (!converter) throw new Error('The shared DWG converter is not available in this project.');
+                        return normalizeResult(await converter(file), file);
+                      }
+                      async function convertFiles(files) {
+                        var converted = [];
+                        for (var i = 0; i < files.length; i++) converted.push(/\.dwg$/i.test(files[i].name || '') ? await convertFile(files[i]) : files[i]);
+                        return converted;
+                      }
+                      function replaceFiles(input, files) {
+                        var transfer = new DataTransfer();
+                        files.forEach(function (file) { transfer.items.add(file); });
+                        input.files = transfer.files;
+                      }
+                      document.addEventListener('change', function (event) {
+                        var input = event.target;
+                        if (!input || String(input.tagName || '').toLowerCase() !== 'input' || String(input.type || '').toLowerCase() !== 'file') return;
+                        var files = Array.prototype.slice.call(input.files || []);
+                        if (!files.some(function (f) { return /\.dwg$/i.test(f.name || ''); })) return;
+                        event.preventDefault(); event.stopImmediatePropagation();
+                        if (input.__sqUniversalDwgBusy) return;
+                        input.__sqUniversalDwgBusy = true;
+                        convertFiles(files).then(function (converted) { replaceFiles(input, converted); input.dispatchEvent(new Event('change', { bubbles: true })); }).catch(function (error) {
+                          console.error('[SurveyQuant] DWG-to-DXF conversion failed:', error); input.value = '';
+                          alert('تعذر تحويل لوحة DWG إلى DXF. تأكد أن الملف سليم ثم أعد المحاولة.\n' + String(error && error.message || error));
+                        }).finally(function () { input.__sqUniversalDwgBusy = false; });
+                      }, true);
+                      document.addEventListener('drop', function (event) {
+                        var source = event.dataTransfer, files = source ? Array.prototype.slice.call(source.files || []) : [];
+                        if (!files.some(function (f) { return /\.dwg$/i.test(f.name || ''); })) return;
+                        event.preventDefault(); event.stopImmediatePropagation();
+                        convertFiles(files).then(function (converted) {
+                          var transfer = new DataTransfer(); converted.forEach(function (file) { transfer.items.add(file); });
+                          event.target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+                        }).catch(function (error) { console.error('[SurveyQuant] dropped DWG conversion failed:', error); alert('تعذر تحويل لوحة DWG إلى DXF. ' + String(error && error.message || error)); });
+                      }, true);
+                      window.__sqUniversalDwgDxfAPI = { normalizeResult: normalizeResult, convertFile: convertFile };
+                    })();
+                    </script>'''
+
+                    html = html.replace("</body>", script + "\n</body>", 1)
+                    html_path.write_text(html, encoding="utf-8")
+                    js_path.write_text(script[len('<script id="sq-universal-dwg-dxf-support">'):script.rfind('</script>')], encoding="utf-8")
+                    print("PASS: injected universal DWG-to-DXF conversion before project file handlers.")
+                    print("CAD file accept filters expanded:", filter_count)
+                    PY
+
+                    node --check "$RUNNER_TEMP/sq-universal-dwg-dxf-support.js"
+                    node <<'NODE'
+                    const fs = require('node:fs');
+                    const assert = require('node:assert/strict');
+                    const html = fs.readFileSync(process.env.INDEX_PATH, 'utf8');
+                    const js = fs.readFileSync(process.env.RUNNER_TEMP + '/sq-universal-dwg-dxf-support.js', 'utf8');
+                    for (const token of ['id="sq-universal-dwg-dxf-support"','window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__','function normalizeResult(result, sourceFile)','function getConverter()',"document.addEventListener('change'",'stopImmediatePropagation()','new DataTransfer()',"input.dispatchEvent(new Event('change'","document.addEventListener('drop'",'window.__sqUniversalDwgDxfAPI']) assert(html.includes(token) || js.includes(token), 'missing DWG/DXF bridge element: ' + token);
+                    assert(js.includes('sqOriConvertTargetToDxf'), 'existing DWG converter is not connected');
+                    assert(js.includes('new File([value], name'), 'converted result is not returned as a DXF File');
+                    assert(html.includes('function parseDXF(text){'), 'original DXF parser was unexpectedly changed');
+                    assert(html.includes('function universalTransformBytes(input,t)'), 'byte-preserving CAD transform was unexpectedly removed');
+                    console.log('PASS V117 universal DWG/DXF static regression.');
+                    NODE
+
+          """
+          marker = '      - name: Set Android release version to 1.0.117'
+          if marker not in text:
+              raise SystemExit('ERROR: V117 version-setting step not found after conversion.')
+          if 'universal dwg and dxf input for every project' not in text.lower():
+              # Insert the independent global import step only once.
+              text = text.replace(marker, universal_step + marker, 1)
+          else:
+              raise SystemExit('ERROR: Universal file bridge marker unexpectedly already exists in source.')
+
+          # Finish the APK build cleanly; the existing workflow file was truncated after APK_SOURCE.
+          build_marker = '      - name: Build Android APK v1.0.117'
+          build_pos = text.find(build_marker)
+          if build_pos < 0:
+              raise SystemExit('ERROR: V117 APK build step marker was not found.')
+          build_body = textwrap.dedent("""\
+          - name: Build Android APK v1.0.117
+            shell: bash
+            run: |
+              set -euo pipefail
+              test -d "$PROJECT_DIR"
+              test -s "$PROJECT_DIR/app/build.gradle"
+              gradle --version
+              gradle --no-daemon --stacktrace -p "$PROJECT_DIR" :app:assembleDebug
+              APK_SOURCE="$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' -print -quit)"
+              test -n "$APK_SOURCE" && test -s "$APK_SOURCE" || { echo "ERROR: Android APK was not produced."; exit 1; }
+              mkdir -p "$GITHUB_WORKSPACE/release-v117"
+              cp "$APK_SOURCE" "$GITHUB_WORKSPACE/release-v117/SurveyQuant_v1.0.117_DWG_DXF.apk"
+              test -s "$STORM_REPORT"
+              cp "$STORM_REPORT" "$GITHUB_WORKSPACE/release-v117/STORM_DWG_CONVERSION_TEST_REPORT.md"
+              echo "PASS: V117 APK and real-DWG conversion report prepared."
+
+          - name: Upload V117 APK and conversion test report
+            uses: actions/upload-artifact@v4
+            with:
+              name: SurveyQuant-v1.0.117-Universal-DWG-DXF
+              path: release-v117/*
+              if-no-files-found: error
+              retention-days: 30
+          """)
+          build_tail = "\n".join(("      " + line if line else "") for line in build_body.splitlines()) + "\n"
+          text = text[:build_pos] + build_tail
+
+          if re.search(r'v118|1\.0\.118|SQ_APP_VERSION_CODE = 118|versionCode\[\[:space:\]\]\+118', text, re.I):
+              leftovers = [f'{i+1}: {line}' for i, line in enumerate(text.splitlines()) if re.search(r'v118|1\.0\.118|SQ_APP_VERSION_CODE = 118', line, re.I)]
+              raise SystemExit('ERROR: V118 references remain after conversion:\n' + '\n'.join(leftovers[:20]))
+          if 'id="sq-universal-dwg-dxf-support"' not in text:
+              raise SystemExit('ERROR: shared DWG/DXF script was not included in generated workflow.')
+          if 'Select one CAD drawing space for preview and orientation (v118)' in text:
+              raise SystemExit('ERROR: V118-only board-space step is still present.')
+          output_path.write_text(text, encoding='utf-8')
+          print(f'PASS: generated {output_path} ({len(text.splitlines())} lines).')
+          PY
+
+      - name: Commit V117 build workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git add .github/workflows/build-v117-dwg-dxf-support.yml
+          git diff --cached --quiet && { echo "V117 workflow already up to date."; exit 0; }
+          git commit -m "Add V117 universal DWG DXF import build workflow"
+          git push origin HEAD:main
+          echo "V117 workflow has been committed. The next step dispatches the V117 build, not V118."
+
+      - name: Start the newly created V117 build (not V118)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run build-v117-dwg-dxf-support.yml --ref main; then
+              echo "V117 build dispatch submitted. Check Actions for SurveyQuant-v1.0.117-Universal-DWG-DXF."
+              exit 0
+            fi
+            echo "V117 workflow is not registered yet; retry $attempt/5."
+            sleep 4
+          done
+          echo "::warning::The V117 workflow was created, but automatic dispatch could not be confirmed. Run build-v117-dwg-dxf-support.yml manually from Actions."
