@@ -1,11 +1,20 @@
 name: Build SurveyQuant v1.0.119 - DWG Compatibility and Proportional Board Text (Preserve Original CAD)
 
+
 on:
   workflow_dispatch:
   push:
     paths:
+      - ".github/workflows/prepare-v119-dwg-compatibility.yml"
+      - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
+      - "SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
+      - "SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
-      - ".github/workflows/build-v119-dwg-dxf-text-scale.yml"
 
 permissions:
   contents: write
