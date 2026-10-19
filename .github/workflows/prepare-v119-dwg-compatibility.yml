@@ -918,7 +918,7 @@ jobs:
           import sys
           module_path, index_path = map(Path, sys.argv[1:])
           old_text = "size=Math.max(5.5,Math.min(15,Math.abs(Number(t.height)||2.5)*m.scale));"
-          new_text = "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale);"
+          new_text = "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale*v.zoom);"
           old_size = 'height:230px;min-height:230px;max-height:230px'
           new_size = 'height:42dvh;min-height:250px;max-height:420px'
           for path in (module_path, index_path):
