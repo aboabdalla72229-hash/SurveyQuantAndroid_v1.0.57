@@ -1,0 +1,168 @@
+name: Repair SurveyQuant V119 DWG Import and Text Scale
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Repair the existing V119 Android APK workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/prepare-v119-dwg-compatibility.yml')
+          if not path.is_file():
+              raise SystemExit(f'ERROR: Android build workflow not found: {path}')
+          source = path.read_text(encoding='utf-8')
+          if 'name: Build SurveyQuant v1.0.119' not in source or 'gradle --no-daemon clean assembleRelease' not in source:
+              raise SystemExit('ERROR: The expected V119 Android APK builder was not found. No changes made.')
+          before = source
+
+          # Fix CAD preview text size so it follows both geometry fit and board zoom.
+          old_line = '          new_text = "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale);"'
+          new_line = '          new_text = "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale*Math.max(0.001,Number(v.zoom)||1));"'
+          if old_line in source:
+              if source.count(old_line) != 1:
+                  raise SystemExit('ERROR: CAD text-size patch anchor is not unique.')
+              source = source.replace(old_line, new_line, 1)
+          elif new_line not in source:
+              raise SystemExit('ERROR: CAD text-size patch anchor was not found.')
+
+          old_check = "'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)'"
+          new_check = "'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale*Math.max(0.001,Number(v.zoom)||1))'"
+          source = source.replace(old_check, new_check)
+          old_grep = "grep -Fq 'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)' \"$INDEX_PATH\""
+          new_grep = "grep -Fq 'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale*Math.max(0.001,Number(v.zoom)||1))' \"$INDEX_PATH\""
+          source = source.replace(old_grep, new_grep)
+
+          # Correct all four doubled .dwg regular expressions in the universal bridge.
+          # The old JS regex tests for a backslash instead of the literal dot in .dwg.
+          bridge_marker = '          cat > "$RUNNER_TEMP/sq-v119-dwg-bridge.js" <<\'JS\''
+          bridge_start = source.find(bridge_marker)
+          if bridge_start < 0:
+              raise SystemExit('ERROR: V119 universal DWG bridge block was not found.')
+          bridge_end = source.find('\n          JS\n', bridge_start)
+          if bridge_end < 0:
+              raise SystemExit('ERROR: V119 DWG bridge terminator was not found.')
+          bridge = source[bridge_start:bridge_end]
+          bad_ext = r'\\.dwg'
+          good_ext = r'\.dwg'
+          bad_count = bridge.count(bad_ext)
+          if bad_count:
+              if bad_count != 4:
+                  raise SystemExit(f'ERROR: Expected four broken .dwg regexes, found {bad_count}.')
+              bridge = bridge.replace(bad_ext, good_ext)
+          if bridge.count(bad_ext) or bridge.count(good_ext) < 4:
+              raise SystemExit('ERROR: DWG filename matcher verification failed.')
+
+          # Extend all existing and dynamically-created file pickers to permit DWG/DXF.
+          accept_anchor = "            var MIME = 'application/dxf';"
+          accept_js = r'''            var MIME = 'application/dxf';
+            var SQ_DWG_ACCEPT_TYPES = ['.dwg','.dxf','application/dwg','application/x-dwg','application/dxf','application/x-dxf','application/acad','application/x-acad','image/vnd.dwg'];
+            function sqExtendDwgInput(input) {
+              if (!input || String(input.tagName || '').toLowerCase() !== 'input' || String(input.type || '').toLowerCase() !== 'file') return;
+              var current = String(input.accept || '').split(',').map(function(x){return x.trim();}).filter(Boolean);
+              SQ_DWG_ACCEPT_TYPES.forEach(function(item) {
+                if (!current.some(function(x){return x.toLowerCase() === item.toLowerCase();})) current.push(item);
+              });
+              input.accept = current.join(',');
+            }
+            function sqScanDwgInputs(root) {
+              if (root && root.nodeType === 1) sqExtendDwgInput(root);
+              if (root && typeof root.querySelectorAll === 'function') root.querySelectorAll('input[type="file"]').forEach(sqExtendDwgInput);
+            }
+            sqScanDwgInputs(document);
+            if (typeof MutationObserver === 'function' && document.documentElement) {
+              new MutationObserver(function(records) {
+                records.forEach(function(record) { (record.addedNodes || []).forEach(sqScanDwgInputs); });
+              }).observe(document.documentElement, {childList:true,subtree:true});
+            }'''
+          if 'SQ_DWG_ACCEPT_TYPES' not in bridge:
+              if bridge.count(accept_anchor) != 1:
+                  raise SystemExit('ERROR: DWG file-picker extension anchor is not unique.')
+              bridge = bridge.replace(accept_anchor, accept_js, 1)
+          source = source[:bridge_start] + bridge + source[bridge_end:]
+
+          # After the v115 patcher writes the module URL, probe JS and WASM on several
+          # public mirrors, then write the chosen host into the generated app HTML.
+          patcher_call = '          python3 "$V115_PATCHER" "$PATCH_INDEX" "$AXIS_MODULE" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$WRITER_SHA"\n'
+          if 'V119 tested DWG engine mirror selection' not in source:
+              if source.count(patcher_call) != 1:
+                  raise SystemExit('ERROR: V115 patcher call is not unique.')
+              lines = [
+                  '          # V119 tested DWG engine mirror selection',
+                  '          OWNER="aboabdalla72229-hash"',
+                  '          REPO="SurveyQuantAndroid_v1.0.57"',
+                  '          ENGINE_ROOT=""',
+                  '          for CANDIDATE in "https://fastly.jsdelivr.net/gh/$OWNER/$REPO@$WRITER_SHA/libredwg-writer" "https://raw.githack.com/$OWNER/$REPO/$WRITER_SHA/libredwg-writer" "https://cdn.jsdelivr.net/gh/$OWNER/$REPO@$WRITER_SHA/libredwg-writer"; do',
+                  '            if curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$CANDIDATE/dist/libredwg-web.js" -o "$RUNNER_TEMP/sq-v119-engine-check.js" && curl --fail --location --silent --show-error --retry 2 --retry-all-errors "$CANDIDATE/wasm/libredwg-web.wasm" -o "$RUNNER_TEMP/sq-v119-engine-check.wasm" && test -s "$RUNNER_TEMP/sq-v119-engine-check.js" && test -s "$RUNNER_TEMP/sq-v119-engine-check.wasm"; then',
+                  '              ENGINE_ROOT="$CANDIDATE"',
+                  '              break',
+                  '            fi',
+                  '          done',
+                  '          test -n "$ENGINE_ROOT" || { echo "ERROR: DWG JS/WASM engine is unreachable on all tested mirrors; APK build stopped."; exit 1; }',
+                  '          python3 - "$PATCH_INDEX" "$WRITER_SHA" "$ENGINE_ROOT" <<\'PY\'',
+                  '          from pathlib import Path',
+                  '          import re, sys',
+                  '          html_path = Path(sys.argv[1])',
+                  '          sha = sys.argv[2].strip()',
+                  '          root = sys.argv[3].rstrip("/")',
+                  '          html = html_path.read_text(encoding="utf-8")',
+                  '          patterns = [',
+                  '              re.compile(r"https://(?:fastly\\.)?jsdelivr\\.net/gh/aboabdalla72229-hash/SurveyQuantAndroid_v1\\.0\\.57@" + re.escape(sha) + r"/libredwg-writer/"),',
+                  '              re.compile(r"https://raw\\.githack\\.com/aboabdalla72229-hash/SurveyQuantAndroid_v1\\.0\\.57/" + re.escape(sha) + r"/libredwg-writer/"),',
+                  '          ]',
+                  '          replaced = 0',
+                  '          for pattern in patterns:',
+                  '              html, count = pattern.subn(root + "/", html)',
+                  '              replaced += count',
+                  '          if replaced < 1 or "libredwg-writer/dist/libredwg-web.js" not in html:',
+                  '              raise SystemExit("ERROR: Could not patch the module URL generated by the V115 patcher.")',
+                  '          html_path.write_text(html, encoding="utf-8")',
+                  '          print(f"PASS: selected reachable DWG module mirror {root}; changed {replaced} URL(s).")',
+                  '          PY',
+                  '          ' 
+              ]
+              mirror_step = '\n'.join(lines) + '\n'
+              source = source.replace(patcher_call, patcher_call + mirror_step, 1)
+
+          if source == before:
+              print('V119 workflow already includes the repair.')
+          else:
+              path.write_text(source, encoding='utf-8')
+              print('PASS: V119 build workflow updated for DWG picker compatibility, module mirror checks, and proportional CAD text zoom.')
+          PY
+
+      - name: Commit repair and start the Android APK build
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- .github/workflows/prepare-v119-dwg-compatibility.yml; then
+            git add .github/workflows/prepare-v119-dwg-compatibility.yml
+            git commit -m "Fix V119 DWG import and proportional CAD text scale"
+            git push origin HEAD:main
+          else
+            echo "V119 builder already contains the fixes."
+          fi
+          gh workflow run .github/workflows/prepare-v119-dwg-compatibility.yml --ref main
+          echo "V119 Android build dispatched. Confirm the APK artifact in Actions before installing."
