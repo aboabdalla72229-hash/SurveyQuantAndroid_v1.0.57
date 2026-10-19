@@ -523,8 +523,9 @@ jobs:
             if(rec.type==='HATCH'){xy(43,44,'point');xy(45,46,'vector');}
             // Uniform scale changes geometry-dependent sizes, never layer/color/handle/XData.
             const scaleCodes=[];
-            if(['CIRCLE','ARC','TEXT','MTEXT','ATTRIB','ATTDEF'].includes(rec.type))scaleCodes.push(40);
-            if(rec.type==='MTEXT')scaleCodes.push(41,44);
+            // Preserve authored TEXT/MTEXT/ATTRIB/ATTDEF height and MTEXT width/spacing.
+            // Preview glyph sizes scale with board fit and zoom; exported DXF text properties remain original.
+            if(['CIRCLE','ARC'].includes(rec.type))scaleCodes.push(40);
             if(rec.type==='INSERT')scaleCodes.push(41,42,43);
             if(rec.type==='HATCH')scaleCodes.push(41);
             if(rec.type==='DIMENSION')scaleCodes.push(42);
@@ -710,6 +711,7 @@ jobs:
           const transform=api.solve({x:0,y:0},{x:10,y:0},{x:100,y:200},{x:100,y:220});
           const moved=api.transformBytes(styled,transform),out=dec.decode(moved.bytes);
           assert.match(out,/\n100\r?\n/,'coordinates actually changed');assert.match(out,/\nROAD\r?\n/,'layer names preserved');assert.match(out,/\nDASHED\r?\n/,'linetype table preserved');assert.match(out,/\nLAYER_LABEL_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\r?\n/,'text contents preserved');
+          const textPairs=out.split(/\r?\n/);const textStart=textPairs.findIndex((v,i)=>v==='0'&&textPairs[i+1]==='TEXT');assert(textStart>=0,'sample TEXT entity remains present');let textHeight=null;for(let i=textStart+2;i<textPairs.length&&textPairs[i]!=='0';i+=2)if(textPairs[i]==='40'){textHeight=Number(textPairs[i+1]);break;}assert.equal(textHeight,2.5,'original TEXT height stays 2.5 despite scale-2 board transform');
           assert.equal(moved.entitiesBefore,moved.entitiesAfter,'entity count preserved');assert.equal(moved.layersPreserved,true,'layer preservation confirmed');
           const headerVar=(txt,name)=>{const parts=txt.split(/\r?\n/);const ix=parts.findIndex((v,i)=>v==='9'&&parts[i+1]===name);assert(ix>=0,'header variable '+name+' should exist');const out={};for(let i=ix+2;i<parts.length&&!(parts[i]==='9'||parts[i]==='0');i+=2)out[parts[i]]=Number(parts[i+1]);return out;};const extMin=headerVar(out,'$EXTMIN'),extMax=headerVar(out,'$EXTMAX'),viewCenter=headerVar(out,'$VIEWCTR'),viewSize=headerVar(out,'$VIEWSIZE');assert(Math.abs(extMin['10']-80)<1e-8&&Math.abs(extMin['20']-200)<1e-8,'$EXTMIN must move with the transformed board');assert(Math.abs(extMax['10']-100)<1e-8&&Math.abs(extMax['20']-220)<1e-8,'$EXTMAX must bound the transformed board');assert(Math.abs(viewCenter['10']-90)<1e-8&&Math.abs(viewCenter['20']-210)<1e-8,'$VIEWCTR must move with the transformed board');assert(Math.abs(viewSize['40']-20)<1e-8,'$VIEWSIZE scales with the board');
           // Drawing saved only in paper space should transform rather than silently downloading an unchanged DXF.
