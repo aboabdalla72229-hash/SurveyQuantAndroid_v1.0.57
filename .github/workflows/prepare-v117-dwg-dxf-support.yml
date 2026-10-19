@@ -1,268 +1,1369 @@
-name: Prepare V117 universal DWG and DXF build workflow
+name: Build SurveyQuant v1.0.119 - DWG Compatibility and Proportional Board Text (Preserve Original CAD)
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/prepare-v117-dwg-dxf-support.yml"
+      - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v119-dwg-dxf-text-scale.yml"
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
-  prepare:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 90
+    env:
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Generate a separate V117 workflow from the current build pipeline
+      - name: Checkout LibreDWG-Web v0.7.14 source
+        uses: actions/checkout@v4
+        with:
+          repository: mlightcad/libredwg-web
+          ref: v0.7.14
+          path: external/libredwg-web
+          persist-credentials: false
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Set up Emscripten for writer-enabled LibreDWG
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Install LibreDWG build dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential autoconf automake libtool libtool-bin pkg-config gettext zlib1g-dev libpcre2-dev flex bison texinfo python3-dev zip unzip
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Install Android SDK packages and archive tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sudo apt-get update -y
+          sudo apt-get install -y unzip zip
+
+      - name: Unpack v115 patch bundle and the two original STORM DWG test files
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH_ARCHIVE="SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
+          test -s "$PATCH_ARCHIVE" || { echo "ERROR: Upload the v115 patch ZIP to the repository root first."; exit 1; }
+          PATCH_DIR="$RUNNER_TEMP/sq-v115-package"
+          STORM_DIR="$RUNNER_TEMP/sq-storm-input"
+          STORM_OUTPUT_DIR="$RUNNER_TEMP/sq-storm-output"
+          mkdir -p "$PATCH_DIR" "$STORM_DIR" "$STORM_OUTPUT_DIR"
+          unzip -q "$PATCH_ARCHIVE" -d "$PATCH_DIR"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_APPLY_PATCH.py"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs"
+          test -s "$PATCH_DIR/STORM.zip" || { echo "ERROR: The real STORM.zip source boards are missing from the patch package."; exit 1; }
+          unzip -q "$PATCH_DIR/STORM.zip" -d "$STORM_DIR"
+          DWG_COUNT="$(find "$STORM_DIR" -type f -iname '*.dwg' | wc -l)"
+          test "$DWG_COUNT" -eq 2 || { echo "ERROR: Expected the two original STORM DWGs, found $DWG_COUNT."; find "$STORM_DIR" -type f -print; exit 1; }
+          echo "V115_PACKAGE_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
+          echo "V115_PATCHER=$PATCH_DIR/SurveyQuant_v1.0.115_APPLY_PATCH.py" >> "$GITHUB_ENV"
+          echo "V115_MODULE=$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js" >> "$GITHUB_ENV"
+          echo "V115_TEST=$PATCH_DIR/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js" >> "$GITHUB_ENV"
+          echo "STORM_TEST_MODULE=$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs" >> "$GITHUB_ENV"
+          echo "STORM_TRANSFORM_TEST=$PATCH_DIR/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs" >> "$GITHUB_ENV"
+          echo "STORM_INPUT_DIR=$STORM_DIR" >> "$GITHUB_ENV"
+          echo "STORM_OUTPUT_DIR=$STORM_OUTPUT_DIR" >> "$GITHUB_ENV"
+          echo "STORM_REPORT=$RUNNER_TEMP/STORM_CONVERSION_REPORT.md" >> "$GITHUB_ENV"
+          echo "STORM_OUTPUT_ZIP=$RUNNER_TEMP/STORM_CONVERTED_DXF.zip" >> "$GITHUB_ENV"
+
+      - name: Build LibreDWG-Web with DXF writing enabled and cquote heap fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIBREDWG_DIR="$GITHUB_WORKSPACE/external/libredwg-web"
+          test -s "$LIBREDWG_DIR/configure.ac" || { echo "ERROR: Pinned LibreDWG source was not checked out."; exit 1; }
+          cd "$LIBREDWG_DIR"
+          ./autogen.sh
+
+          # FIX: upstream cquote() terminated at the end of its allocation,
+          # rather than immediately after the converted text. dxf_fixup_string()
+          # then used strlen() and could append stale heap bytes to DXF strings.
+          # Those bytes can corrupt group-code/value pairing (observed as </MapLib>).
+          python3 - src/out_dxf.c <<'PY'
           from pathlib import Path
-          import re, textwrap
+          import sys
 
-          source_path = Path('.github/workflows/build-v118-orientation-space-selection.yml')
-          output_path = Path('.github/workflows/build-v117-dwg-dxf-support.yml')
-          if not source_path.is_file():
-              raise SystemExit(f'ERROR: expected existing workflow not found: {source_path}')
-          text = source_path.read_text(encoding='utf-8')
-
-          # Remove the entire V118-only drawing-space selection implementation.
-          start = text.find('      - name: Select one CAD drawing space for preview and orientation (v118)')
-          version = text.find('      - name: Set Android release version to 1.0.118', start)
-          if start < 0 or version < 0 or version <= start:
-              raise SystemExit('ERROR: Could not safely isolate the V118-only step block. Nothing was written.')
-          text = text[:start] + text[version:]
-
-          text = text.replace(
-              'name: Build SurveyQuant v1.0.118 - Correct Board Preview and Orientation Space (Preserve Original CAD)',
-              'name: Build SurveyQuant v1.0.117 - Universal DWG and DXF support (V117 baseline)')
-          text = text.replace('build-v118-orientation-space-selection.yml', 'build-v117-dwg-dxf-support.yml')
-          text = text.replace('Set Android release version to 1.0.118', 'Set Android release version to 1.0.117')
-          text = text.replace('const SQ_APP_VERSION_CODE = 118;', 'const SQ_APP_VERSION_CODE = 117;')
-          text = text.replace('versionCode[[:space:]]+118([^0-9]|$)', 'versionCode[[:space:]]+117([^0-9]|$)')
-          text = text.replace(r'\g<1>118', r'\g<1>117')
-          text = text.replace('1.0.118', '1.0.117').replace('v118', 'v117').replace('V118', 'V117')
-          text = text.replace(
-              'const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 118;"',
-              'const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 117;"')
-          text = text.replace(
-              'The old v113 hard-veto test is intentionally replaced by the v115 nonblocking-export test. v118 separately verifies Model Space / Layout selection.',
-              'The V117 build retains view-only zoom and adds shared DWG-to-DXF conversion for all CAD file inputs.')
-
-          universal_step = r"""      - name: Enable universal DWG and DXF input for every project (V117)
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    python3 - "$INDEX_PATH" "$RUNNER_TEMP/sq-universal-dwg-dxf-support.js" <<'PY'
-                    from pathlib import Path
-                    import re, sys
-
-                    html_path, js_path = map(Path, sys.argv[1:])
-                    html = html_path.read_text(encoding="utf-8")
-
-                    def expand_cad_accept(match):
-                        prefix, quote, value = match.groups()
-                        if not re.search(r'(\.dxf\b|\.dwg\b|application/dxf|application/acad|x-acad|image/vnd\.dwg|\bcad\b|drawing)', value, re.I):
-                            return match.group(0)
-                        additions = [".dxf", ".dwg", "application/dxf", "application/x-dxf", "application/acad", "application/x-acad", "image/vnd.dwg"]
-                        parts = [x.strip() for x in value.split(",") if x.strip()]
-                        lower = {x.lower() for x in parts}
-                        for item in additions:
-                            if item.lower() not in lower:
-                                parts.append(item)
-                                lower.add(item.lower())
-                        return prefix + quote + ",".join(parts) + quote
-
-                    accept_pattern = re.compile(r'''(\baccept\s*=\s*)(["'])([^"']*)\2''', re.I)
-                    html, filter_count = accept_pattern.subn(expand_cad_accept, html)
-                    if 'id="sq-universal-dwg-dxf-support"' in html:
-                        raise SystemExit("ERROR: Universal DWG/DXF handler already present; refusing duplicate injection.")
-                    if "</body>" not in html:
-                        raise SystemExit("ERROR: index.html does not contain </body>.")
-
-                    script = r'''<script id="sq-universal-dwg-dxf-support">
-                    (function () {
-                      'use strict';
-                      if (window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__) return;
-                      window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__ = true;
-                      var MIME = 'application/dxf';
-                      function outputName(file) { return String(file && file.name || 'drawing.dwg').replace(/\.dwg$/i, '.dxf'); }
-                      function normalizeResult(result, sourceFile) {
-                        if (result && result.ok === false) throw new Error(result.error || result.message || 'DWG conversion failed.');
-                        var value = result;
-                        if (value && typeof value === 'object' && !(value instanceof Blob) && !(value instanceof File) && !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value) && !Array.isArray(value)) {
-                          var keys = ['file', 'blob', 'bytes', 'dxfBytes', 'data', 'output', 'text', 'dxf', 'content', 'buffer'];
-                          for (var i = 0; i < keys.length; i++) if (value[keys[i]] != null) { value = value[keys[i]]; break; }
-                        }
-                        var name = outputName(sourceFile);
-                        if (value instanceof File) return new File([value], name, { type: MIME, lastModified: Date.now() });
-                        if (value instanceof Blob) { if (!value.size) throw new Error('The converted DXF is empty.'); return new File([value], name, { type: MIME, lastModified: Date.now() }); }
-                        if (typeof value === 'string') {
-                          if (!value.trim() || !/(SECTION|ENTITIES|HEADER|EOF)/i.test(value)) throw new Error('The DWG converter did not return valid DXF text.');
-                          return new File([value], name, { type: MIME, lastModified: Date.now() });
-                        }
-                        if (Array.isArray(value)) value = new Uint8Array(value);
-                        if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) { if (!value.byteLength) throw new Error('The converted DXF is empty.'); return new File([value], name, { type: MIME, lastModified: Date.now() }); }
-                        throw new Error('Unrecognized result from the DWG-to-DXF converter.');
-                      }
-                      function getConverter() {
-                        if (typeof window.sqOriConvertTargetToDxf === 'function') return window.sqOriConvertTargetToDxf;
-                        var api = window.__sqOrientation115Tools || window.__sqOrientation113API || {};
-                        var names = ['sqOriConvertTargetToDxf', 'convertTargetToDxf', 'convertDwgToDxf', 'dwgToDxf'];
-                        for (var i = 0; i < names.length; i++) if (typeof api[names[i]] === 'function') return api[names[i]].bind(api);
-                        try { if (typeof sqOriConvertTargetToDxf === 'function') return sqOriConvertTargetToDxf; } catch (_) {}
-                        return null;
-                      }
-                      async function convertFile(file) {
-                        var converter = getConverter();
-                        if (!converter) throw new Error('The shared DWG converter is not available in this project.');
-                        return normalizeResult(await converter(file), file);
-                      }
-                      async function convertFiles(files) {
-                        var converted = [];
-                        for (var i = 0; i < files.length; i++) converted.push(/\.dwg$/i.test(files[i].name || '') ? await convertFile(files[i]) : files[i]);
-                        return converted;
-                      }
-                      function replaceFiles(input, files) {
-                        var transfer = new DataTransfer();
-                        files.forEach(function (file) { transfer.items.add(file); });
-                        input.files = transfer.files;
-                      }
-                      document.addEventListener('change', function (event) {
-                        var input = event.target;
-                        if (!input || String(input.tagName || '').toLowerCase() !== 'input' || String(input.type || '').toLowerCase() !== 'file') return;
-                        var files = Array.prototype.slice.call(input.files || []);
-                        if (!files.some(function (f) { return /\.dwg$/i.test(f.name || ''); })) return;
-                        event.preventDefault(); event.stopImmediatePropagation();
-                        if (input.__sqUniversalDwgBusy) return;
-                        input.__sqUniversalDwgBusy = true;
-                        convertFiles(files).then(function (converted) { replaceFiles(input, converted); input.dispatchEvent(new Event('change', { bubbles: true })); }).catch(function (error) {
-                          console.error('[SurveyQuant] DWG-to-DXF conversion failed:', error); input.value = '';
-                          alert('تعذر تحويل لوحة DWG إلى DXF. تأكد أن الملف سليم ثم أعد المحاولة.\n' + String(error && error.message || error));
-                        }).finally(function () { input.__sqUniversalDwgBusy = false; });
-                      }, true);
-                      document.addEventListener('drop', function (event) {
-                        var source = event.dataTransfer, files = source ? Array.prototype.slice.call(source.files || []) : [];
-                        if (!files.some(function (f) { return /\.dwg$/i.test(f.name || ''); })) return;
-                        event.preventDefault(); event.stopImmediatePropagation();
-                        convertFiles(files).then(function (converted) {
-                          var transfer = new DataTransfer(); converted.forEach(function (file) { transfer.items.add(file); });
-                          event.target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
-                        }).catch(function (error) { console.error('[SurveyQuant] dropped DWG conversion failed:', error); alert('تعذر تحويل لوحة DWG إلى DXF. ' + String(error && error.message || error)); });
-                      }, true);
-                      window.__sqUniversalDwgDxfAPI = { normalizeResult: normalizeResult, convertFile: convertFile };
-                    })();
-                    </script>'''
-
-                    html = html.replace("</body>", script + "\n</body>", 1)
-                    html_path.write_text(html, encoding="utf-8")
-                    js_path.write_text(script[len('<script id="sq-universal-dwg-dxf-support">'):script.rfind('</script>')], encoding="utf-8")
-                    print("PASS: injected universal DWG-to-DXF conversion before project file handlers.")
-                    print("CAD file accept filters expanded:", filter_count)
-                    PY
-
-                    node --check "$RUNNER_TEMP/sq-universal-dwg-dxf-support.js"
-                    node <<'NODE'
-                    const fs = require('node:fs');
-                    const assert = require('node:assert/strict');
-                    const html = fs.readFileSync(process.env.INDEX_PATH, 'utf8');
-                    const js = fs.readFileSync(process.env.RUNNER_TEMP + '/sq-universal-dwg-dxf-support.js', 'utf8');
-                    for (const token of ['id="sq-universal-dwg-dxf-support"','window.__SQ_UNIVERSAL_DWG_DXF_SUPPORT__','function normalizeResult(result, sourceFile)','function getConverter()',"document.addEventListener('change'",'stopImmediatePropagation()','new DataTransfer()',"input.dispatchEvent(new Event('change'","document.addEventListener('drop'",'window.__sqUniversalDwgDxfAPI']) assert(html.includes(token) || js.includes(token), 'missing DWG/DXF bridge element: ' + token);
-                    assert(js.includes('sqOriConvertTargetToDxf'), 'existing DWG converter is not connected');
-                    assert(js.includes('new File([value], name'), 'converted result is not returned as a DXF File');
-                    assert(html.includes('function parseDXF(text){'), 'original DXF parser was unexpectedly changed');
-                    assert(html.includes('function universalTransformBytes(input,t)'), 'byte-preserving CAD transform was unexpectedly removed');
-                    console.log('PASS V117 universal DWG/DXF static regression.');
-                    NODE
-
-          """
-          marker = '      - name: Set Android release version to 1.0.117'
-          if marker not in text:
-              raise SystemExit('ERROR: V117 version-setting step not found after conversion.')
-          if 'universal dwg and dxf input for every project' not in text.lower():
-              # Insert the independent global import step only once.
-              text = text.replace(marker, universal_step + marker, 1)
-          else:
-              raise SystemExit('ERROR: Universal file bridge marker unexpectedly already exists in source.')
-
-          # Finish the APK build cleanly; the existing workflow file was truncated after APK_SOURCE.
-          build_marker = '      - name: Build Android APK v1.0.117'
-          build_pos = text.find(build_marker)
-          if build_pos < 0:
-              raise SystemExit('ERROR: V117 APK build step marker was not found.')
-          build_body = textwrap.dedent("""\
-          - name: Build Android APK v1.0.117
-            shell: bash
-            run: |
-              set -euo pipefail
-              test -d "$PROJECT_DIR"
-              test -s "$PROJECT_DIR/app/build.gradle"
-              gradle --version
-              gradle --no-daemon --stacktrace -p "$PROJECT_DIR" :app:assembleDebug
-              APK_SOURCE="$(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' -print -quit)"
-              test -n "$APK_SOURCE" && test -s "$APK_SOURCE" || { echo "ERROR: Android APK was not produced."; exit 1; }
-              mkdir -p "$GITHUB_WORKSPACE/release-v117"
-              cp "$APK_SOURCE" "$GITHUB_WORKSPACE/release-v117/SurveyQuant_v1.0.117_DWG_DXF.apk"
-              test -s "$STORM_REPORT"
-              cp "$STORM_REPORT" "$GITHUB_WORKSPACE/release-v117/STORM_DWG_CONVERSION_TEST_REPORT.md"
-              echo "PASS: V117 APK and real-DWG conversion report prepared."
-
-          - name: Upload V117 APK and conversion test report
-            uses: actions/upload-artifact@v4
-            with:
-              name: SurveyQuant-v1.0.117-Universal-DWG-DXF
-              path: release-v117/*
-              if-no-files-found: error
-              retention-days: 30
-          """)
-          build_tail = "\n".join(("      " + line if line else "") for line in build_body.splitlines()) + "\n"
-          text = text[:build_pos] + build_tail
-
-          if re.search(r'v118|1\.0\.118|SQ_APP_VERSION_CODE = 118|versionCode\[\[:space:\]\]\+118', text, re.I):
-              leftovers = [f'{i+1}: {line}' for i, line in enumerate(text.splitlines()) if re.search(r'v118|1\.0\.118|SQ_APP_VERSION_CODE = 118', line, re.I)]
-              raise SystemExit('ERROR: V118 references remain after conversion:\n' + '\n'.join(leftovers[:20]))
-          if 'id="sq-universal-dwg-dxf-support"' not in text:
-              raise SystemExit('ERROR: shared DWG/DXF script was not included in generated workflow.')
-          if 'Select one CAD drawing space for preview and orientation (v118)' in text:
-              raise SystemExit('ERROR: V118-only board-space step is still present.')
-          output_path.write_text(text, encoding='utf-8')
-          print(f'PASS: generated {output_path} ({len(text.splitlines())} lines).')
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+          old = "\n".join([
+              "      else",
+              "        *dest++ = c;",
+              "    }",
+              "  d[len - 1] = '\\0'; // add final delim, skipped above",
+              "  return d;",
+              "}",
+          ])
+          new = "\n".join([
+              "      else",
+              "        *dest++ = c;",
+              "    }",
+              "  /* SurveyQuant v115 fix: terminate at the last byte actually written. */",
+              "  if (dest >= dend)",
+              "    dest = d + len - 1;",
+              "  *dest = '\\0';",
+              "  d[len - 1] = '\\0'; // retain the final allocation sentinel",
+              "  return d;",
+              "}",
+          ])
+          occurrences = source.count(old)
+          if occurrences != 1:
+              raise SystemExit(
+                  f"ERROR: Expected exactly one cquote() terminator block in {path}; found {occurrences}. "
+                  "Do not continue with an unpatched LibreDWG source."
+              )
+          patched = source.replace(old, new, 1)
+          if "if (dest >= dend)" not in patched or "*dest = '\\0';" not in patched:
+              raise SystemExit("ERROR: cquote() NUL-termination patch verification failed.")
+          path.write_text(patched, encoding="utf-8")
+          print("PASS: patched cquote() to stop strlen() at the actual output end.")
           PY
 
-      - name: Commit V117 build workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git rebase origin/main
-          git add .github/workflows/build-v117-dwg-dxf-support.yml
-          git diff --cached --quiet && { echo "V117 workflow already up to date."; exit 0; }
-          git commit -m "Add V117 universal DWG DXF import build workflow"
-          git push origin HEAD:main
-          echo "V117 workflow has been committed. The next step dispatches the V117 build, not V118."
+          cd "$LIBREDWG_DIR/bindings/javascript"
+          node <<'NODE'
+          const fs=require('node:fs');
+          const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));
+          const key='build:prepare';const before=j.scripts[key];
+          if(!before)throw new Error('LibreDWG build:prepare script missing');
+          j.scripts[key]=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
+          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts[key]))throw new Error('Failed to enable DXF writing in LibreDWG build flags');
+          // Reduce generated local-variable count when compiling LibreDWG.
+          const prepareBefore=j.scripts[key];
+          j.scripts[key]=j.scripts[key].replace(/-O2(?=\s+-sUSE_ZLIB=1)/,'-Os');
+          if(j.scripts[key]===prepareBefore)throw new Error('Could not change LibreDWG CFLAGS from -O2 to -Os');
+          const wasmKey='build:wasm'; const wasmBefore=j.scripts[wasmKey];
+          if(!wasmBefore)throw new Error('LibreDWG build:wasm script missing');
+          // Avoid Emscripten declaration generation, which fails on uint64_t APIs.
+          const wasmNoTsd=wasmBefore.replace('--emit-tsd libredwg-web.d.ts','');
+          if(wasmNoTsd===wasmBefore)throw new Error('Could not remove unsupported --emit-tsd declaration generation');
+          const wasmOptimized=wasmNoTsd.replace(/-O2(?=\s+-lembind)/,'-Os');
+          if(wasmOptimized===wasmNoTsd)throw new Error('Could not change LibreDWG WASM link from -O2 to -Os');
+          j.scripts[wasmKey]=wasmOptimized;
+          // Build only library objects required by the JavaScript/WASM binding.
+          const objKey='build:obj'; const objBefore=j.scripts[objKey];
+          if(!objBefore)throw new Error('LibreDWG build:obj script missing');
+          const objAfter=objBefore.replace(/emmake\s+make(?=\s|$)/, 'emmake make -C src');
+          if(objAfter===objBefore && !/emmake\s+make\s+-C\s+src/.test(objBefore))throw new Error('Could not restrict LibreDWG object build to src/');
+          j.scripts[objKey]=objAfter;
+          fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
+          console.log('Writer-enabled configure command:',j.scripts[key]);
+          console.log('Library-only object build command:',j.scripts[objKey]);
+          console.log('WASM link command:',j.scripts[wasmKey]);
+          NODE
+          pnpm install --frozen-lockfile
+          pnpm build:prepare
+          pnpm build:obj
+          test -s ../../build-wasm/src/out_dxf.o || { echo "ERROR: DXF writer object out_dxf.o was not compiled."; exit 1; }
+          test -s ../../build-wasm/src/encode.o || { echo "ERROR: DWG/DXF write support object encode.o was not compiled."; exit 1; }
 
-      - name: Start the newly created V117 build (not V118)
+          if pnpm build:wasm; then
+            echo "WASM link succeeded with -Os."
+          else
+            echo "WARN: LibreDWG WASM link failed at -Os; retrying with -Oz."
+            node -e 'const fs=require("node:fs"); const p="package.json"; const j=JSON.parse(fs.readFileSync(p,"utf8")); const key="build:wasm"; const before=j.scripts[key]; const after=before.replace(/-Os(?=\s+-lembind)/,"-Oz"); if(after===before) throw new Error("Could not switch WASM link optimization from -Os to -Oz"); j.scripts[key]=after; fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n"); console.log("Retrying link command:",after);'
+            rm -f ../../build-wasm/libredwg-web.js ../../build-wasm/libredwg-web.wasm ../../build-wasm/libredwg-web.d.ts
+            pnpm build:wasm
+          fi
+
+          # Reuse the checked-in declaration file because --emit-tsd is disabled.
+          if [ ! -s ../../build-wasm/libredwg-web.d.ts ]; then
+            test -s wasm/libredwg-web.d.ts || { echo "ERROR: LibreDWG declaration file is missing."; exit 1; }
+            cp -f wasm/libredwg-web.d.ts ../../build-wasm/libredwg-web.d.ts
+          fi
+          pnpm copy
+          pnpm build
+          test -s dist/libredwg-web.js
+          test -s wasm/libredwg-web.js
+          test -s wasm/libredwg-web.wasm
+          echo "LIBREDWG_DIR=$LIBREDWG_DIR/bindings/javascript" >> "$GITHUB_ENV"
+
+      - name: Convert and verify both actual STORM DWG files using the writer-enabled engine
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: |
+          set -euo pipefail
+          node "$STORM_TEST_MODULE" "$LIBREDWG_DIR" "$STORM_INPUT_DIR" "$STORM_OUTPUT_DIR" "$STORM_REPORT"
+          test -s "$STORM_REPORT"
+          test "$(find "$STORM_OUTPUT_DIR" -type f -iname '*.dxf' | wc -l)" -eq 2
+          (cd "$STORM_OUTPUT_DIR" && zip -q "$STORM_OUTPUT_ZIP" ./*.dxf)
+          test -s "$STORM_OUTPUT_ZIP"
+
+      - name: Publish tested writer-enabled engine in this repository for the Android WebView
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run build-v117-dwg-dxf-support.yml --ref main; then
-              echo "V117 build dispatch submitted. Check Actions for SurveyQuant-v1.0.117-Universal-DWG-DXF."
-              exit 0
-            fi
-            echo "V117 workflow is not registered yet; retry $attempt/5."
-            sleep 4
+          REPO="$GITHUB_WORKSPACE"
+          LIBROOT="$GITHUB_WORKSPACE/external/libredwg-web"
+          DEST="$REPO/libredwg-writer"
+          git -C "$REPO" config user.name "github-actions[bot]"
+          git -C "$REPO" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$REPO" fetch origin main
+          git -C "$REPO" rebase origin/main
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp -a "$LIBROOT/bindings/javascript/dist" "$DEST/dist"
+          cp -a "$LIBROOT/bindings/javascript/wasm" "$DEST/wasm"
+          cp "$LIBROOT/README.md" "$DEST/README_UPSTREAM.md"
+          for f in LICENSE COPYING COPYING.LESSER; do if [ -s "$LIBROOT/$f" ]; then cp "$LIBROOT/$f" "$DEST/$f"; fi; done
+          cat > "$DEST/BUILD_CONFIGURATION.txt" <<'TXT'
+          Built from mlightcad/libredwg-web tag v0.7.14.
+          Source patch: terminate cquote() after the last byte written so strlen() cannot include stale heap bytes.
+          The corresponding source is included in libredwg-web-v0.7.14-source.zip.
+          Build configuration enables LibreDWG DWG/DXF writing by removing --disable-write and --disable-dxf if present.
+          The WASM objects and link use -Os; if linking fails, the workflow retries with -Oz.
+          The generated writer is exercised on both original STORM DWG files before Android APK build.
+          Upstream project license: GPL-3.0. See README_UPSTREAM.md and the included license file.
+          TXT
+          SOURCE_ZIP="$DEST/libredwg-web-v0.7.14-source.zip"
+          (cd "$LIBROOT" && zip -qr "$SOURCE_ZIP" . -x '.git/*' 'bindings/javascript/node_modules/*' 'bindings/javascript/dist/*' 'bindings/javascript/wasm/*' 'bindings/javascript/src/libredwg-web.js' 'build-wasm/*' 'examples/dist/*' 'examples/wasm/*')
+          git -C "$REPO" add -f libredwg-writer
+          if ! git -C "$REPO" diff --cached --quiet; then
+            git -C "$REPO" commit -m "Add STORM-tested writer-enabled LibreDWG WebAssembly engine with cquote fix"
+            git -C "$REPO" push origin HEAD:main
+          fi
+          WRITER_SHA="$(git -C "$REPO" rev-parse HEAD)"
+          echo "WRITER_SHA=$WRITER_SHA" >> "$GITHUB_ENV"
+          echo "Writer engine commit: $WRITER_SHA"
+
+      - name: Unpack source, previous patches, v113 preserve layer, and v115 orientation tools and STORM test
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_NAME="SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
+          BASE_PATCH_NAME="SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
+          MENU_PACKAGE="SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+          AXIS_PACKAGE="SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
+          MANUAL_PACKAGE="SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_PATCH_PACKAGE.zip"
+          REFERENCE_PACKAGE="SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_PATCH_PACKAGE.zip"
+          FAITHFUL_PACKAGE="SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
+          PRESERVE_PACKAGE="SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
+
+          for f in "$SOURCE_NAME" "$BASE_PATCH_NAME" "$MENU_PACKAGE" "$AXIS_PACKAGE" "$MANUAL_PACKAGE" "$REFERENCE_PACKAGE" "$FAITHFUL_PACKAGE" "$PRESERVE_PACKAGE"; do
+            test -s "$f" || { echo "ERROR: Required source/patch archive missing: $f"; exit 1; }
           done
-          echo "::warning::The V117 workflow was created, but automatic dispatch could not be confirmed. Run build-v117-dwg-dxf-support.yml manually from Actions."
+
+          rm -rf "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch" "$RUNNER_TEMP/sq-preserve-patch"
+          mkdir -p "$RUNNER_TEMP/sq-source" "$RUNNER_TEMP/sq-base-patch" "$RUNNER_TEMP/sq-menu-patch" "$RUNNER_TEMP/sq-axis-patch" "$RUNNER_TEMP/sq-manual-patch" "$RUNNER_TEMP/sq-reference-patch" "$RUNNER_TEMP/sq-faithful-patch" "$RUNNER_TEMP/sq-preserve-patch"
+
+          unzip -q "$SOURCE_NAME" -d "$RUNNER_TEMP/sq-source"
+          unzip -q "$BASE_PATCH_NAME" -d "$RUNNER_TEMP/sq-base-patch"
+          unzip -q "$MENU_PACKAGE" -d "$RUNNER_TEMP/sq-menu-patch"
+          unzip -q "$AXIS_PACKAGE" -d "$RUNNER_TEMP/sq-axis-patch"
+          unzip -q "$MANUAL_PACKAGE" -d "$RUNNER_TEMP/sq-manual-patch"
+          unzip -q "$REFERENCE_PACKAGE" -d "$RUNNER_TEMP/sq-reference-patch"
+          unzip -q "$FAITHFUL_PACKAGE" -d "$RUNNER_TEMP/sq-faithful-patch"
+          unzip -q "$PRESERVE_PACKAGE" -d "$RUNNER_TEMP/sq-preserve-patch"
+
+          PROJECT="$(find "$RUNNER_TEMP/sq-source" -type f -path '*/app/build.gradle' -print -quit | sed 's#/app/build.gradle$##')"
+          PATCH_INDEX="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'index.html' -print -quit)"
+          MODULE_JS="$(find "$RUNNER_TEMP/sq-menu-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js' -print -quit)"
+          TEST_JS="$(find "$RUNNER_TEMP/sq-menu-patch" -type f -name 'SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js' -print -quit)"
+          AXIS_MODULE="$(find "$RUNNER_TEMP/sq-axis-patch" -type f -name 'SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH.js' -print -quit)"
+          AXIS_TEST="$(find "$RUNNER_TEMP/sq-axis-patch" -type f -name 'SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_TEST.js' -print -quit)"
+          MANUAL_MODULE="$(find "$RUNNER_TEMP/sq-manual-patch" -type f -name 'SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_MODULE.js' -print -quit)"
+          MANUAL_TEST="$(find "$RUNNER_TEMP/sq-manual-patch" -type f -name 'SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_TEST.js' -print -quit)"
+          REFERENCE_MODULE="$(find "$RUNNER_TEMP/sq-reference-patch" -type f -name 'SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_MODULE.js' -print -quit)"
+          REFERENCE_TEST="$(find "$RUNNER_TEMP/sq-reference-patch" -type f -name 'SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_TEST.js' -print -quit)"
+          FAITHFUL_MODULE="$(find "$RUNNER_TEMP/sq-faithful-patch" -type f -name 'SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js' -print -quit)"
+          FAITHFUL_TEST="$(find "$RUNNER_TEMP/sq-faithful-patch" -type f -name 'SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_TEST.js' -print -quit)"
+          PRESERVE_MODULE="$(find "$RUNNER_TEMP/sq-preserve-patch" -type f -name 'SurveyQuant_v1.0.113_CAD_PRESERVE_MODULE.js' -print -quit)"
+          PRESERVE_TEST="$(find "$RUNNER_TEMP/sq-preserve-patch" -type f -name 'SurveyQuant_v1.0.113_CAD_PRESERVE_TEST.js' -print -quit)"
+          DXF_TEST="$(find "$RUNNER_TEMP/sq-base-patch" -type f -name 'dxf-parser-restoration-test.js' -print -quit)"
+
+          test -n "$PROJECT" && test -d "$PROJECT" || { echo "ERROR: Android project not found in source ZIP."; exit 1; }
+          for f in "$PATCH_INDEX" "$MODULE_JS" "$TEST_JS" "$AXIS_MODULE" "$AXIS_TEST" "$MANUAL_MODULE" "$MANUAL_TEST" "$REFERENCE_MODULE" "$REFERENCE_TEST" "$FAITHFUL_MODULE" "$FAITHFUL_TEST" "$PRESERVE_MODULE" "$PRESERVE_TEST" "$V115_MODULE" "$V115_TEST" "$V115_PATCHER" "$STORM_REPORT" "$DXF_TEST"; do
+            test -s "$f" || { echo "ERROR: Required source/module/test missing: $f"; exit 1; }
+          done
+
+          test -s "$PROJECT/settings.gradle"
+          test -s "$PROJECT/build.gradle"
+          test -s "$PROJECT/app/src/main/AndroidManifest.xml"
+          mkdir -p "$PROJECT/app/src/main/assets"
+
+          python3 "$V115_PATCHER" "$PATCH_INDEX" "$AXIS_MODULE" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$WRITER_SHA"
+          # Fix board canvases that were measured while hidden or before WebView layout settled.
+          cat > "$RUNNER_TEMP/patch-v115-board-display.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global source
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'ERROR: expected exactly one {label} anchor; found {count}.')
+              source = source.replace(old, new, 1)
+
+          replace_once(
+              "const old=state.views[side];if(old&&old.resizeHandler)window.removeEventListener('resize',old.resizeHandler);",
+              "const old=state.views[side];if(old&&old.resizeObserver)old.resizeObserver.disconnect();if(old&&old.resizeHandler)window.removeEventListener('resize',old.resizeHandler);",
+              'previous canvas observer cleanup',
+          )
+          replace_once(
+              "function setupCanvas(v){const c=v.canvas;if(!c)return;const resize=()=>{const r=c.getBoundingClientRect(),dpr=Math.max(1,window.devicePixelRatio||1);c.width=Math.max(1,Math.round(r.width*dpr));c.height=Math.max(1,Math.round(r.height*dpr));v.ctx=c.getContext('2d');v.ctx.setTransform(dpr,0,0,dpr,0,0);draw(v);};v.resizeHandler=resize;resize();c.addEventListener('pointerdown',e=>{",
+              "function setupCanvas(v){const c=v.canvas;if(!c)return;const resize=()=>{const r=c.getBoundingClientRect();if(!r||r.width<2||r.height<2)return;const dpr=Math.max(1,window.devicePixelRatio||1),width=Math.max(1,Math.round(r.width*dpr)),height=Math.max(1,Math.round(r.height*dpr));if(c.width!==width)c.width=width;if(c.height!==height)c.height=height;v.ctx=c.getContext('2d');if(!v.ctx)return;v.ctx.setTransform(dpr,0,0,dpr,0,0);draw(v);};v.resizeHandler=resize;resize();if(typeof window.ResizeObserver==='function'){v.resizeObserver=new window.ResizeObserver(()=>resize());v.resizeObserver.observe(c);}c.addEventListener('pointerdown',e=>{",
+              'zero-size-safe canvas setup and ResizeObserver',
+          )
+          replace_once(
+              "function showScreen(which){const t=el('sq110TargetScreen'),r=el('sq110ReferenceScreen');if(t)t.style.display=which==='target'?'block':'none';if(r)r.style.display=which==='reference'?'block':'none';if(which==='reference'&&state.views.reference)draw(state.views.reference);if(which==='target'&&state.views.target)draw(state.views.target);el('sq110Step1').style.opacity=which==='target'?'1':'.65';el('sq110Step2').style.opacity=which==='reference'?'1':'.65';}",
+              "function refreshVisibleCadCanvas(side){const v=state.views[side];if(!v)return;const refresh=()=>{if(!v.canvas||!v.drawing)return;const r=v.canvas.getBoundingClientRect();if(!r||r.width<2||r.height<2)return;if(typeof v.resizeHandler==='function')v.resizeHandler();else draw(v);};if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(()=>window.requestAnimationFrame(refresh));else setTimeout(refresh,80);}function showScreen(which){const t=el('sq110TargetScreen'),r=el('sq110ReferenceScreen');if(t)t.style.display=which==='target'?'block':'none';if(r)r.style.display=which==='reference'?'block':'none';if(which==='reference'&&state.views.reference)draw(state.views.reference);if(which==='target'&&state.views.target)draw(state.views.target);refreshVisibleCadCanvas(which);el('sq110Step1').style.opacity=which==='target'?'1':'.65';el('sq110Step2').style.opacity=which==='reference'?'1':'.65';}",
+              'screen-switch canvas refresh',
+          )
+          replace_once(
+              "const view=loadView(side,data.bytes,data.name);if(side==='target')",
+              "const view=loadView(side,data.bytes,data.name);refreshVisibleCadCanvas(side);if(side==='target')",
+              'post-import canvas refresh',
+          )
+          replace_once(
+              'window.__sqOrientation111API=Object.assign(window.__sqOrientation110API,{state,loadView,fillReadouts,draw,calculation,exportTarget,status,showScreen,updatePickLabels,nearestSnap,metrics,project,unproject});',
+              'window.__sqOrientation111API=Object.assign(window.__sqOrientation110API,{state,loadView,fillReadouts,draw,calculation,exportTarget,status,showScreen,updatePickLabels,nearestSnap,metrics,project,unproject,refreshVisibleCadCanvas});',
+              'canvas display regression hook',
+          )
+          required = [
+              'if(!r||r.width<2||r.height<2)return;',
+              "new window.ResizeObserver(()=>resize())",
+              'refreshVisibleCadCanvas(which)',
+              'refreshVisibleCadCanvas(side)',
+              'unproject,refreshVisibleCadCanvas',
+          ]
+          missing = [token for token in required if token not in source]
+          if missing:
+              raise SystemExit('ERROR: board display patch verification failed: ' + ', '.join(missing))
+          path.write_text(source, encoding='utf-8')
+          print('PASS: board display fix applied (responsive canvas size, safe hidden state, redraw on import/screen switch).')
+          PY
+          python3 "$RUNNER_TEMP/patch-v115-board-display.py" "$REFERENCE_MODULE"
+          node --check "$REFERENCE_MODULE"
+
+          # v116: preserve raw DXF bytes/layers while fixing the CAD viewport state and compact board-only preview.
+          cat > "$RUNNER_TEMP/patch-v116-cad.py" <<'PY'
+          #!/usr/bin/env python3
+          """SurveyQuant v116: layer-aware CAD preview, board-only zoom, and safe geometry transform."""
+          from pathlib import Path
+          import re, sys
+          if len(sys.argv) != 3:
+              raise SystemExit('usage: patch-v116-cad.py MANUAL_MODULE.js REFERENCE_MODULE.js')
+          manual_path, ref_path = map(Path, sys.argv[1:])
+          manual = manual_path.read_text(encoding='utf-8')
+          ref = ref_path.read_text(encoding='utf-8')
+          
+          def sub_once(src, old, new, label):
+              n = src.count(old)
+              if n != 1:
+                  raise SystemExit(f'ERROR: expected exactly one anchor for {label}; found {n}')
+              return src.replace(old, new, 1)
+          
+          # 1) Parse DXF layer table and attach each entity's real layer styling to the
+          # rendered primitives. Geometry stays in its original CAD coordinates.
+          manual = sub_once(manual,
+          " const pairs=parsePairs(byteText(bytes)),sections=sectionsFromPairs(pairs),blocks=Object.create(null);",
+          " const pairs=parsePairs(byteText(bytes)),sections=sectionsFromPairs(pairs),blocks=Object.create(null),layers=Object.create(null);\n for(const lr of (sections.TABLES||[])){if(lr.type!=='LAYER')continue;const lp=lr.pairs||[],name=str(lp,2,'0'),rawAci=num(lp,62,0,7),tc=num(lp,420,0,-1),lw=num(lp,370,0,-1),lt=str(lp,6,'CONTINUOUS').toUpperCase();layers[name.toUpperCase()]={name,aci:Math.abs(rawAci)||7,trueColor:tc>=0?tc:null,lineweight:lw,linetype:lt,off:rawAci<0};}\n const styleFromPairs=p=>{const layer=str(p,8,'0')||'0',ld=layers[layer.toUpperCase()]||{aci:7,trueColor:null,lineweight:-1,linetype:'CONTINUOUS',off:false};const rawAci=num(p,62,0,256),entityTc=num(p,420,0,-1),useLayer=rawAci===256||rawAci===0;return {layer,aci:useLayer?ld.aci:(Math.abs(rawAci)||7),trueColor:entityTc>=0?entityTc:(useLayer?ld.trueColor:null),lineweight:(num(p,370,0,-1)>=0?num(p,370,0,-1):ld.lineweight),linetype:str(p,6,ld.linetype||'CONTINUOUS').toUpperCase(),off:(rawAci<0)||!!ld.off};};",
+          'layer table and entity style resolver')
+          manual = sub_once(manual,
+          " const segs=[],anchors=[],texts=[];let unsupported=0,entityCount=0;\n const addPoint=p=>{if(p&&Number.isFinite(p.x)&&Number.isFinite(p.y)){anchors.push(p);return p;}return null;};\n const addSeg=(a,b)=>{if(!a||!b)return;if(Math.hypot(b.x-a.x,b.y-a.y)>1e-10){segs.push({a,b});addPoint(a);addPoint(b);}};\n function localGeometry(e,mat){const t=e.type,p=e.pairs,layer=str(p,8,'0');entityCount++;",
+          " const segs=[],anchors=[],texts=[],fills=[];let unsupported=0,entityCount=0,activeStyle={layer:'0',aci:7,trueColor:null,lineweight:-1,linetype:'CONTINUOUS',off:false},activeEntityType='';\n const addPoint=p=>{if(p&&Number.isFinite(p.x)&&Number.isFinite(p.y)){anchors.push({...p,...activeStyle,entityType:activeEntityType,pointEntity:activeEntityType==='POINT'});return p;}return null;};\n const addSeg=(a,b)=>{if(!a||!b)return;if(Math.hypot(b.x-a.x,b.y-a.y)>1e-10){segs.push({a,b,...activeStyle,entityType:activeEntityType});addPoint(a);addPoint(b);}};\n function localGeometry(e,mat){const t=e.type,p=e.pairs,layer=str(p,8,'0');activeStyle=styleFromPairs(p);activeEntityType=t;entityCount++;",
+          'layer-aware drawing primitives')
+          manual = sub_once(manual,
+          "const pos=mapped(pairPoint(p,10));if(pos){addPoint(pos);const label=textValue(p);if(label)texts.push({p:pos,text:label,layer});}return;",
+          "const pos=mapped(pairPoint(p,10));if(pos){addPoint(pos);const label=textValue(p);if(label)texts.push({p:pos,text:label,...activeStyle,height:num(p,40,0,2.5),rotation:num(p,50,0,0),widthFactor:num(p,41,0,1),entityType:t});}return;",
+          'CAD text style data')
+          manual = sub_once(manual,
+          "   const e=list[i];if(e.type==='POLYLINE'){",
+          "   const e=list[i];activeStyle=styleFromPairs(e.pairs||[]);activeEntityType=e.type;if(e.type==='POLYLINE'){",
+          'legacy polyline layer styling')
+          manual = sub_once(manual,
+          "function localGeometry(e,mat){const t=e.type,p=e.pairs,layer=str(p,8,'0');activeStyle=styleFromPairs(p);activeEntityType=t;entityCount++;",
+          "function localGeometry(e,mat,inheritedLayer='0'){const t=e.type,p=e.pairs,rawLayer=str(p,8,'0'),layer=rawLayer==='0'?inheritedLayer:rawLayer,stylePairs=rawLayer==='0'&&layer!=='0'?p.map(q=>q.code===8?{...q,value:layer}:q):p;activeStyle=styleFromPairs(stylePairs);activeEntityType=t;entityCount++;",
+          'layer-0 child style inheritance')
+          manual = sub_once(manual,
+          "function expand(list,mat,depth=0,visited=new Set()){",
+          "function expand(list,mat,depth=0,visited=new Set(),inheritedLayer='0'){",
+          'block recursion carries inherited layer')
+          manual = sub_once(manual,
+          "const e=list[i];activeStyle=styleFromPairs(e.pairs||[]);activeEntityType=e.type;if(e.type==='POLYLINE'){",
+          "const e=list[i];const rawLayer=str(e.pairs||[],8,'0'),effectiveLayer=rawLayer==='0'?inheritedLayer:rawLayer,stylePairs=rawLayer==='0'&&effectiveLayer!=='0'?(e.pairs||[]).map(q=>q.code===8?{...q,value:effectiveLayer}:q):(e.pairs||[]);activeStyle=styleFromPairs(stylePairs);activeEntityType=e.type;if(e.type==='POLYLINE'){",
+          'block insert effective style')
+          manual = sub_once(manual,
+          "expand(b.entities,compose(mat,lm),depth+1,nv);",
+          "const parentLayer=str(e.pairs,8,'0'),childLayer=parentLayer==='0'?inheritedLayer:parentLayer;expand(b.entities,compose(mat,lm),depth+1,nv,childLayer);",
+          'layer inheritance through nested INSERTs')
+          manual = sub_once(manual,
+          "localGeometry(e,mat);",
+          "localGeometry(e,mat,inheritedLayer);",
+          'pass inherited layer to leaf entities')
+          
+          # Improve board preview for common hatch boundaries, multiline entities, and dimension annotation blocks.
+          manual = sub_once(manual,
+          "function localGeometry(e,mat,inheritedLayer='0'){",
+          """function drawHatchPolylineBoundary(e,mat){
+           const p=e.pairs||[],i91=p.findIndex(q=>q.code===91);if(i91<0)return false;
+           const pathCount=Math.max(0,Math.min(10000,Number(p[i91].value)||0));let i=i91+1,drawn=false;
+           for(let path=0;path<pathCount&&i<p.length;path++){
+            while(i<p.length&&p[i].code!==92)i++;if(i>=p.length)break;const flags=Number(p[i++].value)||0;
+            let i72=-1,i73=-1,i93=-1;for(let j=i;j<p.length;j++){if(p[j].code===92)break;if(p[j].code===72&&i72<0)i72=j;if(p[j].code===73&&i73<0)i73=j;if(p[j].code===93){i93=j;break;}}
+            if(i93<0)break;const isPolyline=!!(flags&2),hasBulge=i72>=0&&Number(p[i72].value)===1,closed=i73>=0&&Number(p[i73].value)===1,count=Math.max(0,Math.min(20000,Number(p[i93].value)||0));i=i93+1;
+            if(!isPolyline){while(i<p.length&&p[i].code!==92)i++;continue;}
+            const pts=[];for(let n=0;n<count&&i<p.length;n++){while(i<p.length&&p[i].code!==10&&p[i].code!==92)i++;if(i>=p.length||p[i].code!==10)break;const x=Number(p[i++].value);while(i<p.length&&p[i].code!==20&&p[i].code!==92)i++;if(i>=p.length||p[i].code!==20)break;const y=Number(p[i++].value);let bulge=0;if(hasBulge&&i<p.length&&p[i].code===42)bulge=Number(p[i++].value)||0;if(Number.isFinite(x)&&Number.isFinite(y))pts.push({p:{x,y},bulge});}
+            if(pts.length>=2){const solid=Number(p.find(q=>q.code===70)?.value)===1;if(solid&&closed&&pts.length>=3)fills.push({points:pts.map(v=>applyMatrix(mat,v.p)),...activeStyle,layer:activeStyle.layer});const total=closed?pts.length:pts.length-1;for(let j=0;j<total;j++){const a=pts[j],b=pts[(j+1)%pts.length];if(Math.abs(a.bulge)<1e-10){addSeg(applyMatrix(mat,a.p),applyMatrix(mat,b.p));continue;}const dx=b.p.x-a.p.x,dy=b.p.y-a.p.y,chord=Math.hypot(dx,dy),bulge=a.bulge;if(chord<1e-10)continue;const theta=4*Math.atan(bulge),offset=chord*(1-bulge*bulge)/(4*bulge),cx=(a.p.x+b.p.x)/2-dy/chord*offset,cy=(a.p.y+b.p.y)/2+dx/chord*offset,r=Math.hypot(a.p.x-cx,a.p.y-cy),start=Math.atan2(a.p.y-cy,a.p.x-cx),steps=Math.max(4,Math.min(128,Math.ceil(Math.abs(theta)*16)));let prev=applyMatrix(mat,a.p);for(let k=1;k<=steps;k++){const ang=start+theta*k/steps,cur=applyMatrix(mat,{x:cx+r*Math.cos(ang),y:cy+r*Math.sin(ang)});addSeg(prev,cur);prev=cur;}}drawn=true;}
+           }return drawn;
+          }
+          function localGeometry(e,mat,inheritedLayer='0'){""",
+          'polyline hatch boundary parser')
+          manual = sub_once(manual,
+          "  if(t==='POLYLINE')return;",
+          "  if(t==='POLYLINE')return;\n  if(t==='HATCH'){if(!drawHatchPolylineBoundary(e,mat))unsupported++;return;}\n  if(t==='MLINE'){const xs=vals(p,11),ys=vals(p,21),pts=xs.slice(0,Math.min(xs.length,ys.length)).map((x,i)=>mapped({x,y:ys[i]}));for(let i=1;i<pts.length;i++)addSeg(pts[i-1],pts[i]);if(pts.length<2)unsupported++;return;}",
+          'HATCH and MLINE preview')
+          manual = sub_once(manual,
+          "   if(e.type==='VERTEX'||e.type==='SEQEND'||e.type==='ENDBLK'||e.type==='BLOCK')continue;",
+          "   if(e.type==='DIMENSION'){const name=str(e.pairs,2,'').toUpperCase(),b=blocks[name];if(b&&!visited.has(name)){const nv=new Set(visited);nv.add(name);expand(b.entities,mat,depth+1,nv,effectiveLayer);}else if(!b){const q=pairPoint(e.pairs,11)||pairPoint(e.pairs,10),label=str(e.pairs,1,'')||String(num(e.pairs,42,0,0));if(q&&label&&label!=='<>')texts.push({p:applyMatrix(mat,q),text:label,...activeStyle,height:num(e.pairs,40,0,2.5),rotation:num(e.pairs,53,0,num(e.pairs,50,0,0)),entityType:'DIMENSION'});else unsupported++;}entityCount++;continue;}\n   if(e.type==='VERTEX'||e.type==='SEQEND'||e.type==='ENDBLK'||e.type==='BLOCK')continue;",
+          'dimension anonymous-block preview')
+          manual = sub_once(manual,
+          " return {segs,anchors,texts,bounds:{minX,minY,maxX,maxY},entityCount,unsupported};",
+          " return {segs,anchors,texts,fills,layers,bounds:{minX,minY,maxX,maxY},entityCount,unsupported,sourceFormat:'DXF'};",
+          'layer table exposed to board viewer')
+          
+          # 2) Replace the transformer with a byte-preserving transform over real geometry
+          # records. Regular block definitions stay local to their INSERTs; DIMENSION
+          # anonymous-block geometry is transformed too. Paper space is transformed only
+          # when the file has no transformable model-space geometry, preventing a silent
+          # no-op on drawings whose board was saved exclusively in paper space.
+          start = ref.find('function universalTransformBytes(input,t){')
+          end = ref.find('\nfunction solve(src1,src2,ref1,ref2){', start)
+          if start < 0 or end < 0:
+              raise SystemExit('ERROR: universalTransformBytes replacement anchors missing')
+          new_transform = r'''function universalTransformBytes(input,t){
+           const parsed=splitPairs(input),bytes=parsed.bytes,pairs=parsed.pairs;
+           if(ascii(bytes,0,Math.min(bytes.length,22)).includes('AutoCAD Binary DXF'))throw new Error('هذا DXF ثنائي. احفظه بصيغة DXF نصية ASCII.');
+           if(!t||![t.scale,t.angleDeg,t.tx,t.ty].every(Number.isFinite)||typeof t.point!=='function'||typeof t.vector!=='function')throw new Error('معاملات توجيه اللوحة غير مكتملة. لم يتم إنشاء ملف.');
+           const all=sectionRecords(pairs,'ENTITIES');
+           if(!all.length)throw new Error('ملف DXF لا يحتوي على كيانات في قسم ENTITIES؛ أوقفنا الإسقاط حتى لا يتم تنزيل ملف فارغ.');
+           const isPaper=rec=>rec.pairs.some(p=>p.code===67&&Number(p.value)===1);
+           const hasXY=rec=>{const codes=new Set(rec.pairs.map(p=>p.code));for(let x=10;x<=18;x++)if(codes.has(x)&&codes.has(x+10))return true;return rec.type==='POINT'||rec.type==='INSERT'||rec.type==='HATCH'||rec.type==='DIMENSION';};
+           const model=all.filter(r=>!isPaper(r)),paper=all.filter(isPaper);
+           const modelHasGeometry=model.some(hasXY),paperFallback=!modelHasGeometry&&paper.some(hasXY);
+           const records=modelHasGeometry?model:(paperFallback?paper:[]);
+           if(!records.length)throw new Error('لم أجد كيانات هندسية قابلة للتحويل في Model Space أو Paper Space. قد تكون اللوحة مرجعًا خارجيًا أو محتوى CAD خاصًا لا يكشف إحداثياته. لم يتم حفظ إسقاط فارغ.');
+           const dimBlockNames=new Set(all.filter(r=>r.type==='DIMENSION').map(r=>recordString(r,2).toUpperCase()).filter(Boolean));
+           const blockRecords=sectionRecords(pairs,'BLOCKS');let activeBlock='',dimensionBlockEntities=[];
+           for(const rec of blockRecords){if(rec.type==='BLOCK'){activeBlock=recordString(rec,2).toUpperCase();continue;}if(rec.type==='ENDBLK'){activeBlock='';continue;}if(activeBlock&&dimBlockNames.has(activeBlock))dimensionBlockEntities.push(rec);}
+           const edits=new Map();let transformedEntities=0,changedEntityCount=0,unchangedOpaque=0,coordinateEntities=0;
+           const numeric=v=>{const n=Number(v);return Number.isFinite(n)?n:null;};
+           const format=n=>{if(!Number.isFinite(n))throw new Error('التحويل أنتج إحداثيًا غير صالح.');if(Math.abs(n)<5e-13)n=0;return Number(n.toPrecision(15)).toString();};
+           const identity=Math.abs(t.scale-1)<1e-12&&Math.abs(t.angleDeg)<1e-10&&Math.abs(t.tx)<1e-8&&Math.abs(t.ty)<1e-8;
+           function transformRecord(rec, countForEntity=true){
+            const p=rec.pairs,by=new Map();for(const x of p){if(!by.has(x.code))by.set(x.code,[]);by.get(x.code).push(x);}
+            const pairOwner=new Map();if(rec.type==='POLYLINE'){let owner='POLYLINE';for(const item of p){if(item.code===0)owner=String(item.value||'').toUpperCase();pairOwner.set(item.index,owner);}}
+            let entityChanged=false,exposed=false;
+            const change=(pair,value)=>{if(!pair||!Number.isFinite(value))return;const old=numeric(pair.value);if(old===null)return;if(Math.abs(value-old)<=Math.max(1e-10,Math.abs(old)*1e-13))return;edits.set(pair.index,{pair,value:format(value)});entityChanged=true;};
+            function xy(xc,yc,mode='point'){
+             const xs=by.get(xc)||[],ys=by.get(yc)||[];
+             for(let j=0;j<Math.min(xs.length,ys.length);j++){
+              if(rec.type==='POLYLINE'&&xc===10&&pairOwner.get(xs[j].index)!=='VERTEX')continue;
+              const x=numeric(xs[j].value),y=numeric(ys[j].value);if(x===null||y===null)continue;exposed=true;
+              const q=mode==='vector'?t.vector(x,y):t.point(x,y);change(xs[j],q.x);change(ys[j],q.y);
+             }
+            }
+            for(let xc=10;xc<=18;xc++){
+             let mode='point';
+             if((rec.type==='MTEXT'||rec.type==='ELLIPSE'||rec.type==='RAY'||rec.type==='XLINE')&&xc===11)mode='vector';
+             if(rec.type==='IMAGE'&&(xc===11||xc===12))mode='vector';
+             if(rec.type==='SPLINE'&&(xc===12||xc===13))mode='vector';
+             xy(xc,xc+10,mode);
+            }
+            if(rec.type==='HATCH'){xy(43,44,'point');xy(45,46,'vector');}
+            // Uniform scale changes geometry-dependent sizes, never layer/color/handle/XData.
+            const scaleCodes=[];
+            if(['CIRCLE','ARC','TEXT','MTEXT','ATTRIB','ATTDEF'].includes(rec.type))scaleCodes.push(40);
+            if(rec.type==='MTEXT')scaleCodes.push(41,44);
+            if(rec.type==='INSERT')scaleCodes.push(41,42,43);
+            if(rec.type==='HATCH')scaleCodes.push(41);
+            if(rec.type==='DIMENSION')scaleCodes.push(42);
+            if(by.has(48))scaleCodes.push(48);
+            for(const code of new Set(scaleCodes))for(const pair of by.get(code)||[]){const n=numeric(pair.value);if(n!==null&&n!==0)change(pair,n*t.scale);}
+            let rotationCodes=[];
+            if(['ARC','INSERT','TEXT','ATTRIB','ATTDEF'].includes(rec.type))rotationCodes=[50,...(rec.type==='ARC'?[51]:[])];
+            if(rec.type==='MTEXT'&&!(by.has(11)&&by.has(21)))rotationCodes=[50];
+            if(rec.type==='HATCH')rotationCodes=[52,53];
+            if(rec.type==='DIMENSION')rotationCodes=[50,53];
+            for(const code of rotationCodes)for(const pair of by.get(code)||[]){const n=numeric(pair.value);if(n!==null)change(pair,((n+t.angleDeg)%360+360)%360);}
+            if(exposed)coordinateEntities++;
+            if(entityChanged){if(countForEntity)changedEntityCount++;transformedEntities++;}
+            else if(!exposed&&!['SEQEND','VERTEX'].includes(rec.type))unchangedOpaque++;
+           }
+           const seen=new Set();for(const rec of records){if(!seen.has(rec.start)){transformRecord(rec,true);seen.add(rec.start);}}
+           // Anonymous dimension graphics are stored in BLOCKS, not ENTITIES, in many
+           // DWG-to-DXF conversions. Transform only blocks referenced by DIMENSIONs so
+           // ordinary INSERT block definitions remain local and are never double-moved.
+           for(const rec of dimensionBlockEntities){if(!seen.has(rec.start)){transformRecord(rec,false);seen.add(rec.start);}}
+           const geometryChangedFields=edits.size;
+           // Keep CAD zoom/view state in sync with the transformed coordinates. Leaving
+           // $EXTMIN/$EXTMAX/$VIEWCTR at the source coordinates can make a valid projected
+           // drawing open outside the saved viewport and appear completely empty.
+           const headerVars=new Map();let inHeader=false,headerName='';
+           for(let i=0;i<pairs.length;i++){const pair=pairs[i];if(pair.code===0&&String(pair.value).toUpperCase()==='SECTION'){inHeader=String(pairs[i+1]?.value||'').toUpperCase()==='HEADER';headerName='';i++;continue;}if(pair.code===0&&String(pair.value).toUpperCase()==='ENDSEC'){inHeader=false;headerName='';continue;}if(!inHeader)continue;if(pair.code===9){headerName=String(pair.value||'').toUpperCase();if(!headerVars.has(headerName))headerVars.set(headerName,[]);continue;}if(headerName)headerVars.get(headerName).push(pair);}
+           const headerPoint=name=>{const list=headerVars.get(name);if(!list)return null;const x=list.find(p=>p.code===10),y=list.find(p=>p.code===20);if(!x||!y)return null;const xx=numeric(x.value),yy=numeric(y.value);return xx===null||yy===null?null:{x,y,xx,yy,list};};
+           const writeHeader=(pair,value)=>{if(!pair||!Number.isFinite(value))return;const old=numeric(pair.value);if(old===null)return;if(Math.abs(value-old)<=Math.max(1e-10,Math.abs(old)*1e-13))return;edits.set(pair.index,{pair,value:format(value)});};
+           const updateHeaderBounds=(minimum,maximum)=>{const lo=headerPoint(minimum),hi=headerPoint(maximum);if(!lo||!hi)return;const corners=[t.point(lo.xx,lo.yy),t.point(hi.xx,lo.yy),t.point(lo.xx,hi.yy),t.point(hi.xx,hi.yy)];const xs=corners.map(p=>p.x),ys=corners.map(p=>p.y);writeHeader(lo.x,Math.min(...xs));writeHeader(lo.y,Math.min(...ys));writeHeader(hi.x,Math.max(...xs));writeHeader(hi.y,Math.max(...ys));};
+           updateHeaderBounds('$EXTMIN','$EXTMAX');updateHeaderBounds('$LIMMIN','$LIMMAX');if(paperFallback)updateHeaderBounds('$PEXTMIN','$PEXTMAX');
+           for(const name of ['$VIEWCTR','$INSBASE','$SNAPBASE','$UCSORG']){const pt=headerPoint(name);if(pt){const q=t.point(pt.xx,pt.yy);writeHeader(pt.x,q.x);writeHeader(pt.y,q.y);}}
+           const viewSize=headerVars.get('$VIEWSIZE')?.find(p=>p.code===40);if(viewSize){const n=numeric(viewSize.value);if(n!==null&&n>0)writeHeader(viewSize,n*t.scale);}
+           if(!identity&&geometryChangedFields===0)throw new Error('لم يتغير أي إحداثي رغم أن التوجيه يتطلب حركة/دوران/مقياس. لم يتم تنزيل الملف حتى لا يبدو الإسقاط ناجحًا وهو لم يحرّك اللوحة. راجع النقطتين المختارتين ومحتوى اللوحة.');
+           const ordered=Array.from(edits.values()).sort((a,b)=>a.pair.valueStart-b.pair.valueStart),chunks=[];let cursor=0,total=0;
+           for(const item of ordered){chunks.push(bytes.slice(cursor,item.pair.valueStart));const replacement=new TextEncoder().encode(item.value);chunks.push(replacement);total+=item.pair.valueStart-cursor+replacement.length;cursor=item.pair.valueEnd;}
+           chunks.push(bytes.slice(cursor));total+=bytes.length-cursor;const output=new Uint8Array(total);let offset=0;for(const chunk of chunks){output.set(chunk,offset);offset+=chunk.length;}
+           const outPairs=splitPairs(output).pairs;
+           const entitiesSectionIndex=outPairs.findIndex((p,i)=>p.code===0&&String(p.value).toUpperCase()==='SECTION'&&outPairs[i+1]?.code===2&&String(outPairs[i+1]?.value).toUpperCase()==='ENTITIES');
+           const outRecords=sectionRecords(outPairs,'ENTITIES');
+           const terminalPair=outPairs[outPairs.length-1];
+           if(!outPairs.some(p=>p.code===0&&String(p.value).toUpperCase()==='SECTION')||entitiesSectionIndex<0||!outRecords.length||terminalPair?.code!==0||String(terminalPair?.value).toUpperCase()!=='EOF')throw new Error('ناتج الإسقاط لم يجتز فحص SECTION/ENTITIES/EOF؛ لم يتم تنزيل DXF غير مكتمل.');
+           if(outRecords.length!==all.length)throw new Error('عدد كيانات ENTITIES تغيّر أثناء الإسقاط ('+all.length+' إلى '+outRecords.length+'). تم إلغاء التصدير حفاظًا على اللوحة كاملة.');
+           return {bytes:output,transformedCount:transformedEntities,changedEntityCount,changedFields:ordered.length,unchangedOpaque,coordinateEntities,entitiesBefore:all.length,entitiesAfter:outRecords.length,layersPreserved:true,dimensionBlocksTransformed:dimensionBlockEntities.length,paperSpaceFallback:paperFallback};
+          }'''
+          ref = ref[:start] + new_transform + ref[end:]
+          
+          # Layer information for supplemental / proxy-ish entities in the recovery preview.
+          old_geo = """ const raw=recordGeometry(rec),mapPoint=p=>parent({x:p.x,y:p.y});empty.pts.push(...raw.pts.map(mapPoint));empty.segments.push(...raw.segments.map(seg=>({a:mapPoint(seg.a),b:mapPoint(seg.b)})));
+           if(['TEXT','MTEXT','ATTRIB','ATTDEF'].includes(rec.type)){const p=pointAt(rec,10),txt=rec.pairs.filter(x=>x.code===1||x.code===3).map(x=>x.value).join('');if(p&&txt)empty.texts.push({p:parent(p),text:txt.replace(/\\P/g,' ').replace(/[{}]/g,' ').trim().slice(0,180)});}return empty;}"""
+          new_geo = """ const raw=recordGeometry(rec),mapPoint=p=>parent({x:p.x,y:p.y}),layer=recordString(rec,8)||'0',aci=pairVal(rec,62),tc=pairVal(rec,420),lw=pairVal(rec,370),lt=recordString(rec,6)||'CONTINUOUS';
+           const style={layer,aci,trueColor:tc,lineweight:lw,linetype:lt.toUpperCase(),entityType:rec.type};
+           empty.pts.push(...raw.pts.map(p=>({...mapPoint(p),...style,pointEntity:rec.type==='POINT'})));empty.segments.push(...raw.segments.map(seg=>({a:mapPoint(seg.a),b:mapPoint(seg.b),...style})));
+           if(['TEXT','MTEXT','ATTRIB','ATTDEF','DIMENSION','MLEADER','LEADER'].includes(rec.type)){const p=pointAt(rec,10)||pointAt(rec,11),txt=rec.pairs.filter(x=>x.code===1||x.code===3).map(x=>x.value).join('');if(p&&txt)empty.texts.push({p:parent(p),text:txt.replace(/\\P/g,' ').replace(/[{}]/g,' ').trim().slice(0,250),...style,height:pairVal(rec,40)||2.5,rotation:pairVal(rec,50)||0});}return empty;}"""
+          ref = sub_once(ref, old_geo, new_geo, 'style-aware fallback geometry')
+          
+          # Layer table parsed directly from the DXF pair stream (also works if the main renderer had to recover).
+          layer_anchor = "function parsePreview(bytes){"
+          layer_helper = """function layerDefinitions(pairs){const out=Object.create(null);for(const rec of sectionRecords(pairs,'TABLES')){if(rec.type!=='LAYER')continue;const name=recordString(rec,2)||'0',raw=pairVal(rec,62)??7,tc=pairVal(rec,420),lw=pairVal(rec,370)??-1,lt=(recordString(rec,6)||'CONTINUOUS').toUpperCase();out[name.toUpperCase()]={name,aci:Math.abs(raw)||7,trueColor:tc,lineweight:lw,linetype:lt,off:raw<0};}return out;}\nfunction parsePreview(bytes){"""
+          ref = sub_once(ref, layer_anchor, layer_helper, 'fallback layer table helper')
+          ref = sub_once(ref,
+          " const parsed=splitPairs(bytes),all=sectionRecords(parsed.pairs,'ENTITIES'),blocks=blockDefinitions(parsed.pairs),usedFallback=!base;",
+          " const parsed=splitPairs(bytes),all=sectionRecords(parsed.pairs,'ENTITIES'),blocks=blockDefinitions(parsed.pairs),usedFallback=!base;const parsedLayers=layerDefinitions(parsed.pairs);",
+          'layer table in board preview')
+          ref = sub_once(ref,
+          "if(!base.segs)base.segs=[];if(!base.anchors)base.anchors=[];if(!base.texts)base.texts=[];",
+          "if(!base.segs)base.segs=[];if(!base.anchors)base.anchors=[];if(!base.texts)base.texts=[];base.layers=base.layers||parsedLayers;",
+          'layer table attached to preview')
+          
+          # Replace the complete legacy draw function, including its multiline body.
+          new_draw = r'''function aciColor(index,trueColor){if(Number.isFinite(trueColor)&&trueColor>=0){const n=trueColor>>>0;return 'rgb('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+')';}let a=Math.abs(Number(index)||7);const basic={1:'#ff3b30',2:'#ffec35',3:'#39e75f',4:'#00e5ff',5:'#3675ff',6:'#ff45dc',7:'#f3f6fb',8:'#858b93',9:'#c1c7d0'};if(basic[a])return basic[a];if(a>=250)return ['#333333','#555555','#777777','#aaaaaa','#dddddd','#ffffff'][a-250]||'#e7edf4';a=Math.max(10,Math.min(249,a));const k=a-10,h=Math.floor(k/10)*15,variant=k%10,sat=[100,80,65,50,100,80,65,50,100,60][variant],light=[50,42,50,42,65,58,65,58,30,78][variant];return 'hsl('+h+','+sat+'%,'+light+'%)';}
+          function styleOf(v,item){const lname=String(item.layer||'0'),layers=v.drawing.layers||{},ld=layers[lname.toUpperCase()]||Object.keys(layers).map(k=>layers[k]).find(x=>String(x.name||'').toUpperCase()===lname.toUpperCase())||{};const tc=Number.isFinite(item.trueColor)?item.trueColor:(Number.isFinite(ld.trueColor)?ld.trueColor:null);const rawAci=Number.isFinite(item.aci)?item.aci:256,aci=(rawAci===0||rawAci===256)?(ld.aci||7):Math.abs(rawAci||7),lw=Number.isFinite(item.lineweight)&&item.lineweight>=0?item.lineweight:(Number(ld.lineweight)||0),lt=String(item.linetype||ld.linetype||'CONTINUOUS').toUpperCase();let dash=[];if(/CENTER|DASHDOT/.test(lt))dash=[8,3,2,3];else if(/HIDDEN|DASHED/.test(lt))dash=[6,3];else if(/DOT/.test(lt))dash=[1,3];return {color:aciColor(aci,tc),width:lw>0?Math.max(.7,Math.min(3.2,.7+lw/40)):.95,dash,key:aciColor(aci,tc)+'|'+(lw>0?lw:0)+'|'+dash.join(',')};}
+          function layerVisible(v,name){const key=String(name||'0'),state=v.layerVisibility||{},layers=v.drawing.layers||{},ld=layers[key.toUpperCase()]||Object.keys(layers).map(k=>layers[k]).find(x=>String(x.name||'').toUpperCase()===key.toUpperCase());if(Object.prototype.hasOwnProperty.call(state,key))return state[key];if(Object.prototype.hasOwnProperty.call(state,key.toUpperCase()))return state[key.toUpperCase()];return !(ld&&ld.off);}
+          function buildLayerPanel(v){const host=el(v.side==='target'?'sq110TLayerPanel':'sq110RLayerPanel');if(!host)return;host.innerHTML='';v.layerVisibility=v.layerVisibility||Object.create(null);const defs=v.drawing.layers||{},names=new Map();for(const key of Object.keys(defs))names.set(key.toUpperCase(),defs[key].name||key);for(const item of [...(v.drawing.segs||[]),...(v.drawing.texts||[]),...(v.drawing.anchors||[])]){const n=String(item.layer||'0');if(!names.has(n.toUpperCase()))names.set(n.toUpperCase(),n);}const sorted=Array.from(names.entries()).sort((a,b)=>a[0].localeCompare(b[0]));for(const [key,display] of sorted){const layer=defs[key]||Object.keys(defs).map(k=>defs[k]).find(x=>String(x.name||'').toUpperCase()===key)||{};const label=document.createElement('label'),box=document.createElement('input'),name=document.createElement('span');label.style.cssText='display:flex;align-items:center;gap:5px;min-width:0;font-size:11px;margin:2px;padding:3px 5px;border:1px solid #33445d;border-radius:5px;color:#dce8f7';box.type='checkbox';if(!Object.prototype.hasOwnProperty.call(v.layerVisibility,display))v.layerVisibility[display]=!(layer.off);box.checked=!!v.layerVisibility[display];box.addEventListener('change',()=>{v.layerVisibility[display]=box.checked;draw(v);});name.textContent=display;name.style.cssText='overflow:hidden;text-overflow:ellipsis;white-space:nowrap';label.appendChild(box);label.appendChild(name);host.appendChild(label);}if(!sorted.length){const n=document.createElement('span');n.textContent='لم يُعثر على جدول طبقات واضح؛ ستبقى البيانات الأصلية محفوظة.';host.appendChild(n);}}
+          function draw(v){if(!v||!v.ctx||!v.drawing)return;const m=metrics(v),c=v.ctx;c.clearRect(0,0,m.w,m.h);c.fillStyle='#0b1220';c.fillRect(0,0,m.w,m.h);if(v.drawing.previewWarning){c.fillStyle='#fbbf24';c.font='12px sans-serif';c.fillText(v.drawing.previewWarning.slice(0,90),8,18);}for(const h of v.drawing.fills||[]){if(!layerVisible(v,h.layer)||!Array.isArray(h.points)||h.points.length<3)continue;const pts=h.points.map(p=>project(v,p,m)).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y));if(pts.length<3)continue;c.beginPath();c.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)c.lineTo(pts[i].x,pts[i].y);if(typeof c.closePath==='function')c.closePath();c.fillStyle=styleOf(v,h).color;c.globalAlpha=.22;c.fill();c.globalAlpha=1;}const groups=new Map();for(const seg of v.drawing.segs||[]){if(!layerVisible(v,seg.layer))continue;const a=project(v,seg.a,m),b=project(v,seg.b,m);if(![a.x,a.y,b.x,b.y].every(Number.isFinite))continue;if((a.x<-1200&&b.x<-1200)||(a.x>m.w+1200&&b.x>m.w+1200)||(a.y<-1200&&b.y<-1200)||(a.y>m.h+1200&&b.y>m.h+1200))continue;const st=styleOf(v,seg);let g=groups.get(st.key);if(!g){g={style:st,segments:[]};groups.set(st.key,g);}g.segments.push([a,b]);}for(const g of groups.values()){c.beginPath();c.strokeStyle=g.style.color;c.lineWidth=g.style.width;c.setLineDash(g.style.dash);c.lineCap='round';c.lineJoin='round';for(const [a,b] of g.segments){c.moveTo(a.x,a.y);c.lineTo(b.x,b.y);}c.stroke();}c.setLineDash([]);for(const p0 of v.drawing.anchors||[]){if(!p0.pointEntity||!layerVisible(v,p0.layer))continue;const p=project(v,p0,m),st=styleOf(v,p0);if(p.x<0||p.x>m.w||p.y<0||p.y>m.h)continue;c.beginPath();c.fillStyle=st.color;c.arc(p.x,p.y,2.2,0,Math.PI*2);c.fill();}for(const t of v.drawing.texts||[]){if(!layerVisible(v,t.layer))continue;const p=project(v,t.p,m);if(p.x<-100||p.x>m.w+100||p.y<-30||p.y>m.h+30)continue;const st=styleOf(v,t),size=Math.max(5.5,Math.min(15,Math.abs(Number(t.height)||2.5)*m.scale));c.save();c.translate(p.x,p.y);c.rotate(-(Number(t.rotation)||0)*Math.PI/180);c.fillStyle=st.color;c.font=size+'px sans-serif';c.fillText(String(t.text||'').slice(0,250),3,-3);c.restore();}const arr=v.side==='target'?state.targetPoints:state.referencePoints;for(let i=0;i<2;i++){const item=arr[i];if(!item)continue;const p=project(v,item,m);c.beginPath();c.fillStyle=i===0?'#2dd4bf':'#fb7185';c.strokeStyle='#fff';c.lineWidth=1.7;c.arc(p.x,p.y,7,0,Math.PI*2);c.fill();c.stroke();c.fillStyle='#fff';c.font='bold 12px sans-serif';c.fillText(String(i+1),p.x+9,p.y-8);}const id=state.idPoint[v.side];if(id){const p=project(v,id,m);c.strokeStyle='#fbbf24';c.lineWidth=2;c.beginPath();c.moveTo(p.x-9,p.y);c.lineTo(p.x+9,p.y);c.moveTo(p.x,p.y-9);c.lineTo(p.x,p.y+9);c.stroke();c.fillStyle='#fbbf24';c.font='bold 11px sans-serif';c.fillText('ID',p.x+10,p.y-10);}const count=el(v.side==='target'?'sq110TargetInfo':'sq110ReferenceInfo');if(count)count.textContent='كيانات: '+v.drawing.entityCount+' | مقاطع: '+(v.drawing.segs||[]).length+' | طبقات: '+Object.keys(v.drawing.layers||{}).length+' | تكبير داخل اللوحة ×'+v.zoom.toFixed(2)+(v.drawing.unsupported?' | عناصر CAD خاصة: '+v.drawing.unsupported:'');}'''
+          pattern = re.compile(r'function draw\(v\)\{.*?\n\}\nfunction setupCanvas\(v\)', re.S)
+          ref, draw_count = pattern.subn(lambda m: new_draw + '\nfunction setupCanvas(v)', ref, count=1)
+          if draw_count != 1: raise SystemExit(f'ERROR: expected to replace one complete draw(v) body; found {draw_count}')
+          
+          # The supplemental fallback path retains the DXF layer styles too; point snapping respects layer visibility.
+          ref = sub_once(ref,
+          "function nearestSnap(v,world,screen){\n const mode=state.snapMode?.[v.side]||'auto',api=window.__sqManualOrientation109,m=metrics(v),segs=v.drawing.segs,projector=p=>project(v,p,m);",
+          "function nearestSnap(v,world,screen){\n const mode=state.snapMode?.[v.side]||'auto',api=window.__sqManualOrientation109,m=metrics(v),segs=(v.drawing.segs||[]).filter(s=>layerVisible(v,s.layer)),anchors=(v.drawing.anchors||[]).filter(p=>layerVisible(v,p.layer)),projector=p=>project(v,p,m);",
+          'visible-layer snapping')
+          ref = sub_once(ref,
+          "for(const p of v.drawing.anchors)test(p,'رأس/نهاية',42);",
+          "for(const p of anchors)test(p,'رأس/نهاية',42);",
+          'hide-layer anchors from OSNAP')
+          
+          # Use a smaller drawing viewport; fit/zoom affect the CAD transform within this fixed rectangle.
+          ref = ref.replace('height:520px;min-height:520px;border:1px solid #42536b','height:230px;min-height:230px;max-height:230px;border:1px solid #42536b')
+          if ref.count('height:230px;min-height:230px;max-height:230px;border:1px solid #42536b') != 2:
+              raise SystemExit('ERROR: both board canvases were not reduced to the requested compact size')
+          # Add collapsed layer selectors below each drawing canvas, not extra screen area until expanded.
+          ref = sub_once(ref,
+          'background:#0b1220"></canvas><p id="sq110TargetInfo"',
+          'background:#0b1220;touch-action:none"></canvas><details id="sq110TLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة (إظهار/إخفاء)</summary><div id="sq110TLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110TargetInfo"',
+          'compact target layer controls')
+          ref = sub_once(ref,
+          'background:#0b1220"></canvas><p id="sq110ReferenceInfo"',
+          'background:#0b1220;touch-action:none"></canvas><details id="sq110RLayerDetails" style="margin:4px 0;border:1px solid #33445d;border-radius:6px;padding:5px"><summary style="font-size:12px;cursor:pointer">🎚️ طبقات اللوحة المرجعية (إظهار/إخفاء)</summary><div id="sq110RLayerPanel" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px;max-height:100px;overflow:auto"></div></details><p id="sq110ReferenceInfo"',
+          'compact reference layer controls')
+          # Give each view its own layer state and fill the panel after parse / import.
+          ref = sub_once(ref,
+          "const viewer={side,bytes,name,drawing,canvas:el(canvasId),ctx:null,zoom:1,panX:0,panY:0,pointerMap:new Map(),mode:'',drag:null,pinch:null,didDrag:false,suppressTap:false};",
+          "const viewer={side,bytes,name,drawing,canvas:el(canvasId),ctx:null,zoom:1,panX:0,panY:0,pointerMap:new Map(),mode:'',drag:null,pinch:null,didDrag:false,suppressTap:false,layerVisibility:Object.create(null)};",
+          'per-board layer visibility state')
+          ref = sub_once(ref,
+          "state.views[side]=viewer;setupCanvas(viewer);return viewer;}",
+          "state.views[side]=viewer;setupCanvas(viewer);buildLayerPanel(viewer);return viewer;}",
+          'build layer controls after board loads')
+          # prevent WebView/page zoom; pointer and wheel gestures remain scoped to the canvas.
+          ref = sub_once(ref,
+          "const overlay=el('sqOriOverlay');if(!overlay)return;const dialog=overlay.querySelector('.sqori-dialog');if(!dialog)return;",
+          "const overlay=el('sqOriOverlay');if(!overlay)return;const dialog=overlay.querySelector('.sqori-dialog');if(!dialog)return;dialog.style.maxHeight='86dvh';dialog.style.overflowY='auto';dialog.style.width='min(96vw,760px)';dialog.style.boxSizing='border-box';const viewport=document.querySelector('meta[name=\"viewport\"]');if(viewport)viewport.setAttribute('content','width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no');",
+          'compact orientation dialog and board-only zoom')
+          # Keep drawing zoom finite and do not change the HTML layout when zooming.
+          ref = ref.replace('Math.min(5000,', 'Math.min(1000,')
+          ref = ref.replace('Math.max(.15,Math.min(120,', 'Math.max(.1,Math.min(1000,')
+          # Zoom slider declared by the previous generation must remain mapped to the same board-only zoom.
+          ref = ref.replace('max="3.7" step="0.01" value="0" aria-label="تكبير دقيق حتى 5000 مرة"', 'max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"')
+          ref = ref.replace("v.zoom=Math.max(.1584893,Math.min(5000,Number(value)||1));", "v.zoom=Math.max(.1,Math.min(1000,Number(value)||1));")
+          ref = ref.replace("v.zoom=Math.max(.15,Math.min(120,v.zoom*(e.deltaY<0?1.2:1/1.2)));", "v.zoom=Math.max(.1,Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2)));\n  const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));")
+          ref = ref.replace("v.zoom=Math.max(.15,Math.min(120,v.pinch.zoom*distance/v.pinch.distance));", "v.zoom=Math.max(.1,Math.min(1000,v.pinch.zoom*distance/v.pinch.distance));\n  const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));")
+          # Update UI text and include validation / preserved-layer diagnostics after export.
+          ref = ref.replace('تكبير حتى 5000 مرة','تكبير اللوحة حتى 1000 مرة')
+          ref = ref.replace("' | عناصر بلا إحداثيات مكشوفة بقيت ببياناتها الأصلية: '+result.unchangedOpaque", "' | طبقات محفوظة: '+(result.layersPreserved?'نعم':'تحقق مطلوب')+' | كيانات قبل/بعد: '+(result.entitiesBefore||'?')+'/'+(result.entitiesAfter||'?')+(result.paperSpaceFallback?' | تم توجيه محتوى Paper Space لعدم وجود هندسة Model Space':'')+' | عناصر بلا إحداثيات مكشوفة بقيت ببياناتها الأصلية: '+result.unchangedOpaque")
+          # Version mark.
+          
+          # Ensure important anchors didn't silently fail.
+          manual = manual.replace('.trim().slice(0,32);', '.trim().slice(0,250);', 1)
+          
+          required_manual=['layers=Object.create(null)','trueColor','pointEntity','linetype','fills','drawHatchPolylineBoundary',"e.type==='DIMENSION'",'return {segs,anchors,texts,fills,layers']
+          missing=[x for x in required_manual if x not in manual]
+          if missing: raise SystemExit('ERROR: manual parser missing expected layer/style outputs: '+', '.join(missing))
+          required_ref=['function layerDefinitions(pairs)','function buildLayerPanel(v)','function layerVisible(v,name)','تكبير داخل اللوحة','sq110TLayerPanel','sq110RLayerPanel','dimensionBlockEntities','paperSpaceFallback','geometryChangedFields',"updateHeaderBounds('$EXTMIN','$EXTMAX')","'$VIEWCTR'",'Math.min(1000,','height:230px;min-height:230px;max-height:230px','c.globalAlpha=.22']
+          missing=[x for x in required_ref if x not in ref]
+          if missing: raise SystemExit('ERROR: reference display/transform patch missing: '+', '.join(missing))
+          manual_path.write_text(manual,encoding='utf-8')
+          ref_path.write_text(ref,encoding='utf-8')
+          print('PASS v116 patch: layer-aware CAD preview, solid HATCH fills/boundaries, MLINE strokes, dimension blocks, compact 230px board-only zoom, byte-preserving transform and empty-output guard.')
+          PY
+          python3 "$RUNNER_TEMP/patch-v116-cad.py" "$MANUAL_MODULE" "$REFERENCE_MODULE"
+          node --check "$MANUAL_MODULE"
+          node --check "$REFERENCE_MODULE"
+
+          cat > "$RUNNER_TEMP/test-v116-cad.js" <<'NODE'
+          'use strict';
+          const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+          const [manualPath,referencePath]=process.argv.slice(2);assert(manualPath&&referencePath,'usage: test-v116-cad.js manual.js reference.js');
+          const enc=new TextEncoder(),dec=new TextDecoder();
+          function harness(){
+           const nodes=new Map();
+           const document={readyState:'loading',addEventListener(){},querySelector(){return {setAttribute(){}};},getElementById(id){return nodes.get(id)||null;},createElement(tag){return {tagName:tag.toUpperCase(),style:{},children:[],appendChild(n){this.children.push(n);},addEventListener(){},setAttribute(){},innerHTML:'',textContent:''};}};
+           const window={devicePixelRatio:1,addEventListener(){},removeEventListener(){},__sqOrientTest:{transformBytes:null},__sqManualOrientation109:null};
+           const ctx={window,document,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,DataView,Blob,URL,setTimeout,clearTimeout,Map,Set,Number,String,Math,Error,RegExp,Object,Array,Promise,JSON,console,Intl,Infinity,parseFloat,parseInt};vm.createContext(ctx);return {ctx,window,document,nodes};
+          }
+          function dxf(lines){return enc.encode(lines.join('\r\n')+'\r\n');}
+          const h=harness();
+          vm.runInContext(fs.readFileSync(manualPath,'utf8'),h.ctx,{filename:'manual-v116'});
+          vm.runInContext(fs.readFileSync(referencePath,'utf8'),h.ctx,{filename:'reference-v116'});
+          const manual=h.window.__sqManualOrientation109,api=h.window.__sqOrientation111API;
+          assert(manual&&api,'reader and orientation API initialize');
+          // Layer records and inline entity styles must be visible to the real renderer.
+          const styled=dxf([
+          '0','SECTION','2','HEADER','9','$EXTMIN','10','0','20','0','30','0','9','$EXTMAX','10','10','20','10','30','0','9','$VIEWCTR','10','5','20','5','9','$VIEWSIZE','40','10','0','ENDSEC',
+          '0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','2',
+          '0','LAYER','2','ROAD','70','0','62','1','6','DASHED','370','35',
+          '0','LAYER','2','TEXTS','70','0','62','3','6','CONTINUOUS','370','13','0','ENDTAB','0','ENDSEC',
+          '0','SECTION','2','ENTITIES','0','LINE','8','ROAD','10','0','20','0','11','10','21','0',
+          '0','TEXT','8','TEXTS','10','4','20','2','40','2.5','50','0','1','LAYER_LABEL_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789','0','ENDSEC','0','EOF'
+          ]);
+          const model=manual.parseDrawing(styled);
+          assert(model.layers&&model.layers.ROAD&&model.layers.ROAD.aci===1,'layer table name/color parsed');
+          assert(model.segs.some(s=>s.layer==='ROAD'&&s.aci===1&&s.linetype==='DASHED'&&s.lineweight===35),'line carries layer color, linetype and lineweight');
+          assert(model.texts.some(t=>t.layer==='TEXTS'&&t.text==='LAYER_LABEL_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789'&&t.height===2.5),'full text label/style is retained');
+          const blockDrawing=dxf(['0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','1','0','LAYER','2','ROAD','70','0','62','1','6','CONTINUOUS','0','ENDTAB','0','ENDSEC','0','SECTION','2','BLOCKS','0','BLOCK','8','0','2','B_ROAD','70','0','10','0','20','0','30','0','0','LINE','8','0','10','0','20','0','11','5','21','0','0','ENDBLK','8','0','0','ENDSEC','0','SECTION','2','ENTITIES','0','INSERT','8','ROAD','2','B_ROAD','10','100','20','200','41','1','42','1','50','0','0','ENDSEC','0','EOF']);
+          const inserted=manual.parseDrawing(blockDrawing);assert(inserted.segs.some(s=>s.layer==='ROAD'&&s.aci===1&&Math.abs(s.a.x-100)<1e-8&&Math.abs(s.b.x-105)<1e-8),'layer-0 entities inside INSERT inherit the INSERT layer and are positioned correctly');
+          const hatch=dxf(['0','SECTION','2','ENTITIES','0','HATCH','8','HATCH_LAYER','70','1','91','1','92','2','72','0','73','1','93','4','10','0','20','0','10','10','20','0','10','10','20','10','10','0','20','10','75','0','76','1','0','ENDSEC','0','EOF']);
+          const hatchModel=manual.parseDrawing(hatch);assert(hatchModel.segs.length>=4&&hatchModel.segs.every(s=>s.layer==='HATCH_LAYER'),'closed polyline HATCH boundary should be visible on its original layer');assert.equal(hatchModel.fills.length,1,'solid HATCH produces a polygon fill for the preview');
+          const dimension=dxf(['0','SECTION','2','BLOCKS','0','BLOCK','8','0','2','*D1','70','0','10','0','20','0','0','LINE','8','0','10','1','20','2','11','9','21','2','0','TEXT','8','0','10','5','20','3','40','1','1','DIMENSION_LABEL','0','ENDBLK','8','0','0','ENDSEC','0','SECTION','2','ENTITIES','0','DIMENSION','8','DIMENSIONS','2','*D1','10','1','20','2','11','5','21','3','42','4.0','0','ENDSEC','0','EOF']);
+          const dimensionModel=manual.parseDrawing(dimension);assert(dimensionModel.segs.some(s=>s.layer==='DIMENSIONS'),'DIMENSION anonymous-block linework should be included in preview');assert(dimensionModel.texts.some(t=>t.text==='DIMENSION_LABEL'&&t.layer==='DIMENSIONS'),'DIMENSION block annotation text should inherit the dimension layer');
+          // Exact geometry transform still preserves layers, linetypes and text payload, while moving exposed XY.
+          const transform=api.solve({x:0,y:0},{x:10,y:0},{x:100,y:200},{x:100,y:220});
+          const moved=api.transformBytes(styled,transform),out=dec.decode(moved.bytes);
+          assert.match(out,/\n100\r?\n/,'coordinates actually changed');assert.match(out,/\nROAD\r?\n/,'layer names preserved');assert.match(out,/\nDASHED\r?\n/,'linetype table preserved');assert.match(out,/\nLAYER_LABEL_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\r?\n/,'text contents preserved');
+          assert.equal(moved.entitiesBefore,moved.entitiesAfter,'entity count preserved');assert.equal(moved.layersPreserved,true,'layer preservation confirmed');
+          const headerVar=(txt,name)=>{const parts=txt.split(/\r?\n/);const ix=parts.findIndex((v,i)=>v==='9'&&parts[i+1]===name);assert(ix>=0,'header variable '+name+' should exist');const out={};for(let i=ix+2;i<parts.length&&!(parts[i]==='9'||parts[i]==='0');i+=2)out[parts[i]]=Number(parts[i+1]);return out;};const extMin=headerVar(out,'$EXTMIN'),extMax=headerVar(out,'$EXTMAX'),viewCenter=headerVar(out,'$VIEWCTR'),viewSize=headerVar(out,'$VIEWSIZE');assert(Math.abs(extMin['10']-80)<1e-8&&Math.abs(extMin['20']-200)<1e-8,'$EXTMIN must move with the transformed board');assert(Math.abs(extMax['10']-100)<1e-8&&Math.abs(extMax['20']-220)<1e-8,'$EXTMAX must bound the transformed board');assert(Math.abs(viewCenter['10']-90)<1e-8&&Math.abs(viewCenter['20']-210)<1e-8,'$VIEWCTR must move with the transformed board');assert(Math.abs(viewSize['40']-20)<1e-8,'$VIEWSIZE scales with the board');
+          // Drawing saved only in paper space should transform rather than silently downloading an unchanged DXF.
+          const paper=dxf(['0','SECTION','2','ENTITIES','0','LINE','8','PAPER_BOARD','67','1','10','0','20','0','11','10','21','0','0','ENDSEC','0','EOF']);
+          const paperMoved=api.transformBytes(paper,transform),paperText=dec.decode(paperMoved.bytes);
+          assert.equal(paperMoved.paperSpaceFallback,true,'paper-space-only file reports its fallback explicitly');assert.match(paperText,/\n100\r?\n/,'paper-space-only geometry is transformed');
+          // Identity transform is an allowed valid no-op and preserves original numeric spelling.
+          const identity=api.solve({x:0,y:0},{x:10,y:0},{x:0,y:0},{x:10,y:0});
+          const unchanged=api.transformBytes(styled,identity),same=dec.decode(unchanged.bytes);
+          assert.equal(unchanged.changedFields,0,'identity keeps byte-preserved numeric strings');assert.match(same,/10\r\n0\r\n20\r\n0\r\n11\r\n10/,'original coordinate text remains intact');
+          // A required transform must not pass as successful if the file only contains unsupported non-geometric content.
+          const opaque=dxf(['0','SECTION','2','ENTITIES','0','ACAD_PROXY_ENTITY','8','PROXY','1000','opaque payload','0','ENDSEC','0','EOF']);
+          assert.throws(()=>api.transformBytes(opaque,transform),/لم أجد كيانات هندسية قابلة للتحويل|لا يتغير أي إحداثي/,'non-geometric/proxy-only content must not be falsely accepted as a projected board');
+          // Draw rendering is internal to the board canvas and honours layer visibility/colors.
+          const drawCalls={strokes:0,styles:[],texts:[],fills:0};const canvasCtx={clearRect(){},fillRect(){},fillText(t){drawCalls.texts.push(t);},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){drawCalls.strokes++;drawCalls.styles.push(this.strokeStyle);},setLineDash(){},arc(){},fill(){drawCalls.fills++;},save(){},restore(){},translate(){},rotate(){}};
+          const view={side:'target',canvas:{clientWidth:400,clientHeight:230,width:400,height:230},ctx:canvasCtx,drawing:model,zoom:1,panX:0,panY:0,layerVisibility:{ROAD:true,TEXTS:true}};
+          api.draw(view);assert(drawCalls.strokes>0,'canvas renderer draws board geometry');assert(drawCalls.styles.includes('#ff3b30'),'layer ACI color is used');
+          const hatchView={side:'target',canvas:{clientWidth:400,clientHeight:230,width:400,height:230},ctx:canvasCtx,drawing:hatchModel,zoom:1,panX:0,panY:0,layerVisibility:{HATCH_LAYER:true}};const fillsBefore=drawCalls.fills;api.draw(hatchView);assert(drawCalls.fills>fillsBefore,'solid hatch polygon is filled in the board preview');
+          const first=drawCalls.strokes;drawCalls.strokes=0;view.layerVisibility.ROAD=false;api.draw(view);assert(drawCalls.strokes<first,'turning off a layer hides its linework without zooming the page');
+          const source=fs.readFileSync(referencePath,'utf8'),reader=fs.readFileSync(manualPath,'utf8');
+          for(const token of ['sq110TLayerPanel','sq110RLayerPanel','height:230px;min-height:230px;max-height:230px','user-scalable=no','paperSpaceFallback','dimensionBlockEntities','تكبير داخل اللوحة','c.globalAlpha=.22'])assert(source.includes(token),'missing v116 functionality '+token);
+          for(const token of ['drawHatchPolylineBoundary',"e.type==='DIMENSION'","if(t==='MLINE')",'fills.push'])assert(reader.includes(token),'missing CAD preview entity support '+token);
+          console.log('PASS v116: model/paper-space transform, header extents/view centering, block-layer inheritance, dimension annotation, solid HATCH fill/boundaries, MLINE, full text preview, ACI/true colors, linetype/lineweight styling, compact board-only zoom, byte preservation, and empty-projection guard.');
+          NODE
+          node "$RUNNER_TEMP/test-v116-cad.js" "$MANUAL_MODULE" "$REFERENCE_MODULE"
+
+          cp "$PATCH_INDEX" "$PROJECT/app/src/main/assets/index.html"
+
+          python3 - "$PROJECT/app/src/main/assets/index.html" "$MODULE_JS" "$AXIS_MODULE" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          html_path,module_path,axis_path,manual_path,reference_path,faithful_path,preserve_path,v115_path=map(Path,sys.argv[1:])
+          html=html_path.read_text(encoding='utf-8')
+          module=module_path.read_text(encoding='utf-8')
+          axis=axis_path.read_text(encoding='utf-8')
+          manual=manual_path.read_text(encoding='utf-8')
+          reference=reference_path.read_text(encoding='utf-8')
+          faithful=faithful_path.read_text(encoding='utf-8')
+          preserve=preserve_path.read_text(encoding='utf-8')
+          v115=v115_path.read_text(encoding='utf-8')
+
+          marker='<script id="sq-orientation-module">'
+          axis_marker='<script id="sq-orientation-axis-reader-module">'
+          manual_marker='<script id="sq-orientation-manual-points-module">'
+          reference_marker='<script id="sq-orientation-reference-board-module">'
+          faithful_marker='<script id="sq-orientation-dxf-faithful-recovery-module">'
+          preserve_marker='<script id="sq-orientation-cad-preserve-module">'
+          v115_marker='<script id="sq-orientation-v115-tools-module">'
+
+          if any(x in html for x in (marker,axis_marker,manual_marker,reference_marker,faithful_marker,preserve_marker,v115_marker)):
+            raise SystemExit('ERROR: Orientation scripts are already injected in baseline HTML.')
+          if '</body>' not in html:
+            raise SystemExit('ERROR: Could not locate body end in index.html.')
+
+          injected=(marker+'\n'+module+'\n</script>\n'+axis_marker+'\n'+axis+'\n</script>\n'+manual_marker+'\n'+manual+'\n</script>\n'+reference_marker+'\n'+reference+'\n</script>\n'+faithful_marker+'\n'+faithful+'\n</script>\n'+preserve_marker+'\n'+preserve+'\n</script>\n'+v115_marker+'\n'+v115+'\n</script>\n</body>')
+          html=html.replace('</body>',injected,1)
+
+          import re
+          html,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 119;', html, count=1)
+          if n != 1 or 'const SQ_APP_VERSION_CODE = 119;' not in html:
+            raise SystemExit('ERROR: Failed to set HTML app version code to 119.')
+
+          html_path.write_text(html,encoding='utf-8')
+          PY
+
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          echo "INDEX_PATH=$PROJECT/app/src/main/assets/index.html" >> "$GITHUB_ENV"
+          echo "PATCH_INDEX=$PATCH_INDEX" >> "$GITHUB_ENV"
+          echo "MODULE_JS=$MODULE_JS" >> "$GITHUB_ENV"
+          echo "TEST_JS=$TEST_JS" >> "$GITHUB_ENV"
+          echo "AXIS_MODULE=$AXIS_MODULE" >> "$GITHUB_ENV"
+          echo "AXIS_TEST=$AXIS_TEST" >> "$GITHUB_ENV"
+          echo "MANUAL_MODULE=$MANUAL_MODULE" >> "$GITHUB_ENV"
+          echo "MANUAL_TEST=$MANUAL_TEST" >> "$GITHUB_ENV"
+          echo "REFERENCE_MODULE=$REFERENCE_MODULE" >> "$GITHUB_ENV"
+          echo "REFERENCE_TEST=$REFERENCE_TEST" >> "$GITHUB_ENV"
+          echo "FAITHFUL_MODULE=$FAITHFUL_MODULE" >> "$GITHUB_ENV"
+          echo "FAITHFUL_TEST=$FAITHFUL_TEST" >> "$GITHUB_ENV"
+          echo "PRESERVE_MODULE=$PRESERVE_MODULE" >> "$GITHUB_ENV"
+          echo "PRESERVE_TEST=$PRESERVE_TEST" >> "$GITHUB_ENV"
+          echo "V115_MODULE=$V115_MODULE" >> "$GITHUB_ENV"
+          echo "V115_TEST=$V115_TEST" >> "$GITHUB_ENV"
+          echo "V115_PATCHER=$V115_PATCHER" >> "$GITHUB_ENV"
+          echo "DXF_TEST=$DXF_TEST" >> "$GITHUB_ENV"
+
+      - name: Verify original projects and CAD orientation integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$INDEX_PATH" "$PROJECT_DIR/app/build.gradle" <<'PY'
+          from pathlib import Path
+          import sys
+
+          index=Path(sys.argv[1]).read_text(encoding='utf-8')
+          gradle=Path(sys.argv[2]).read_text(encoding='utf-8')
+          required=[
+            'function parseDXF(text){',
+            'function mergeProjectionDxfPreservingReference(rawBytes, additions)',
+            'async function dropFilesMerge(){',
+            'id="project1Card"','id="profileCard"','id="roadCard"','id="dropFilesCard"','id="paymentCard"',
+            'const SQ_APP_VERSION_CODE = 119;',
+            'id="sq-orientation-module"','id="sq-orientation-axis-reader-module"','id="sq-orientation-manual-points-module"','id="sq-orientation-reference-board-module"','id="sq-orientation-dxf-faithful-recovery-module"','id="sq-orientation-cad-preserve-module"','id="sq-orientation-v115-tools-module"',
+            'window.__sqOrientation113API','normalizeBlankPairLines','v115Diagnostics','window.__sqOrientation115Tools','SQ_WRITER_ENGINE_URL','sq110ReadAxesBtn','sq110TZoomRange','sq110TSnapMode','refreshVisibleCadCanvas','new window.ResizeObserver(()=>resize())',
+            "card.id = 'sqOrientationCard'",'sqOrientationMenuButton',
+            "window.openProjectPage('sqOrientationCard')",'window.sqOpenOrientationProject',
+            'sqOriReadAxesBtn','function sqOriDetectIntersections(model)',
+            'sq108Canvas','sq108P1X','sq108P2Y','window.safeDownloadFile(result.bytes','sq109IdPoint','sq109CopyId','sq109ToolMode','pointerdown','pointermove','pointerup',"gestureMode==='pinch'",'findNearestIntersection','zoomTransformAt','pinchZoom','تقاطع تلقائي (OSNAP)',
+            'sq110TargetCanvas','sq110ReferenceCanvas','sq110TLayerPanel','sq110RLayerPanel','height:230px;min-height:230px;max-height:230px','user-scalable=no','updateHeaderBounds(\'$EXTMIN\',\'$EXTMAX\')','function buildLayerPanel(v)','paperSpaceFallback','sq110T1X','sq110R1X','sq110ToReference','sq110Export','sq110Delete','sq110UndoDelete','function universalTransformBytes(input,t)','window.__sqOrientation111API',
+            'async function sqOriConvertTargetToDxf(targetFile, loaderOverride)','lib.dwg_write_dxf(bytes.buffer)','window.parseFile(file)',
+          ]
+
+          missing=[x for x in required if x not in index]
+          if missing:
+            raise SystemExit('ERROR: Missing required baseline or orientation functionality: '+', '.join(missing))
+          if 'function openProjectPage(id)' not in index or "classList.add('active-project')" not in index:
+            raise SystemExit('ERROR: Existing project navigation cannot activate orientation card.')
+          if 'project-card{display:none' not in index.replace(' ',''):
+            raise SystemExit('ERROR: Existing project-card visibility rule changed unexpectedly.')
+          if not gradle:
+            raise SystemExit('ERROR: Gradle configuration is empty.')
+
+          print('PASS: baseline projects plus v106-v115 modules, v116 CAD fidelity transform, layer-aware preview, and compact canvas integrated.')
+          PY
+
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png"
+          test -s "$PROJECT_DIR/app/src/main/assets/surveyquant_background.png"
+          cmp -s "$PROJECT_DIR/app/src/main/assets/surveyquant_logo.png" "$PROJECT_DIR/app/src/main/res/drawable-nodpi/surveyquant_app_logo.png" || { echo "ERROR: Logo assets differ."; exit 1; }
+
+      - name: Enable extreme board-only zoom without modifying the DXF data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/patch-v119-zoom.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          module_path, index_path = map(Path, sys.argv[1:])
+          pairs = [
+            ("v.zoom=Math.max(.1584893,Math.min(1000,Number(value)||1));",
+             "v.zoom=Math.max(.1584893,Math.min(1000000,Number(value)||1));", 1, "slider/button zoom limit"),
+            ("v.zoom=Math.max(.15,Math.min(1000,v.pinch.zoom*distance/v.pinch.distance));",
+             "v.zoom=Math.max(.15,Math.min(1000000,v.pinch.zoom*distance/v.pinch.distance));const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));", 1, "pinch zoom limit and slider sync"),
+            ("v.zoom=Math.max(.15,Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2)));",
+             "v.zoom=Math.max(.15,Math.min(1000000,v.zoom*(e.deltaY<0?1.2:1/1.2)));const slider=el(v.side==='target'?'sq110TZoomRange':'sq110RZoomRange');if(slider)slider.value=String(Math.log10(v.zoom));", 1, "wheel zoom limit and slider sync"),
+            ('max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"',
+             'max="6" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1,000,000 مرة"', 2, "logarithmic slider range"),
+            ("تكبير ×5</button>", "تكبير ×10</button>", 2, "zoom boost label"),
+            ("v.zoom*5);});el('sq110'+prefix+'ZoomRange'", "v.zoom*10);});el('sq110'+prefix+'ZoomRange'", 1, "zoom boost factor"),
+          ]
+          for path in (module_path, index_path):
+              text = path.read_text(encoding="utf-8")
+              for old, new, expected, label in pairs:
+                  count = text.count(old)
+                  if count != expected:
+                      raise SystemExit(f"ERROR: {path.name}: expected {expected} matches for {label}, found {count}")
+                  text = text.replace(old, new)
+              for forbidden in (
+                  "Math.min(1000,Number(value)||1)",
+                  "Math.min(1000,v.pinch.zoom*distance/v.pinch.distance)",
+                  "Math.min(1000,v.zoom*(e.deltaY<0?1.2:1/1.2))",
+                  'max="3" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1000 مرة"',
+              ):
+                  if forbidden in text:
+                      raise SystemExit(f"ERROR: old zoom limit remains in {path.name}: {forbidden}")
+              path.write_text(text, encoding="utf-8")
+          print("PASS v119: zoom cap is 1,000,000x, slider has six logarithmic decades, ×10 boost works, and zoom stays view-only.")
+          PY
+          python3 "$RUNNER_TEMP/patch-v119-zoom.py" "$REFERENCE_MODULE" "$INDEX_PATH"
+
+          cat > "$RUNNER_TEMP/test-v119-zoom.js" <<'NODE'
+          'use strict';
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const [modulePath, indexPath] = process.argv.slice(2);
+          const moduleText = fs.readFileSync(modulePath, 'utf8');
+          const index = fs.readFileSync(indexPath, 'utf8');
+          for (const text of [
+            'Math.min(1000000,Number(value)||1)',
+            'Math.min(1000000,v.pinch.zoom*distance/v.pinch.distance)',
+            'Math.min(1000000,v.zoom*(e.deltaY<0?1.2:1/1.2))',
+            'max="6" step="0.01" value="0" aria-label="تكبير اللوحة حتى 1,000,000 مرة"',
+            "v.zoom*10);});el('sq110'+prefix+'ZoomRange'",
+          ]) {
+            assert(moduleText.includes(text), 'zoom module missing: ' + text);
+            assert(index.includes(text), 'integrated app missing: ' + text);
+          }
+          const setter = moduleText.match(/function setZoom\(side,value\)\{[^}]*\}/);
+          assert(setter, 'board zoom setter not found');
+          assert(!/v\.bytes\s*=|v\.drawing\.[\w$]+\s*=/.test(setter[0]),
+            'zoom must not mutate original DXF bytes or CAD entity data');
+          assert(moduleText.includes('function universalTransformBytes(input,t)'),
+            'the original byte-preserving DXF transform path must remain present');
+          console.log('PASS V119 zoom regression: up to 1,000,000x, synchronized wheel/pinch slider, ×10 boost, original DXF data untouched.');
+          NODE
+          node "$RUNNER_TEMP/test-v119-zoom.js" "$REFERENCE_MODULE" "$INDEX_PATH"
+
+      - name: Apply V119 proportional CAD text and responsive board view
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$REFERENCE_MODULE" "$INDEX_PATH" <<'PY'
+          from pathlib import Path
+          import sys
+          module_path, index_path = map(Path, sys.argv[1:])
+          old_text = "size=Math.max(5.5,Math.min(15,Math.abs(Number(t.height)||2.5)*m.scale));"
+          new_text = "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale);"
+          old_size = 'height:230px;min-height:230px;max-height:230px'
+          new_size = 'height:42dvh;min-height:250px;max-height:420px'
+          for path in (module_path, index_path):
+              source = path.read_text(encoding='utf-8')
+              n = source.count(old_text)
+              if n != 1:
+                  raise SystemExit(f'ERROR: {path.name}: expected exactly one old CAD text size formula, found {n}.')
+              source = source.replace(old_text, new_text, 1)
+              n = source.count(old_size)
+              if n != 2:
+                  raise SystemExit(f'ERROR: {path.name}: expected two board canvas styles, found {n}.')
+              source = source.replace(old_size, new_size)
+              if old_text in source or old_size in source:
+                  raise SystemExit(f'ERROR: old fixed text/viewport sizing remains in {path.name}.')
+              path.write_text(source, encoding='utf-8')
+          print('PASS V119: CAD text scales by CAD height × fit scale × board zoom; both canvases adapt to phone viewport.')
+          PY
+          node --check "$REFERENCE_MODULE"
+          grep -Fq 'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)' "$INDEX_PATH"
+          grep -Fq 'height:42dvh;min-height:250px;max-height:420px' "$INDEX_PATH"
+
+      - name: Add a shared temporary DWG-to-DXF import bridge (V119)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/sq-v119-dwg-bridge.js" <<'JS'
+          (function () {
+            'use strict';
+            if (window.__SQ_V119_DWG_BRIDGE__) return;
+            window.__SQ_V119_DWG_BRIDGE__ = true;
+            var MIME = 'application/dxf';
+            function asDxfFile(result, sourceFile) {
+              if (result && result.ok === false) throw new Error(result.error || result.message || 'تعذر تحويل DWG.');
+              var value = result;
+              if (value && typeof value === 'object' &&
+                  !(typeof Blob === 'function' && value instanceof Blob) &&
+                  !(typeof File === 'function' && value instanceof File) &&
+                  !(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value) && !Array.isArray(value)) {
+                var keys = ['file','blob','bytes','dxfBytes','data','output','text','dxf','content','buffer'];
+                for (var i=0;i<keys.length;i++) if (value[keys[i]] != null) { value=value[keys[i]]; break; }
+              }
+              var name = String(sourceFile && sourceFile.name || 'drawing.dwg').replace(/\\.dwg$/i, '.dxf');
+              if (typeof File === 'function' && value instanceof File) return new File([value], name, {type:MIME,lastModified:Date.now()});
+              if (typeof Blob === 'function' && value instanceof Blob) {
+                if (!value.size) throw new Error('ملف DXF الناتج فارغ.');
+                return new File([value], name, {type:MIME,lastModified:Date.now()});
+              }
+              if (typeof value === 'string') {
+                if (!value.trim() || !/(SECTION|ENTITIES|HEADER|EOF)/i.test(value)) throw new Error('المحوّل لم يُرجع DXF نصيًا صالحًا.');
+                return new File([value], name, {type:MIME,lastModified:Date.now()});
+              }
+              if (Array.isArray(value)) value = new Uint8Array(value);
+              if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+                if (!value.byteLength) throw new Error('ملف DXF الناتج فارغ.');
+                return new File([value], name, {type:MIME,lastModified:Date.now()});
+              }
+              throw new Error('صيغة نتيجة محوّل DWG غير معروفة.');
+            }
+            function getConverter() {
+              if (typeof window.sqOriConvertTargetToDxf === 'function') return window.sqOriConvertTargetToDxf;
+              var api = window.__sqOrientation115Tools || window.__sqOrientation113API || {};
+              var names = ['sqOriConvertTargetToDxf','convertTargetToDxf','convertDwgToDxf','dwgToDxf'];
+              for (var i=0;i<names.length;i++) if (typeof api[names[i]] === 'function') return api[names[i]].bind(api);
+              return null;
+            }
+            async function convertOne(file) {
+              var converter = getConverter();
+              if (!converter) throw new Error('محوّل DWG المشترك غير متاح. لم يتم تعديل الملف الأصلي.');
+              return asDxfFile(await converter(file), file);
+            }
+            async function convertList(files) {
+              var output = [];
+              for (var i=0;i<files.length;i++) output.push(/\\.dwg$/i.test(files[i].name || '') ? await convertOne(files[i]) : files[i]);
+              return output;
+            }
+            function setInputFiles(input, files) {
+              var transfer = new DataTransfer();
+              files.forEach(function(file){transfer.items.add(file);});
+              input.files = transfer.files;
+            }
+            document.addEventListener('change', function(event) {
+              var input = event.target;
+              if (!input || String(input.tagName||'').toLowerCase() !== 'input' || String(input.type||'').toLowerCase() !== 'file') return;
+              var files = Array.prototype.slice.call(input.files || []);
+              if (!files.some(function(file){return /\\.dwg$/i.test(file.name || '');}) || input.__sqV119DwgBusy) return;
+              event.preventDefault(); event.stopImmediatePropagation(); input.__sqV119DwgBusy = true;
+              convertList(files).then(function(converted){
+                setInputFiles(input, converted);
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+              }).catch(function(error){
+                console.error('[SurveyQuant V119] DWG conversion failed:', error); input.value = '';
+                alert('تعذر قراءة لوحة DWG. تأكد من سلامة الملف ثم أعد المحاولة.\n' + String(error && error.message || error));
+              }).finally(function(){input.__sqV119DwgBusy = false;});
+            }, true);
+            document.addEventListener('drop', function(event) {
+              var data = event.dataTransfer, files = data ? Array.prototype.slice.call(data.files || []) : [];
+              if (!files.some(function(file){return /\\.dwg$/i.test(file.name || '');})) return;
+              event.preventDefault(); event.stopImmediatePropagation();
+              convertList(files).then(function(converted){
+                var transfer = new DataTransfer(); converted.forEach(function(file){transfer.items.add(file);});
+                event.target.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer:transfer}));
+              }).catch(function(error){
+                console.error('[SurveyQuant V119] dropped DWG conversion failed:', error);
+                alert('تعذر تحويل لوحة DWG. ' + String(error && error.message || error));
+              });
+            }, true);
+            window.__sqV119DwgBridgeAPI = {asDxfFile:asDxfFile,convertOne:convertOne};
+          })();
+          JS
+          python3 - "$INDEX_PATH" "$RUNNER_TEMP/sq-v119-dwg-bridge.js" <<'PY'
+          from pathlib import Path
+          import re, sys
+          html_path, bridge_path = map(Path, sys.argv[1:])
+          html = html_path.read_text(encoding='utf-8')
+          if 'id="sq-v119-universal-dwg-bridge"' in html:
+              raise SystemExit('ERROR: V119 DWG bridge already exists; refusing duplicate injection.')
+          bridge = bridge_path.read_text(encoding='utf-8')
+          html, filters = re.subn(
+              r'''(\baccept\s*=\s*)(["'])([^"']*)\2''',
+              lambda m: m.group(1)+m.group(2)+','.join(dict.fromkeys([x for x in m.group(3).split(',') if x]+['.dwg','.dxf','application/dxf','application/x-dxf','application/acad','application/x-acad','image/vnd.dwg']))+m.group(2)
+                if re.search(r'(\\.dwg|\\.dxf|cad|drawing)', m.group(3), re.I) else m.group(0),
+              html, flags=re.I)
+          if '</body>' not in html:
+              raise SystemExit('ERROR: no closing body tag found in app HTML.')
+          html = html.replace('</body>', '<script id="sq-v119-universal-dwg-bridge">\n'+bridge+'\n</script>\n</body>', 1)
+          html_path.write_text(html, encoding='utf-8')
+          print('PASS V119 DWG bridge injected. Matching CAD file filters expanded:', filters)
+          PY
+          node --check "$RUNNER_TEMP/sq-v119-dwg-bridge.js"
+          grep -Fq 'id="sq-v119-universal-dwg-bridge"' "$INDEX_PATH"
+          grep -Fq 'function universalTransformBytes(input,t)' "$INDEX_PATH"
+          python3 - "$INDEX_PATH" <<'PY'
+          from pathlib import Path
+          import sys
+          html = Path(sys.argv[1]).read_text(encoding='utf-8')
+          for value in ['const SQ_APP_VERSION_CODE = 119;', 'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)', 'height:42dvh;min-height:250px;max-height:420px', 'sqOriConvertTargetToDxf', 'id="sq-v119-universal-dwg-bridge"']:
+              if value not in html: raise SystemExit('ERROR: V119 verification missing '+value)
+          print('PASS V119 static integration checks.')
+          PY
+
+      - name: Set Android release version to 1.0.119
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$PROJECT_DIR/app/build.gradle" <<'PY'
+          from pathlib import Path
+          import re,sys
+
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          s,nc=re.subn(r'(?m)(\bversionCode\s+)\d+\b',r'\g<1>119',s,count=1)
+          s,nn=re.subn(r"(?m)(\bversionName\s+)([\"'])\d+\.\d+\.\d+\2",r"\g<1>'1.0.119'",s,count=1)
+          if nc!=1 or nn!=1:
+            raise SystemExit(f'ERROR: Version edits failed (code={nc}, name={nn}).')
+          p.write_text(s,encoding='utf-8')
+          PY
+
+          grep -Eq 'versionCode[[:space:]]+119([^0-9]|$)' "$PROJECT_DIR/app/build.gradle"
+          grep -Eq "versionName[[:space:]]+['\"]1\.0\.119['\"]" "$PROJECT_DIR/app/build.gradle"
+          grep -Fq 'const SQ_APP_VERSION_CODE = 119;' "$INDEX_PATH"
+
+      - name: Run JavaScript and CAD-preservation regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check "$MODULE_JS"
+          node "$TEST_JS" "$MODULE_JS"
+          node --check "$AXIS_MODULE"
+          node "$AXIS_TEST" "$AXIS_MODULE"
+          node --check "$MANUAL_MODULE"
+          node "$MANUAL_TEST" "$MANUAL_MODULE" "$MODULE_JS"
+          node --check "$REFERENCE_MODULE"
+          node "$REFERENCE_TEST" "$MODULE_JS" "$MANUAL_MODULE" "$REFERENCE_MODULE"
+
+          cat > "$RUNNER_TEMP/sq-canvas-display-test.js" <<'NODE'
+          'use strict';
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const vm = require('node:vm');
+          const [enginePath, manualPath, referencePath] = process.argv.slice(2);
+          assert(enginePath && manualPath && referencePath, 'canvas display regression test inputs are missing');
+          const nodes = new Map();
+          for (const id of ['sq110TargetScreen','sq110ReferenceScreen','sq110Step1','sq110Step2']) nodes.set(id,{style:{display:'',opacity:''}});
+          const document = {readyState:'loading',addEventListener(){},getElementById(id){return nodes.get(id)||null;}};
+          const window = {devicePixelRatio:1,addEventListener(){},removeEventListener(){},requestAnimationFrame(fn){fn();}};
+          const context = {window,document,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,Blob,URL,Math,Number,String,Map,Set,Array,Object,RegExp,Error,Infinity,Promise,JSON,parseInt,parseFloat,setTimeout,clearTimeout,console};
+          vm.createContext(context);
+          vm.runInContext(fs.readFileSync(enginePath,'utf8'),context,{filename:enginePath});
+          vm.runInContext(fs.readFileSync(manualPath,'utf8'),context,{filename:manualPath});
+          vm.runInContext(fs.readFileSync(referencePath,'utf8'),context,{filename:referencePath});
+          const api=window.__sqOrientation111API;
+          assert(api&&api.state&&typeof api.refreshVisibleCadCanvas==='function','visible canvas refresh API must exist');
+          let rect={width:640,height:340},resizes=0;
+          api.state.views.reference={side:'reference',canvas:{getBoundingClientRect(){return rect;}},ctx:null,drawing:{},resizeHandler(){resizes++;}};
+          api.showScreen('reference');
+          assert.equal(nodes.get('sq110ReferenceScreen').style.display,'block','reference screen becomes visible');
+          assert.equal(resizes,1,'switching screen forces canvas remeasure/redraw');
+          rect={width:0,height:0};api.refreshVisibleCadCanvas('reference');
+          assert.equal(resizes,1,'hidden zero-size canvas is not collapsed to 1x1');
+          rect={width:720,height:340};api.refreshVisibleCadCanvas('reference');
+          assert.equal(resizes,2,'visible canvas recovers when dimensions return');
+          const patchedSource=fs.readFileSync(referencePath,'utf8');
+          assert.match(patchedSource,/const r=c\.getBoundingClientRect\(\);if\(!r\|\|r\.width<2\|\|r\.height<2\)return;/,'hidden canvas must not be forced to 1x1');
+          assert.match(patchedSource,/if\(c\.width!==width\)c\.width=width;if\(c\.height!==height\)c\.height=height;/,'canvas backing dimensions must follow visible CSS dimensions');
+          assert.match(patchedSource,/new window\.ResizeObserver\(\(\)=>resize\(\)\)/,'responsive observer is installed');
+          console.log('PASS v115 board-display regression: redraw after screen switch/import, ignore hidden zero-size canvas, preserve correct backing dimensions, and observe layout changes.');
+          NODE
+          node "$RUNNER_TEMP/sq-canvas-display-test.js" "$MODULE_JS" "$MANUAL_MODULE" "$REFERENCE_MODULE"
+
+          node --check "$FAITHFUL_MODULE"
+          node "$FAITHFUL_TEST" "$MODULE_JS" "$MANUAL_MODULE" "$REFERENCE_MODULE" "$FAITHFUL_MODULE"
+
+          cp "$PATCH_INDEX" "$RUNNER_TEMP/dxf-parser-restoration-test.html"
+          python3 - "$RUNNER_TEMP/dxf-parser-restoration-test.html" <<'PY'
+          from pathlib import Path
+          import re,sys
+
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          s,n=re.subn(r'const SQ_APP_VERSION_CODE = \d+;', 'const SQ_APP_VERSION_CODE = 104;', s, count=1)
+          if n!=1:
+            raise SystemExit('ERROR: Could not create the isolated v104 DXF regression fixture.')
+          p.write_text(s,encoding='utf-8')
+          PY
+
+          node "$DXF_TEST" "$RUNNER_TEMP/dxf-parser-restoration-test.html"
+          node --check "$PRESERVE_MODULE"
+          echo "The old v113 hard-veto test is intentionally replaced by the v115 nonblocking-export test."
+          node --check "$V115_MODULE"
+          python3 - "$V115_TEST" "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" <<'PY'
+          from pathlib import Path
+          import sys
+          source=Path(sys.argv[1]).read_text(encoding='utf-8')
+          replacements=[
+            ("const SQ_APP_VERSION_CODE = 115;", "const SQ_APP_VERSION_CODE = 119;"),
+            ("height:520px", "height:42dvh;min-height:250px;max-height:420px"),
+          ]
+          for old,new in replacements:
+            count=source.count(old)
+            if count != 1:
+              raise SystemExit(f"ERROR: Expected exactly one v115-to-v116 assertion update for {old!r}; found {count}.")
+            source=source.replace(old,new,1)
+          if 'window.__sqOrientation115Tools' not in source:
+            raise SystemExit('ERROR: The historical v115 integration assertions are incomplete.')
+          Path(sys.argv[2]).write_text(source,encoding='utf-8')
+          PY
+          node "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$V115_MODULE" "$INDEX_PATH"
+          # The v116 exporter deliberately updates known CAD view/extents HEADER variables and
+          # the geometry inside anonymous BLOCKS referenced by DIMENSION entities. The old
+          # v115 audit mislabeled those valid fidelity-preserving edits as unrelated data loss.
+          python3 - "$STORM_TRANSFORM_TEST" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding="utf-8")
+          old_sectioned = """function sectioned(pairs) {
+            let section = '', afterSection = false;
+            return pairs.map((p, i) => {
+              const old = section;
+              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') afterSection = true;
+              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; }
+              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; }
+              return { ...p, section: old || section, index: i };
+            });
+          }"""
+          new_sectioned = """function sectioned(pairs) {
+            let section = '', afterSection = false, headerVariable = '', blockName = '', blockEntity = '', entityType = '';
+            return pairs.map((p, i) => {
+              const old = section;
+              if (p.code === 0 && p.value.toUpperCase() === 'SECTION') { afterSection = true; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else if (afterSection && p.code === 2) { section = p.value.toUpperCase(); afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else if (p.code === 0 && p.value.toUpperCase() === 'ENDSEC') { section = ''; afterSection = false; headerVariable = ''; blockName = ''; blockEntity = ''; entityType = ''; }
+              else {
+                if (section === 'HEADER' && p.code === 9) headerVariable = p.value.toUpperCase();
+                if (section === 'ENTITIES' && p.code === 0) entityType = p.value.toUpperCase();
+                if (section === 'BLOCKS' && p.code === 0) {
+                  const type = p.value.toUpperCase();
+                  if (type === 'BLOCK') { blockEntity = 'BLOCK'; blockName = ''; }
+                  else if (type === 'ENDBLK') blockEntity = 'ENDBLK';
+                  else blockEntity = type;
+                }
+                if (section === 'BLOCKS' && p.code === 2 && blockEntity === 'BLOCK' && !blockName) blockName = p.value.toUpperCase();
+              }
+              const result = { ...p, section: old || section, headerVariable, blockName, blockEntity, entityType, index: i };
+              if (section === 'BLOCKS' && p.code === 0 && p.value.toUpperCase() === 'ENDBLK') { blockEntity = ''; blockName = ''; }
+              return result;
+            });
+          }
+          function referencedDimensionBlocks(pairs) {
+            const parsed = sectioned(pairs), names = new Set();
+            let currentEntity = '';
+            for (const p of parsed) {
+              if (p.section !== 'ENTITIES') continue;
+              if (p.code === 0) currentEntity = p.value.toUpperCase();
+              else if (currentEntity === 'DIMENSION' && p.code === 2 && p.value.trim()) names.add(p.value.trim().toUpperCase());
+            }
+            return names;
+          }
+          const allowedHeaderCodes = {
+            '$EXTMIN': [10,20], '$EXTMAX': [10,20], '$LIMMIN': [10,20], '$LIMMAX': [10,20],
+            '$PEXTMIN': [10,20], '$PEXTMAX': [10,20], '$VIEWCTR': [10,20], '$INSBASE': [10,20],
+            '$SNAPBASE': [10,20], '$UCSORG': [10,20], '$VIEWSIZE': [40]
+          };
+          function isAllowedViewHeaderUpdate(p) {
+            return p.section === 'HEADER' && Array.isArray(allowedHeaderCodes[p.headerVariable]) && allowedHeaderCodes[p.headerVariable].includes(p.code);
+          }"""
+          old_audit_setup = """  const a = sectioned(decodeDxf(beforeBytes)), b = sectioned(decodeDxf(afterBytes));
+            const errors = [];"""
+          new_audit_setup = """  const beforePairs = decodeDxf(beforeBytes);
+            const a = sectioned(beforePairs), b = sectioned(decodeDxf(afterBytes));
+            const dimensionBlocks = referencedDimensionBlocks(beforePairs);
+            const errors = [];"""
+          old_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
+                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
+          new_audit_body = """      if (a[i].section === 'ENTITIES' && b[i].section === 'ENTITIES' && geomCodes(a[i].code)) geometryChanged++;
+                else if (a[i].section === 'BLOCKS' && b[i].section === 'BLOCKS' && dimensionBlocks.has(a[i].blockName) && a[i].blockEntity && !['BLOCK','ENDBLK'].includes(a[i].blockEntity) && geomCodes(a[i].code)) geometryChanged++;
+                else if (isAllowedViewHeaderUpdate(a[i]) && a[i].headerVariable === b[i].headerVariable) { /* Expected CAD view/extents update. */ }
+                else { nonGeometryChanged++; if (errors.length<10) errors.push(`non-geometric value changed at pair ${i+1}, section ${a[i].section}, block ${a[i].blockName}/${a[i].blockEntity}, type ${a[i].entityType}, code ${a[i].code}: ${a[i].value.slice(0,50)} -> ${b[i].value.slice(0,50)}`); }"""
+          # Exact replace the three logical sections. Indentation inside template literals is ignored by
+          # checking their stripped content and replacing the raw blocks exactly once.
+          for old, new, label in [
+            (old_sectioned, new_sectioned, 'section metadata parser'),
+            (old_audit_setup, new_audit_setup, 'audit metadata setup'),
+            (old_audit_body, new_audit_body, 'audit allowed-change rules'),
+          ]:
+            if s.count(old) != 1:
+              raise SystemExit(f'ERROR: expected one {label} in STORM regression script; found {s.count(old)}')
+            s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          print('PASS: STORM regression audit now allows only v116 CAD view-header updates and coordinates in referenced DIMENSION graphics.')
+          PY
+          node --check "$STORM_TRANSFORM_TEST"
+          node "$STORM_TRANSFORM_TEST" "$REFERENCE_MODULE" "$MANUAL_MODULE" "$FAITHFUL_MODULE" "$PRESERVE_MODULE" "$STORM_OUTPUT_DIR" "$STORM_OUTPUT_DIR" "$STORM_REPORT"
+
+          rm -f "$STORM_OUTPUT_ZIP"
+          (cd "$STORM_OUTPUT_DIR" && zip -q "$STORM_OUTPUT_ZIP" ./*.dxf)
+          test -s "$STORM_OUTPUT_ZIP"
+
+          python3 - "$INDEX_PATH" "$RUNNER_TEMP/surveyquant-inline.js" <<'PY'
+          from pathlib import Path
+          import re,sys
+
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',html,re.I|re.S)
+          if not scripts:
+            raise SystemExit('ERROR: No inline JavaScript found.')
+          Path(sys.argv[2]).write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+
+          node --check "$RUNNER_TEMP/surveyquant-inline.js"
+
+      - name: Restore release signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "${KEYSTORE_BASE64:-}" || { echo "ERROR: Secret SURVEYQUANT_KEYSTORE_BASE64 is missing."; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: Secret SURVEYQUANT_KEYSTORE_PASSWORD is missing."; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: Secret SURVEYQUANT_KEY_ALIAS is missing."; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: Secret SURVEYQUANT_KEY_PASSWORD is missing."; exit 1; }
+          KEYSTORE_PATH="$RUNNER_TEMP/surveyquant-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          echo "SURVEYQUANT_KEYSTORE_FILE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build signed APK and source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle --no-daemon clean assembleRelease --stacktrace
+
+          APK="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || { echo "ERROR: Release APK was not generated."; find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true; exit 1; }
+
+          RELEASE="$RUNNER_TEMP/sq-release"
+          mkdir -p "$RELEASE/source-patch"
+          cp "$APK" "$RELEASE/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_CAD_PRESERVED.apk"
+          cp "$INDEX_PATH" "$RELEASE/source-patch/index.html"
+          cp "$MODULE_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_MODULE.js"
+          cp "$TEST_JS" "$RELEASE/source-patch/SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_TEST.js"
+          cp "$AXIS_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH.js"
+          cp "$AXIS_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_TEST.js"
+          cp "$MANUAL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_MODULE.js"
+          cp "$MANUAL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_TEST.js"
+          cp "$REFERENCE_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_MODULE.js"
+          cp "$REFERENCE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_TEST.js"
+          cp "$RUNNER_TEMP/sq-canvas-display-test.js" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_REGRESSION_TEST.js"
+          cp "$RUNNER_TEMP/patch-v115-board-display.py" "$RELEASE/source-patch/SurveyQuant_v1.0.115_CANVAS_DISPLAY_PATCH.py"
+          cp "$RUNNER_TEMP/test-v116-cad.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_TEST.js"
+          cp "$RUNNER_TEMP/patch-v119-zoom.py" "$RELEASE/source-patch/SurveyQuant_v1.0.119_ZOOM_PRESERVATION_PATCH.py"
+          cp "$RUNNER_TEMP/test-v119-zoom.js" "$RELEASE/source-patch/SurveyQuant_v1.0.119_ZOOM_PRESERVATION_TEST.js"
+          cp "$RUNNER_TEMP/patch-v116-cad.py" "$RELEASE/source-patch/SurveyQuant_v1.0.116_CAD_FIDELITY_PATCH.py"
+          cp "$RUNNER_TEMP/surveyquant-v116-orientation-regression.js" "$RELEASE/source-patch/SurveyQuant_v1.0.116_ORIENTATION_INTEGRATION_TEST.js"
+          cp "$FAITHFUL_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_MODULE.js"
+          cp "$FAITHFUL_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_TEST.js"
+          cp "$PRESERVE_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_MODULE.js"
+          cp "$PRESERVE_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.113_CAD_PRESERVE_TEST.js"
+          cp "$V115_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.115_ORIENTATION_TOOLS_MODULE.js"
+          cp "$V115_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.115_ORIENTATION_FINAL_TEST.js"
+          cp "$V115_PATCHER" "$RELEASE/source-patch/SurveyQuant_v1.0.115_APPLY_PATCH.py"
+          cp "$STORM_TEST_MODULE" "$RELEASE/source-patch/SurveyQuant_v1.0.115_TEST_STORM_DWG.mjs"
+          cp "$STORM_TRANSFORM_TEST" "$RELEASE/source-patch/SurveyQuant_v1.0.115_TEST_STORM_TRANSFORM.mjs"
+          cp "$STORM_REPORT" "$RELEASE/source-patch/STORM_CONVERSION_REPORT.md"
+          cp "$STORM_OUTPUT_ZIP" "$RELEASE/STORM_CONVERTED_DXF.zip"
+          cp "$DXF_TEST" "$RELEASE/source-patch/dxf-parser-restoration-test.js"
+
+          cat > "$RELEASE/source-patch/README_AR.txt" <<'TXT'
+          SurveyQuant v1.0.119 - دعم DWG ومقياس نصوص CAD المتناسب
+          - رفع حد التكبير داخل المعاينة إلى 1,000,000× دون تعديل بيانات DXF الأصلية بسبب التكبير.
+          - يتضمن الاختبار ملفي STORM DWG الأصليين.
+          - تم تفعيل دعم كتابة DXF في LibreDWG-Web v0.7.14.
+          - تم إصلاح إنهاء النص في cquote() حتى لا تُضاف بقايا الذاكرة إلى DXF.
+          - تم إصلاح حدود الرسم ومركز العرض في DXF بعد الإسقاط ($EXTMIN/$EXTMAX/$VIEWCTR/$VIEWSIZE)، حتى لا تفتح اللوحة خارج نطاق العرض.
+          - معاينة اللوحة أصغر (ارتفاع ثابت 230px)، والتكبير/التصغير داخل الرسم فقط مع منع تكبير صفحة WebView. نصوص CAD تتبع ارتفاعها الأصلي ومقياس الرسم والتكبير؛ ارتفاع المعاينة 42dvh (250-420px).
+          - معاينة بألوان ACI/TrueColor وأنماط الخطوط وسماكاتها مع قائمة إظهار/إخفاء الطبقات.
+          - المعاينة ترسم حدود HATCH متعددة الرؤوس والتهشير الصلب، وعناصر MLINE، وكتل الأبعاد والنصوص التابعة لها عندما تكون موجودة في DXF.
+          - تصدير DXF يحافظ على محتوى الملف والطبقات والنصوص الأصلية، ويحوّل الإحداثيات المكشوفة بدل إعادة بناء لوحة مبسطة.
+          - عناصر CAD/Proxy التي لا تتيح صيغة التحويل إظهار هندستها قد لا تظهر كاملة في المعاينة، لكن الاختبار يمنع نجاح إسقاط فارغ.
+          - الناتج DXF جديد ولا تتم الكتابة فوق الملف الأصلي.
+          - يُراجع تقرير التحويل مع CAD للكائنات الوكيلة أو المتخصصة.
+          - اختبارات البناء تتحقق من الملفين الحقيقيين قبل إنشاء APK.
+          TXT
+
+          (cd "$RELEASE/source-patch" && zip -qr "$RELEASE/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_SOURCE_PATCH.zip" .)
+          sha256sum "$RELEASE/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_CAD_PRESERVED.apk" "$RELEASE/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_SOURCE_PATCH.zip" "$RELEASE/STORM_CONVERTED_DXF.zip" > "$RELEASE/SHA256SUMS.txt"
+          cat "$RELEASE/SHA256SUMS.txt"
+          echo "RELEASE_DIR=$RELEASE" >> "$GITHUB_ENV"
+
+      - name: Upload APK and source patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.119-DWG-TEXT-SCALE-CAD-PRESERVED
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_CAD_PRESERVED.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.119_DWG_TEXT_SCALE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
+            ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload STORM conversion diagnostics even if the real-file test fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.119-DWG-DIAGNOSTICS-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
+            ${{ runner.temp }}/sq-storm-output/**
+          if-no-files-found: warn
+          retention-days: 14
