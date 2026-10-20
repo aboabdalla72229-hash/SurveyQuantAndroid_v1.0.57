@@ -105,6 +105,14 @@ jobs:
           echo "V126_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
           echo "V127_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
 
+          # The V126 historical recipe expects these paths in its environment.
+          # Without them it stops at step 8 with: ERROR: V117 patcher path is missing.
+          echo "V117_PATCHER=$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py" >> "$GITHUB_ENV"
+          echo "V117_BRIDGE=$KIT_DIR/SurveyQuant_v1.0.117_DWG_IMPORT_BRIDGE.js" >> "$GITHUB_ENV"
+          echo "V117_TEST=$KIT_DIR/SurveyQuant_v1.0.117_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
+          echo "V126_PATCHER=$KIT_DIR/SurveyQuant_v1.0.126_DWG_IMPORT_PATCH.py" >> "$GITHUB_ENV"
+          echo "V126_TEST=$KIT_DIR/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_TEST.js" >> "$GITHUB_ENV"
+
       - name: Build known-good V126 base with original V117 orientation and all-project DWG support
         shell: bash
         run: |
