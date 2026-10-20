@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.122 - Natural CAD Text Scale + DWG Import
+name: Build SurveyQuant v1.0.123 - Natural CAD Text Scale + DWG Import
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v122-dwg-natural-text.yml"
-      - "SurveyQuant_v1.0.122_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.zip"
+      - ".github/workflows/build-v123-dwg-natural-text.yml"
+      - "SurveyQuant_v1.0.123_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.zip"
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
 
 permissions:
@@ -73,43 +73,47 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Install runner dependencies and unpack the V122 fix kit
+      - name: Install runner dependencies and unpack the V123 fix kit
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y python3-yaml unzip zip
-          ARCHIVE="SurveyQuant_v1.0.122_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.zip"
-          test -s "$ARCHIVE" || { echo "ERROR: V122 fix ZIP is missing from the repository root."; exit 1; }
+          ARCHIVE="SurveyQuant_v1.0.123_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.zip"
+          test -s "$ARCHIVE" || { echo "ERROR: V123 fix ZIP is missing from the repository root."; exit 1; }
           unzip -t "$ARCHIVE"
-          KIT_DIR="$RUNNER_TEMP/sq-v122-kit"
+          KIT_DIR="$RUNNER_TEMP/sq-v123-kit"
           rm -rf "$KIT_DIR"
           mkdir -p "$KIT_DIR"
           unzip -q "$ARCHIVE" -d "$KIT_DIR"
-          test -s "$KIT_DIR/SurveyQuant_v1.0.122_RUN_RECIPE.py"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.123_RUN_RECIPE.py"
           test -s "$KIT_DIR/SurveyQuant_v1.0.122_APPLY_PATCH.py"
           test -s "$KIT_DIR/SurveyQuant_v1.0.122_DWG_IMPORT_BRIDGE.js"
           test -s "$KIT_DIR/SurveyQuant_v1.0.122_DWG_TEXT_SCALE_TEST.js"
-          echo "V122_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.123_APPLY_PATCH.py"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.123_DWG_TEXT_SCALE_TEST.js"
+          echo "V123_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
           echo "V122_PATCHER=$KIT_DIR/SurveyQuant_v1.0.122_APPLY_PATCH.py" >> "$GITHUB_ENV"
           echo "V122_BRIDGE=$KIT_DIR/SurveyQuant_v1.0.122_DWG_IMPORT_BRIDGE.js" >> "$GITHUB_ENV"
           echo "V122_TEST=$KIT_DIR/SurveyQuant_v1.0.122_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
+          echo "V123_PATCHER=$KIT_DIR/SurveyQuant_v1.0.123_APPLY_PATCH.py" >> "$GITHUB_ENV"
+          echo "V123_TEST=$KIT_DIR/SurveyQuant_v1.0.123_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
 
-      - name: Run the historical V116 CAD builder with V122-only changes
+      - name: Run the historical V116 CAD builder with V122 + V123 text fixes
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile "$V122_KIT_DIR/SurveyQuant_v1.0.122_RUN_RECIPE.py"
-          python3 "$V122_KIT_DIR/SurveyQuant_v1.0.122_RUN_RECIPE.py"
+          python3 -m py_compile "$V123_KIT_DIR/SurveyQuant_v1.0.123_RUN_RECIPE.py"
+          python3 "$V123_KIT_DIR/SurveyQuant_v1.0.123_RUN_RECIPE.py"
 
-      - name: Upload V122 APK, source patch and CAD diagnostics
+      - name: Upload V123 APK, source patch and CAD diagnostics
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.122-DWG-NATURAL-TEXT-DWG-IMPORT
+          name: SurveyQuant-v1.0.123-DWG-NATURAL-TEXT-DWG-IMPORT
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.122_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.122_DWG_NATURAL_TEXT_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.123_DWG_NATURAL_TEXT_DWG_IMPORT_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.123_DWG_NATURAL_TEXT_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
@@ -120,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.122-STORM-DIAGNOSTICS-${{ github.run_id }}
+          name: SurveyQuant-v1.0.123-STORM-DIAGNOSTICS-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
             ${{ runner.temp }}/sq-storm-output/**
