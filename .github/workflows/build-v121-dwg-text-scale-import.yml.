@@ -1,19 +1,11 @@
-name: Build SurveyQuant v1.0.120 - DWG Text Scale and CAD Preservation
+name: Build SurveyQuant v1.0.121 - Proportional CAD Text + DWG Import
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v120-dwg-text-scale.yml"
-      - "SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip"
-      - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
-      - "SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
-      - "SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
-      - "SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
-      - "SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_PATCH_PACKAGE.zip"
-      - "SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_PATCH_PACKAGE.zip"
-      - "SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
-      - "SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
+      - ".github/workflows/build-v121-dwg-text-scale-import.yml"
+      - "SurveyQuant_v1.0.121_DWG_TEXT_SCALE_IMPORT_FIX.zip"
       - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
 
 permissions:
@@ -32,7 +24,7 @@ jobs:
       SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
 
     steps:
-      - name: Checkout the repository and complete history
+      - name: Checkout repository with complete history
         uses: actions/checkout@v4
         with:
           ref: main
@@ -40,7 +32,7 @@ jobs:
           persist-credentials: true
           token: ${{ github.token }}
 
-      - name: Checkout pinned LibreDWG-Web source used by the verified builder
+      - name: Checkout pinned LibreDWG-Web source
         uses: actions/checkout@v4
         with:
           repository: mlightcad/libredwg-web
@@ -81,51 +73,54 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Install YAML runner dependency and unpack V120 patch kit
+      - name: Install runner dependencies and unpack the V121 fix kit
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -y
           sudo apt-get install -y python3-yaml unzip zip
-          test -s SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip || {
-            echo "ERROR: Missing SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip in repository root."
-            exit 1
-          }
-          mkdir -p "$RUNNER_TEMP/sq-v120-kit"
-          unzip -t SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip
-          unzip -q SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip -d "$RUNNER_TEMP/sq-v120-kit"
-          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_RUN_RECIPE.py"
-          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_APPLY_PATCH.py"
-          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_TEST.js"
+          ARCHIVE="SurveyQuant_v1.0.121_DWG_TEXT_SCALE_IMPORT_FIX.zip"
+          test -s "$ARCHIVE" || { echo "ERROR: V121 fix ZIP is missing from the repository root."; exit 1; }
+          unzip -t "$ARCHIVE"
+          KIT_DIR="$RUNNER_TEMP/sq-v121-kit"
+          rm -rf "$KIT_DIR"
+          mkdir -p "$KIT_DIR"
+          unzip -q "$ARCHIVE" -d "$KIT_DIR"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.121_RUN_RECIPE.py"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.121_APPLY_PATCH.py"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.121_DWG_IMPORT_BRIDGE.js"
+          test -s "$KIT_DIR/SurveyQuant_v1.0.121_DWG_TEXT_SCALE_TEST.js"
+          echo "V121_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+          echo "V121_PATCHER=$KIT_DIR/SurveyQuant_v1.0.121_APPLY_PATCH.py" >> "$GITHUB_ENV"
+          echo "V121_BRIDGE=$KIT_DIR/SurveyQuant_v1.0.121_DWG_IMPORT_BRIDGE.js" >> "$GITHUB_ENV"
+          echo "V121_TEST=$KIT_DIR/SurveyQuant_v1.0.121_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
 
-      - name: Run the historical V119 builder recipe with the V120 patch and release labels
+      - name: Run the historical V116 CAD builder with V121-only changes
         shell: bash
-        env:
-          V120_KIT_DIR: ${{ runner.temp }}/sq-v120-kit
         run: |
           set -euo pipefail
-          python3 -m py_compile "$V120_KIT_DIR/SurveyQuant_v1.0.120_RUN_RECIPE.py"
-          python3 "$V120_KIT_DIR/SurveyQuant_v1.0.120_RUN_RECIPE.py"
+          python3 -m py_compile "$V121_KIT_DIR/SurveyQuant_v1.0.121_RUN_RECIPE.py"
+          python3 "$V121_KIT_DIR/SurveyQuant_v1.0.121_RUN_RECIPE.py"
 
-      - name: Upload built APK, source patch and test diagnostics
+      - name: Upload V121 APK, source patch and CAD diagnostics
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.120-DWG-TEXT-SCALE-CAD-PRESERVED
+          name: SurveyQuant-v1.0.121-DWG-TEXT-SCALE-IMPORT-FIX
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.121_DWG_TEXT_SCALE_IMPORT_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.121_DWG_TEXT_SCALE_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload STORM diagnostics when the real-file validation fails
+      - name: Upload STORM diagnostics if a real-file validation fails
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.120-DWG-DIAGNOSTICS-${{ github.run_id }}
+          name: SurveyQuant-v1.0.121-STORM-DIAGNOSTICS-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
             ${{ runner.temp }}/sq-storm-output/**
