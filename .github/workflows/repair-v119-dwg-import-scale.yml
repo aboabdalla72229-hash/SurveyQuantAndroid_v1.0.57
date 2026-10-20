@@ -1,3 +1,4 @@
+
 name: Restore V119 Android APK Builder and Fix DWG Import
 
 on:
@@ -12,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
     steps:
       - name: Checkout full Git history
         uses: actions/checkout@v4
@@ -20,43 +22,68 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: true
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Restore the real V119 Android build workflow and patch DWG/text issues
         shell: bash
         run: |
           set -euo pipefail
+
           BASE_SHA="c79f7f090ef26e131a86fcfc08c40a999cda62ce"
           DEST=".github/workflows/prepare-v119-dwg-compatibility.yml"
+
           mkdir -p .github/workflows
+
           git cat-file -e "${BASE_SHA}:.github/workflows/prepare-v119-dwg-compatibility.yml"
-          git show "${BASE_SHA}:.github/workflows/prepare-v119-dwg-compatibility.yml" > "$RUNNER_TEMP/v119-original-builder.yml"
+
+          git show "${BASE_SHA}:.github/workflows/prepare-v119-dwg-compatibility.yml" \
+            > "$RUNNER_TEMP/v119-original-builder.yml"
+
           python3 - "$RUNNER_TEMP/v119-original-builder.yml" "$DEST" <<'PY'
           from pathlib import Path
-          import re, sys
-          src_path, dst_path = map(Path, sys.argv[1:])
-          s = src_path.read_text(encoding='utf-8')
-          if 'name: Build SurveyQuant v1.0.119' not in s or 'gradle --no-daemon clean assembleRelease' not in s or 'actions/upload-artifact@v4' not in s:
-              raise SystemExit('ERROR: The historical file is not the verified Android APK builder.')
+          import sys
 
-          # Fix the DWG suffix matcher inside the shared import bridge, exactly four uses.
+          src_path, dst_path = map(Path, sys.argv[1:])
+          s = src_path.read_text(encoding="utf-8")
+
+          if (
+              "name: Build SurveyQuant v1.0.119" not in s
+              or "gradle --no-daemon clean assembleRelease" not in s
+              or "actions/upload-artifact@v4" not in s
+          ):
+              raise SystemExit(
+                  "ERROR: The historical file is not the verified Android APK builder."
+              )
+
+          # Repair the DWG extension matcher in the shared import bridge.
           marker = '          cat > "$RUNNER_TEMP/sq-v119-dwg-bridge.js" <<\'JS\''
           start = s.find(marker)
-          end = s.find('\n          JS\n', start) if start >= 0 else -1
+          end = s.find("\n          JS\n", start) if start >= 0 else -1
+
           if start < 0 or end < 0:
-              raise SystemExit('ERROR: V119 DWG bridge was not found in the historical builder.')
+              raise SystemExit(
+                  "ERROR: V119 DWG bridge was not found in the historical builder."
+              )
+
           bridge = s[start:end]
-          bad = r'\\.dwg'
-          good = r'\.dwg'
+          bad = r"\\.dwg"
+          good = r"\.dwg"
           n = bridge.count(bad)
+
           if n:
               if n != 4:
-                  raise SystemExit(f'ERROR: Expected four broken .dwg matchers, found {n}.')
+                  raise SystemExit(
+                      f"ERROR: Expected four broken .dwg matchers, found {n}."
+                  )
               bridge = bridge.replace(bad, good)
           elif bridge.count(good) != 4:
-              raise SystemExit('ERROR: Unexpected DWG matcher form; stopping rather than editing blindly.')
+              raise SystemExit(
+                  "ERROR: Unexpected DWG matcher form; stopping rather than editing blindly."
+              )
 
-          # Every current/future file picker accepts DWG/DXF, not just existing CAD-labeled inputs.
+          # Allow DWG and DXF in dynamically created file inputs.
           accept_anchor = "            var MIME = 'application/dxf';"
+
           accept_code = r'''            var MIME = 'application/dxf';
             var SQ_DWG_ACCEPT_TYPES = ['.dwg','.dxf','application/dwg','application/x-dwg','application/dxf','application/x-dxf','application/acad','application/x-acad','image/vnd.dwg'];
             function sqExtendDwgInput(input) {
@@ -77,25 +104,45 @@ jobs:
                 records.forEach(function(record) { (record.addedNodes || []).forEach(sqScanDwgInputs); });
               }).observe(document.documentElement, {childList:true,subtree:true});
             }'''
-          if 'SQ_DWG_ACCEPT_TYPES' not in bridge:
+
+          if "SQ_DWG_ACCEPT_TYPES" not in bridge:
               if bridge.count(accept_anchor) != 1:
-                  raise SystemExit('ERROR: DWG picker patch anchor was not unique.')
+                  raise SystemExit(
+                      "ERROR: DWG picker patch anchor was not unique."
+                  )
               bridge = bridge.replace(accept_anchor, accept_code, 1)
+
           s = s[:start] + bridge + s[end:]
 
-          # Keep annotation height proportional to geometry fit and board-only zoom.
-          base_formula = 'size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)'
-          zoom_formula = base_formula + '*Math.max(0.001,Number(v.zoom)||1)'
+          # Scale CAD annotation height with board fit and board zoom.
+          base_formula = (
+              "size=Math.max(0.1,Math.abs(Number(t.height)||2.5)*m.scale)"
+          )
+          zoom_formula = (
+              base_formula + "*Math.max(0.001,Number(v.zoom)||1)"
+          )
+
           cnt = s.count(base_formula)
+
           if cnt < 3:
-              raise SystemExit(f'ERROR: Expected at least 3 CAD text-scale anchors, found {cnt}.')
+              raise SystemExit(
+                  f"ERROR: Expected at least 3 CAD text-scale anchors, found {cnt}."
+              )
+
           s = s.replace(base_formula, zoom_formula)
 
-          # After the LibreDWG build is generated, select a working module+WASM mirror and
-          # replace the hard-coded CDN root in the exact index.html that enters the APK.
-          patcher_call = '          python3 "$V115_PATCHER" "$PATCH_INDEX" "$AXIS_MODULE" "$REFERENCE_MODULE" "$PRESERVE_MODULE" "$WRITER_SHA"\n'
+          # Verify a reachable LibreDWG JS/WASM mirror before APK creation.
+          patcher_call = (
+              '          python3 "$V115_PATCHER" "$PATCH_INDEX" '
+              '"$AXIS_MODULE" "$REFERENCE_MODULE" "$PRESERVE_MODULE" '
+              '"$WRITER_SHA"\n'
+          )
+
           if s.count(patcher_call) != 1:
-              raise SystemExit('ERROR: V115 patcher call is not unique in the historical Android builder.')
+              raise SystemExit(
+                  "ERROR: V115 patcher call is not unique in the historical Android builder."
+              )
+
           mirror_step = r'''          # Verify a JS module and matching WASM on one real, reachable mirror before APK creation.
           ENGINE_ROOT=""
           for CANDIDATE in "https://fastly.jsdelivr.net/gh/aboabdalla72229-hash/SurveyQuantAndroid_v1.0.57@${WRITER_SHA}/libredwg-writer" "https://raw.githack.com/aboabdalla72229-hash/SurveyQuantAndroid_v1.0.57/${WRITER_SHA}/libredwg-writer" "https://cdn.jsdelivr.net/gh/aboabdalla72229-hash/SurveyQuantAndroid_v1.0.57@${WRITER_SHA}/libredwg-writer"; do
@@ -104,55 +151,100 @@ jobs:
               break
             fi
           done
-          test -n "$ENGINE_ROOT" || { echo "ERROR: LibreDWG JS/WASM was unreachable on every mirror; refusing to package a knowingly broken APK."; exit 1; }
+
+          test -n "$ENGINE_ROOT" || {
+            echo "ERROR: LibreDWG JS/WASM was unreachable on every mirror; refusing to package a knowingly broken APK."
+            exit 1
+          }
+
           python3 - "$PATCH_INDEX" "$WRITER_SHA" "$ENGINE_ROOT" <<'PY_MIRROR_PATCH'
           from pathlib import Path
           import re, sys
+
           path = Path(sys.argv[1])
           sha = sys.argv[2].strip()
-          root = sys.argv[3].rstrip('/')
-          html = path.read_text(encoding='utf-8')
+          root = sys.argv[3].rstrip("/")
+          html = path.read_text(encoding="utf-8")
+
           patterns = [
-              re.compile(r'https://(?:fastly\.)?jsdelivr\.net/gh/aboabdalla72229-hash/SurveyQuantAndroid_v1\.0\.57@' + re.escape(sha) + r'/libredwg-writer'),
-              re.compile(r'https://raw\.githack\.com/aboabdalla72229-hash/SurveyQuantAndroid_v1\.0\.57/' + re.escape(sha) + r'/libredwg-writer'),
+              re.compile(
+                  r'https://(?:fastly\.)?jsdelivr\.net/gh/aboabdalla72229-hash/SurveyQuantAndroid_v1\.0\.57@'
+                  + re.escape(sha)
+                  + r'/libredwg-writer'
+              ),
+              re.compile(
+                  r'https://raw\.githack\.com/aboabdalla72229-hash/SurveyQuantAndroid_v1\.0\.57/'
+                  + re.escape(sha)
+                  + r'/libredwg-writer'
+              ),
           ]
+
           replaced = 0
+
           for pattern in patterns:
               html, n = pattern.subn(root, html)
               replaced += n
-          if replaced < 1 or root + '/dist/libredwg-web.js' not in html:
-              raise SystemExit('ERROR: Could not replace the generated DWG module URL in Android app HTML.')
-          path.write_text(html, encoding='utf-8')
-          print(f'PASS: selected reachable LibreDWG mirror and replaced {replaced} URL root(s).')
+
+          if replaced < 1 or root + "/dist/libredwg-web.js" not in html:
+              raise SystemExit(
+                  "ERROR: Could not replace the generated DWG module URL in Android app HTML."
+              )
+
+          path.write_text(html, encoding="utf-8")
+          print(
+              f"PASS: selected reachable LibreDWG mirror and replaced {replaced} URL root(s)."
+          )
           PY_MIRROR_PATCH
+
           echo "PASS: V119 DWG engine module and WASM availability checked before packaging."
           '''
+
           s = s.replace(patcher_call, patcher_call + mirror_step, 1)
 
-          # Confirm the original CAD-preserving transform still exists and APK artifact upload remains.
-          for token in ['function universalTransformBytes(input,t)', 'gradle --no-daemon clean assembleRelease', 'actions/upload-artifact@v4', 'SurveyQuant_v1.0.119_DWG_TEXT_SCALE_CAD_PRESERVED.apk', zoom_formula, 'SQ_DWG_ACCEPT_TYPES']:
+          # Validate that the original CAD-preserving transform remains present.
+          required = [
+              "function universalTransformBytes(input,t)",
+              "gradle --no-daemon clean assembleRelease",
+              "actions/upload-artifact@v4",
+              "SurveyQuant_v1.0.119_DWG_TEXT_SCALE_CAD_PRESERVED.apk",
+              zoom_formula,
+              "SQ_DWG_ACCEPT_TYPES",
+          ]
+
+          for token in required:
               if token not in s:
-                  raise SystemExit('ERROR: final V119 builder verification failed: ' + token)
-          dst_path.write_text(s, encoding='utf-8')
-          print('PASS: restored genuine Android APK builder and applied the DWG/text-scale patches.')
+                  raise SystemExit(
+                      "ERROR: final V119 builder verification failed: " + token
+                  )
+
+          dst_path.write_text(s, encoding="utf-8")
+          print(
+              "PASS: restored Android APK builder with DWG and text-scale patches."
+          )
           PY
 
-          # Remove the mistaken one-off patch workflow so it cannot be mistaken for the APK builder.
+          # Replace the mistaken patch workflow with the actual Android builder.
           rm -f .github/workflows/repair-v119-dwg-import-scale.yml
+
           git diff --check
+
           grep -Fq 'name: Build SurveyQuant v1.0.119' "$DEST"
           grep -Fq 'gradle --no-daemon clean assembleRelease' "$DEST"
           grep -Fq 'actions/upload-artifact@v4' "$DEST"
+
           git status --short
 
       - name: Commit restored Android builder
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add .github/workflows/prepare-v119-dwg-compatibility.yml
           git add -u .github/workflows/repair-v119-dwg-import-scale.yml || true
+
           git commit -m "Restore V119 Android APK builder with DWG and text scale fixes"
           git push origin HEAD:main
 
@@ -160,5 +252,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           gh workflow run .github/workflows/prepare-v119-dwg-compatibility.yml --ref main
+
           echo "Dispatched the actual V119 Android APK builder. Its run should be named 'Build SurveyQuant v1.0.119 - DWG Compatibility and Proportional Board Text (Preserve Original CAD)'."
