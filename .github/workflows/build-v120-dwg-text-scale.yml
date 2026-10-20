@@ -1,0 +1,133 @@
+name: Build SurveyQuant v1.0.120 - DWG Text Scale and CAD Preservation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-v120-dwg-text-scale.yml"
+      - "SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip"
+      - "SurveyQuantAndroid_v1.0.93_TRIAL_UPDATE_SOURCE.zip"
+      - "SurveyQuant_v1.0.104_DXF_READ_PROJECTION_RESTORE_PATCH.zip"
+      - "SurveyQuant_v1.0.106_ORIENTATION_HOME_MENU_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.107_ORIENTATION_AXIS_READER_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.109_ORIENTATION_ZOOM_OSNAP_ID_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.111_DXF_RECOVERY_DELETE_PICK_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.112_DXF_FAITHFUL_RECOVERY_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.113_CAD_PRESERVE_PATCH_PACKAGE.zip"
+      - "SurveyQuant_v1.0.115_ORIENTATION_FINAL_PATCH_PACKAGE.zip"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout the repository and complete history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ github.token }}
+
+      - name: Checkout pinned LibreDWG-Web source used by the verified builder
+        uses: actions/checkout@v4
+        with:
+          repository: mlightcad/libredwg-web
+          ref: v0.7.14
+          path: external/libredwg-web
+          persist-credentials: false
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+          run_install: false
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Install YAML runner dependency and unpack V120 patch kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y python3-yaml unzip zip
+          test -s SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip || {
+            echo "ERROR: Missing SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip in repository root."
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/sq-v120-kit"
+          unzip -t SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip
+          unzip -q SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.zip -d "$RUNNER_TEMP/sq-v120-kit"
+          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_RUN_RECIPE.py"
+          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_APPLY_PATCH.py"
+          test -s "$RUNNER_TEMP/sq-v120-kit/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_TEST.js"
+
+      - name: Run the historical V119 builder recipe with the V120 patch and release labels
+        shell: bash
+        env:
+          V120_KIT_DIR: ${{ runner.temp }}/sq-v120-kit
+        run: |
+          set -euo pipefail
+          python3 -m py_compile "$V120_KIT_DIR/SurveyQuant_v1.0.120_RUN_RECIPE.py"
+          python3 "$V120_KIT_DIR/SurveyQuant_v1.0.120_RUN_RECIPE.py"
+
+      - name: Upload built APK, source patch and test diagnostics
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.120-DWG-TEXT-SCALE-CAD-PRESERVED
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_CAD_PRESERVED.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.120_DWG_TEXT_SCALE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
+            ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload STORM diagnostics when the real-file validation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.120-DWG-DIAGNOSTICS-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
+            ${{ runner.temp }}/sq-storm-output/**
+          if-no-files-found: warn
+          retention-days: 14
