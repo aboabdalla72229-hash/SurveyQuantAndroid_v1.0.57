@@ -105,7 +105,7 @@ jobs:
             fi
           done
           test -n "$ENGINE_ROOT" || { echo "ERROR: LibreDWG JS/WASM was unreachable on every mirror; refusing to package a knowingly broken APK."; exit 1; }
-          python3 - "$PATCH_INDEX" "$WRITER_SHA" "$ENGINE_ROOT" <<'PY'
+          python3 - "$PATCH_INDEX" "$WRITER_SHA" "$ENGINE_ROOT" <<'PY_MIRROR_PATCH'
           from pathlib import Path
           import re, sys
           path = Path(sys.argv[1])
@@ -124,7 +124,7 @@ jobs:
               raise SystemExit('ERROR: Could not replace the generated DWG module URL in Android app HTML.')
           path.write_text(html, encoding='utf-8')
           print(f'PASS: selected reachable LibreDWG mirror and replaced {replaced} URL root(s).')
-          PY
+          PY_MIRROR_PATCH
           echo "PASS: V119 DWG engine module and WASM availability checked before packaging."
           '''
           s = s.replace(patcher_call, patcher_call + mirror_step, 1)
