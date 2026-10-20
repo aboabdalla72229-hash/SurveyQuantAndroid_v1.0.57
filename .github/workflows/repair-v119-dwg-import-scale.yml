@@ -1,4 +1,3 @@
-
 name: Restore V119 Android APK Builder and Fix DWG Import
 
 on:
@@ -13,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout full Git history
@@ -22,7 +21,7 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Restore the real V119 Android build workflow and patch DWG/text issues
         shell: bash
