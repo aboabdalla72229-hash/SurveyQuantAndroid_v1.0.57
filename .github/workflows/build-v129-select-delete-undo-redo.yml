@@ -1,11 +1,11 @@
-name: Build SurveyQuant v1.0.127 - CAD Text Shrinks With Board Zoom
+name: Build SurveyQuant v1.0.129 - Select/Delete/Undo/Redo
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v127-text-shrinks-as-zoom.yml"
-      - "SurveyQuant_v1.0.127_TEXT_SHRINKS_AS_ZOOM_DWG_ALL_PROJECTS_PATCH.zip"
+      - ".github/workflows/build-v129-select-delete-undo-redo.yml"
+      - "SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
 
 permissions:
   contents: write
@@ -72,7 +72,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Install tools and unpack known-good V126 base kit plus V127 text-scale fix
+      - name: Install tools and unpack V126 base, V128 CAD renderer fix, and V129 delete/history fix
         shell: bash
         run: |
           set -euo pipefail
@@ -80,14 +80,14 @@ jobs:
           sudo apt-get install -y python3-yaml unzip zip
 
           BASE_KIT="SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.zip"
-          PATCH_KIT="SurveyQuant_v1.0.127_TEXT_SHRINKS_AS_ZOOM_DWG_ALL_PROJECTS_PATCH.zip"
-          test -s "$BASE_KIT" || { echo "ERROR: expected existing base kit is missing: $BASE_KIT"; exit 1; }
-          test -s "$PATCH_KIT" || { echo "ERROR: V127 patch kit is missing: $PATCH_KIT"; exit 1; }
+          PATCH_KIT="SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
+          test -s "$BASE_KIT" || { echo "ERROR: expected existing V126 base kit is missing: $BASE_KIT"; exit 1; }
+          test -s "$PATCH_KIT" || { echo "ERROR: V129 self-contained patch kit is missing: $PATCH_KIT"; exit 1; }
           unzip -t "$BASE_KIT"
           unzip -t "$PATCH_KIT"
 
           KIT_DIR="$RUNNER_TEMP/sq-v126-kit"
-          PATCH_DIR="$RUNNER_TEMP/sq-v127-patch"
+          PATCH_DIR="$RUNNER_TEMP/sq-v129-patch"
           rm -rf "$KIT_DIR" "$PATCH_DIR"
           mkdir -p "$KIT_DIR" "$PATCH_DIR"
           unzip -q "$BASE_KIT" -d "$KIT_DIR"
@@ -99,11 +99,18 @@ jobs:
           test -s "$KIT_DIR/SurveyQuant_v1.0.117_DWG_TEXT_SCALE_TEST.js"
           test -s "$KIT_DIR/SurveyQuant_v1.0.126_DWG_IMPORT_PATCH.py"
           test -s "$KIT_DIR/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_TEST.js"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.127_APPLY_TEXT_ZOOM_PATCH.py"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js"
+          test -s "$PATCH_DIR/README_V128_AR.txt"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py"
+          test -s "$PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js"
+          test -s "$PATCH_DIR/README_V129_AR.txt"
 
           echo "V126_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
-          echo "V127_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
+          # V129 kit includes the V128 rendering/DWG patch scripts as well as V129 deletion/history.
+          echo "V128_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
+          echo "V129_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
 
           # The V126 historical recipe expects these paths in its environment.
           # Without them it stops at step 8 with: ERROR: V117 patcher path is missing.
@@ -123,35 +130,43 @@ jobs:
           test -s "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_SOURCE_PATCH.zip"
           test -s "$RUNNER_TEMP/sq-release/source-patch/index.html"
 
-      - name: Apply proportional small CAD text and verify zoom/DWG invariants
+      - name: Apply V128 CAD renderer and V129 select-delete-undo-redo source fixes
         shell: bash
         run: |
           set -euo pipefail
           SRC_DIR="$RUNNER_TEMP/sq-release/source-patch"
-          BASE_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.apk"
-          SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.127_DWG_TEXT_SHRINKS_AS_ZOOM_SOURCE_PATCH.zip"
+          V129_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip"
 
-          python3 "$V127_PATCH_DIR/SurveyQuant_v1.0.127_APPLY_TEXT_ZOOM_PATCH.py" --html "$SRC_DIR/index.html"
-          node "$V127_PATCH_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js" "$SRC_DIR/index.html"
+          # Keep V128's tested zoom/text/DWG behavior, then patch only element selection and edit history.
+          python3 "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" --html "$SRC_DIR/index.html"
+          node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/index.html"
 
-          # Keep the source package's original V117 test entry point aligned with the corrected renderer.
-          cp "$V127_PATCH_DIR/SurveyQuant_v1.0.127_DWG_TEXT_SCALE_COMPAT_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.117_DWG_TEXT_SCALE_TEST.js"
-          cp "$V127_PATCH_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js"
-          cp "$V127_PATCH_DIR/SurveyQuant_v1.0.127_APPLY_TEXT_ZOOM_PATCH.py" "$SRC_DIR/SurveyQuant_v1.0.127_APPLY_TEXT_ZOOM_PATCH.py"
-          cp "$V127_PATCH_DIR/README_V127_AR.txt" "$SRC_DIR/README_V127_AR.txt"
+          python3 "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" --html "$SRC_DIR/index.html"
+          node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/index.html"
+          node "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$SRC_DIR/index.html"
 
-          rm -f "$SOURCE_PATCH"
-          (cd "$SRC_DIR" && zip -qr "$SOURCE_PATCH" .)
-          unzip -t "$SOURCE_PATCH"
+          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js"
+          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" "$SRC_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py"
+          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js" "$SRC_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js"
+          cp "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js"
+          cp "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" "$SRC_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py"
+          cp "$V129_PATCH_DIR/README_V129_AR.txt" "$SRC_DIR/README_V129_AR.txt"
+          cp "$V128_PATCH_DIR/README_V128_AR.txt" "$SRC_DIR/README_V128_AR.txt"
 
-      - name: Patch APK preview HTML, align and re-sign the release APK
+          rm -f "$V129_SOURCE_PATCH"
+          (cd "$SRC_DIR" && zip -qr "$V129_SOURCE_PATCH" .)
+          unzip -t "$V129_SOURCE_PATCH"
+
+      - name: Patch final APK HTML, validate, align and re-sign
         shell: bash
         run: |
           set -euo pipefail
           BASE_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.apk"
-          RAW_APK="$RUNNER_TEMP/sq-release/v127-patched-unsigned.apk"
-          ALIGNED_APK="$RUNNER_TEMP/sq-release/v127-aligned.apk"
-          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.127_TEXT_SHRINKS_AS_ZOOM_DWG_ALL_PROJECTS_FIX.apk"
+          V128_APK="$RUNNER_TEMP/sq-release/v128-patched-unsigned.apk"
+          RAW_APK="$RUNNER_TEMP/sq-release/v129-patched-unsigned.apk"
+          APK_HTML="$RUNNER_TEMP/sq-release/apk-index.html"
+          ALIGNED_APK="$RUNNER_TEMP/sq-release/v129-aligned.apk"
+          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_FIX.apk"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
 
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
@@ -161,9 +176,12 @@ jobs:
 
           printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
           test -s "$STORE"
-          python3 "$V127_PATCH_DIR/SurveyQuant_v1.0.127_APPLY_TEXT_ZOOM_PATCH.py" --apk "$BASE_APK" --output "$RAW_APK"
-          unzip -p "$RAW_APK" assets/index.html > "$RUNNER_TEMP/sq-release/apk-index.html"
-          node "$V127_PATCH_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js" "$RUNNER_TEMP/sq-release/apk-index.html"
+
+          python3 "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" --apk "$BASE_APK" --output "$V128_APK"
+          python3 "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" --apk "$V128_APK" --output "$RAW_APK"
+          unzip -p "$RAW_APK" assets/index.html > "$APK_HTML"
+          node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$APK_HTML"
+          node "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$APK_HTML"
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT" || { echo "ERROR: Android SDK path is unavailable."; exit 1; }
@@ -185,21 +203,21 @@ jobs:
             --out "$FINAL_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
-          SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.127_DWG_TEXT_SHRINKS_AS_ZOOM_SOURCE_PATCH.zip"
-          sha256sum "$FINAL_APK" "$SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
-          printf 'V127 text zoom patch validated and APK re-signed.\n' > "$RUNNER_TEMP/sq-release/V127_BUILD_RESULT.txt"
+          V129_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip"
+          sha256sum "$FINAL_APK" "$V129_SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          printf 'V129 entity selection/delete/undo/redo patch validated and APK re-signed.\n' > "$RUNNER_TEMP/sq-release/V129_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
-      - name: Upload v1.0.127 APK, source patch and checksums
+      - name: Upload v1.0.129 APK, source patch and checksums
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.127-TEXT-SHRINKS-AS-ZOOM-DWG-ALL-PROJECTS
+          name: SurveyQuant-v1.0.129-SELECT-DELETE-UNDO-REDO
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.127_TEXT_SHRINKS_AS_ZOOM_DWG_ALL_PROJECTS_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.127_DWG_TEXT_SHRINKS_AS_ZOOM_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V127_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V129_BUILD_RESULT.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
           if-no-files-found: error
@@ -209,7 +227,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.127-DIAGNOSTICS-${{ github.run_id }}
+          name: SurveyQuant-v1.0.129-DIAGNOSTICS-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
             ${{ runner.temp }}/sq-storm-output/**
