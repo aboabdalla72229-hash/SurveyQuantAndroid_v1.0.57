@@ -1,11 +1,12 @@
-name: Build SurveyQuant v1.0.131 - Engineering CAD Preserve + Layer Quantities
+name: Build SurveyQuant v1.0.132 - CAD Original View + Strict Reference Preserve
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v131-engineering-cad-preserve.yml"
+      - ".github/workflows/build-v132-cad-original-view-preserve.yml"
       - "SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_PATCH.zip"
+      - "SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_PATCH.zip"
 
 permissions:
   contents: write
@@ -71,7 +72,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Validate and unpack V126 base, V129, V130, and V131 patch kits
+      - name: Validate and unpack V126 base, V129, V130, V131, and V132 patch kits
         shell: bash
         run: |
           set -euo pipefail
@@ -82,25 +83,30 @@ jobs:
           PATCH_KIT="SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
           V130_KIT="SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_PATCH.zip"
           V131_KIT="SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_PATCH.zip"
+          V132_KIT="SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_PATCH.zip"
           test -s "$BASE_KIT" || { echo "ERROR: V126 base kit missing: $BASE_KIT"; exit 1; }
           test -s "$PATCH_KIT" || { echo "ERROR: V129 patch kit missing: $PATCH_KIT"; exit 1; }
           test -s "$V130_KIT" || { echo "ERROR: V130 patch kit missing: $V130_KIT"; exit 1; }
           test -s "$V131_KIT" || { echo "ERROR: V131 patch kit missing: $V131_KIT"; exit 1; }
+          test -s "$V132_KIT" || { echo "ERROR: V132 patch kit missing: $V132_KIT"; exit 1; }
           unzip -t "$BASE_KIT"
           unzip -t "$PATCH_KIT"
           unzip -t "$V130_KIT"
           unzip -t "$V131_KIT"
+          unzip -t "$V132_KIT"
 
           KIT_DIR="$RUNNER_TEMP/sq-v126-kit"
           PATCH_DIR="$RUNNER_TEMP/sq-v129-patch"
           V130_PATCH_DIR="$RUNNER_TEMP/sq-v130-patch"
           V131_PATCH_DIR="$RUNNER_TEMP/sq-v131-patch"
-          rm -rf "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR" "$V131_PATCH_DIR"
-          mkdir -p "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR" "$V131_PATCH_DIR"
+          V132_PATCH_DIR="$RUNNER_TEMP/sq-v132-patch"
+          rm -rf "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR" "$V131_PATCH_DIR" "$V132_PATCH_DIR"
+          mkdir -p "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR" "$V131_PATCH_DIR" "$V132_PATCH_DIR"
           unzip -q "$BASE_KIT" -d "$KIT_DIR"
           unzip -q "$PATCH_KIT" -d "$PATCH_DIR"
           unzip -q "$V130_KIT" -d "$V130_PATCH_DIR"
           unzip -q "$V131_KIT" -d "$V131_PATCH_DIR"
+          unzip -q "$V132_KIT" -d "$V132_PATCH_DIR"
 
           V130_PATCHER="$V130_PATCH_DIR/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
           V130_TEST="$V130_PATCH_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
@@ -112,6 +118,11 @@ jobs:
           test -s "$V131_PATCHER" || { echo "ERROR: V131 patcher is missing inside $V131_KIT"; exit 1; }
           test -s "$V131_TEST" || { echo "ERROR: V131 regression test is missing inside $V131_KIT"; exit 1; }
           test -s "$V131_PATCH_DIR/README_V131_AR.txt" || { echo "ERROR: V131 README is missing inside $V131_KIT"; exit 1; }
+          V132_PATCHER="$V132_PATCH_DIR/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_PATCH.py"
+          V132_TEST="$V132_PATCH_DIR/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_TEST.js"
+          test -s "$V132_PATCHER" || { echo "ERROR: V132 patcher is missing inside $V132_KIT"; exit 1; }
+          test -s "$V132_TEST" || { echo "ERROR: V132 regression test is missing inside $V132_KIT"; exit 1; }
+          test -s "$V132_PATCH_DIR/README_V132_AR.txt" || { echo "ERROR: V132 README is missing inside $V132_KIT"; exit 1; }
 
           test -s "$KIT_DIR/SurveyQuant_v1.0.126_RUN_RECIPE.py"
           test -s "$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py"
@@ -133,6 +144,9 @@ jobs:
           echo "V131_PATCH_DIR=$V131_PATCH_DIR" >> "$GITHUB_ENV"
           echo "V131_PATCHER=$V131_PATCHER" >> "$GITHUB_ENV"
           echo "V131_TEST=$V131_TEST" >> "$GITHUB_ENV"
+          echo "V132_PATCH_DIR=$V132_PATCH_DIR" >> "$GITHUB_ENV"
+          echo "V132_PATCHER=$V132_PATCHER" >> "$GITHUB_ENV"
+          echo "V132_TEST=$V132_TEST" >> "$GITHUB_ENV"
           echo "V117_PATCHER=$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py" >> "$GITHUB_ENV"
           echo "V117_BRIDGE=$KIT_DIR/SurveyQuant_v1.0.117_DWG_IMPORT_BRIDGE.js" >> "$GITHUB_ENV"
           echo "V117_TEST=$KIT_DIR/SurveyQuant_v1.0.117_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
@@ -149,7 +163,7 @@ jobs:
           test -s "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_SOURCE_PATCH.zip"
           test -s "$RUNNER_TEMP/sq-release/source-patch/index.html"
 
-      - name: Apply and test V128, V129, V130, then V131 engineering CAD fixes
+      - name: Apply and test V128, V129, V130, V131, and V132 CAD fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -172,12 +186,20 @@ jobs:
           cp "$V131_PATCHER" "$SRC_DIR/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_PATCH.py"
           cp "$V131_TEST" "$SRC_DIR/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_TEST.js"
           cp "$V131_PATCH_DIR/README_V131_AR.txt" "$SRC_DIR/README_V131_AR.txt"
-          V131_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_SOURCE_PATCH.zip"
-          rm -f "$V131_SOURCE_PATCH"
-          (cd "$SRC_DIR" && zip -qr "$V131_SOURCE_PATCH" .)
-          unzip -t "$V131_SOURCE_PATCH"
 
-      - name: Patch final APK HTML through V131, test, align and sign
+          python3 -m py_compile "$V132_PATCHER"
+          python3 "$V132_PATCHER" --html "$SRC_DIR/index.html"
+          node "$V132_TEST" "$SRC_DIR/index.html"
+          node "$V130_TEST" "$SRC_DIR/index.html"
+          cp "$V132_PATCHER" "$SRC_DIR/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_PATCH.py"
+          cp "$V132_TEST" "$SRC_DIR/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_TEST.js"
+          cp "$V132_PATCH_DIR/README_V132_AR.txt" "$SRC_DIR/README_V132_AR.txt"
+          V132_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_SOURCE_PATCH.zip"
+          rm -f "$V132_SOURCE_PATCH"
+          (cd "$SRC_DIR" && zip -qr "$V132_SOURCE_PATCH" .)
+          unzip -t "$V132_SOURCE_PATCH"
+
+      - name: Patch final APK through V131+V132, test, align and sign
         shell: bash
         run: |
           set -euo pipefail
@@ -185,11 +207,12 @@ jobs:
           V128_APK="$RUNNER_TEMP/sq-release/v128-patched-unsigned.apk"
           V129_APK="$RUNNER_TEMP/sq-release/v129-patched-unsigned.apk"
           V130_APK="$RUNNER_TEMP/sq-release/v130-patched-unsigned.apk"
-          RAW_APK="$RUNNER_TEMP/sq-release/v131-patched-unsigned.apk"
+          V131_APK="$RUNNER_TEMP/sq-release/v131-patched-unsigned.apk"
+          RAW_APK="$RUNNER_TEMP/sq-release/v132-patched-unsigned.apk"
           APK_HTML="$RUNNER_TEMP/sq-release/apk-index.html"
-          ALIGNED_APK="$RUNNER_TEMP/sq-release/v131-aligned.apk"
-          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_FIX.apk"
-          V131_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_SOURCE_PATCH.zip"
+          ALIGNED_APK="$RUNNER_TEMP/sq-release/v132-aligned.apk"
+          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_FIX.apk"
+          V132_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_SOURCE_PATCH.zip"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
 
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
@@ -202,10 +225,15 @@ jobs:
           python3 "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" --apk "$BASE_APK" --output "$V128_APK"
           python3 "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" --apk "$V128_APK" --output "$V129_APK"
           python3 "$V130_PATCHER" --apk "$V129_APK" --output "$V130_APK"
-          python3 "$V131_PATCHER" --apk "$V130_APK" --output "$RAW_APK"
-          unzip -p "$RAW_APK" assets/index.html > "$APK_HTML"
+          python3 "$V131_PATCHER" --apk "$V130_APK" --output "$V131_APK"
+          unzip -p "$V131_APK" assets/index.html > "$APK_HTML"
           node "$V130_TEST" "$APK_HTML"
           node "$V131_TEST" "$APK_HTML"
+
+          python3 "$V132_PATCHER" --apk "$V131_APK" --output "$RAW_APK"
+          unzip -p "$RAW_APK" assets/index.html > "$APK_HTML"
+          node "$V132_TEST" "$APK_HTML"
+          node "$V130_TEST" "$APK_HTML"
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT" || { echo "ERROR: Android SDK path is unavailable."; exit 1; }
@@ -227,19 +255,19 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
           sha256sum "$FINAL_APK" "$V131_SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
-          printf 'V131 CAD-preserving export, single-pass orientation preview, independent two-layer quantities, and removed perimeter-contour method tests passed.\n' > "$RUNNER_TEMP/sq-release/V131_BUILD_RESULT.txt"
+          printf 'V132 CAD preview cleanup, larger orientation workspace, proportional text zoom, strict reference preservation, and V128-V131 regression tests passed.\n' > "$RUNNER_TEMP/sq-release/V132_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
-      - name: Upload V131 APK, source patch and checksum files
+      - name: Upload V132 APK, source patch and checksum files
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.131-ENGINEERING-CAD-PRESERVE
+          name: SurveyQuant-v1.0.132-CAD-ORIGINAL-VIEW-PRESERVE
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.132_CAD_ORIGINAL_VIEW_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V131_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V132_BUILD_RESULT.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
           if-no-files-found: error
