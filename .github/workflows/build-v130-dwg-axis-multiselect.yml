@@ -1,11 +1,12 @@
-name: Build SurveyQuant v1.0.129 - Select/Delete/Undo/Redo
+name: Build SurveyQuant v1.0.130 - DWG Axis + Multi-Select
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v129-select-delete-undo-redo.yml"
-      - "SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
+      - ".github/workflows/build-v130-dwg-axis-multiselect.yml"
+      - "SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
+      - "SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
 
 permissions:
   contents: write
@@ -23,10 +24,9 @@ jobs:
       SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
 
     steps:
-      - name: Checkout repository with complete history
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
           persist-credentials: true
           token: ${{ github.token }}
@@ -72,7 +72,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Install tools and unpack V126 base, V128 CAD renderer fix, and V129 delete/history fix
+      - name: Validate and unpack V126 base and V129 patch kit
         shell: bash
         run: |
           set -euo pipefail
@@ -81,8 +81,12 @@ jobs:
 
           BASE_KIT="SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.zip"
           PATCH_KIT="SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
-          test -s "$BASE_KIT" || { echo "ERROR: expected existing V126 base kit is missing: $BASE_KIT"; exit 1; }
-          test -s "$PATCH_KIT" || { echo "ERROR: V129 self-contained patch kit is missing: $PATCH_KIT"; exit 1; }
+          V130_PATCHER="$GITHUB_WORKSPACE/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
+          V130_TEST="$GITHUB_WORKSPACE/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+          test -s "$BASE_KIT" || { echo "ERROR: V126 base kit missing: $BASE_KIT"; exit 1; }
+          test -s "$PATCH_KIT" || { echo "ERROR: V129 patch kit missing: $PATCH_KIT"; exit 1; }
+          test -s "$V130_PATCHER" || { echo "ERROR: V130 patcher missing: $V130_PATCHER"; exit 1; }
+          test -s "$V130_TEST" || { echo "ERROR: V130 regression test missing: $V130_TEST"; exit 1; }
           unzip -t "$BASE_KIT"
           unzip -t "$PATCH_KIT"
 
@@ -101,26 +105,21 @@ jobs:
           test -s "$KIT_DIR/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_TEST.js"
           test -s "$PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py"
           test -s "$PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js"
-          test -s "$PATCH_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js"
-          test -s "$PATCH_DIR/README_V128_AR.txt"
           test -s "$PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py"
           test -s "$PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js"
-          test -s "$PATCH_DIR/README_V129_AR.txt"
 
           echo "V126_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
-          # V129 kit includes the V128 rendering/DWG patch scripts as well as V129 deletion/history.
           echo "V128_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
           echo "V129_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
-
-          # The V126 historical recipe expects these paths in its environment.
-          # Without them it stops at step 8 with: ERROR: V117 patcher path is missing.
+          echo "V130_PATCHER=$V130_PATCHER" >> "$GITHUB_ENV"
+          echo "V130_TEST=$V130_TEST" >> "$GITHUB_ENV"
           echo "V117_PATCHER=$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py" >> "$GITHUB_ENV"
           echo "V117_BRIDGE=$KIT_DIR/SurveyQuant_v1.0.117_DWG_IMPORT_BRIDGE.js" >> "$GITHUB_ENV"
           echo "V117_TEST=$KIT_DIR/SurveyQuant_v1.0.117_DWG_TEXT_SCALE_TEST.js" >> "$GITHUB_ENV"
           echo "V126_PATCHER=$KIT_DIR/SurveyQuant_v1.0.126_DWG_IMPORT_PATCH.py" >> "$GITHUB_ENV"
           echo "V126_TEST=$KIT_DIR/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_TEST.js" >> "$GITHUB_ENV"
 
-      - name: Build known-good V126 base with original V117 orientation and all-project DWG support
+      - name: Build known-good V126 base with original V117 orientation and shared DWG support
         shell: bash
         run: |
           set -euo pipefail
@@ -130,14 +129,12 @@ jobs:
           test -s "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_SOURCE_PATCH.zip"
           test -s "$RUNNER_TEMP/sq-release/source-patch/index.html"
 
-      - name: Apply V128 CAD renderer and V129 select-delete-undo-redo source fixes
+      - name: Apply and test V128 renderer, V129 delete/history, then V130 DWG and selection fixes
         shell: bash
         run: |
           set -euo pipefail
           SRC_DIR="$RUNNER_TEMP/sq-release/source-patch"
-          V129_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip"
-
-          # Keep V128's tested zoom/text/DWG behavior, then patch only element selection and edit history.
+          V130_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_SOURCE_PATCH.zip"
           python3 "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" --html "$SRC_DIR/index.html"
           node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/index.html"
 
@@ -145,43 +142,40 @@ jobs:
           node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/index.html"
           node "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$SRC_DIR/index.html"
 
-          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js"
-          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" "$SRC_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py"
-          cp "$V128_PATCH_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js" "$SRC_DIR/SurveyQuant_v1.0.128_DWG_NATIVE_PASS_THROUGH_BRIDGE.js"
-          cp "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$SRC_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js"
-          cp "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" "$SRC_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py"
-          cp "$V129_PATCH_DIR/README_V129_AR.txt" "$SRC_DIR/README_V129_AR.txt"
-          cp "$V128_PATCH_DIR/README_V128_AR.txt" "$SRC_DIR/README_V128_AR.txt"
+          python3 "$V130_PATCHER" --html "$SRC_DIR/index.html"
+          node "$V130_TEST" "$SRC_DIR/index.html"
+          cp "$V130_PATCHER" "$SRC_DIR/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
+          cp "$V130_TEST" "$SRC_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+          cp "$GITHUB_WORKSPACE/README_V130_AR.txt" "$SRC_DIR/README_V130_AR.txt"
+          rm -f "$V130_SOURCE_PATCH"
+          (cd "$SRC_DIR" && zip -qr "$V130_SOURCE_PATCH" .)
+          unzip -t "$V130_SOURCE_PATCH"
 
-          rm -f "$V129_SOURCE_PATCH"
-          (cd "$SRC_DIR" && zip -qr "$V129_SOURCE_PATCH" .)
-          unzip -t "$V129_SOURCE_PATCH"
-
-      - name: Patch final APK HTML, validate, align and re-sign
+      - name: Patch final APK HTML, run V130 regression test, align and sign
         shell: bash
         run: |
           set -euo pipefail
           BASE_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.apk"
           V128_APK="$RUNNER_TEMP/sq-release/v128-patched-unsigned.apk"
-          RAW_APK="$RUNNER_TEMP/sq-release/v129-patched-unsigned.apk"
+          V129_APK="$RUNNER_TEMP/sq-release/v129-patched-unsigned.apk"
+          RAW_APK="$RUNNER_TEMP/sq-release/v130-patched-unsigned.apk"
           APK_HTML="$RUNNER_TEMP/sq-release/apk-index.html"
-          ALIGNED_APK="$RUNNER_TEMP/sq-release/v129-aligned.apk"
-          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_FIX.apk"
+          ALIGNED_APK="$RUNNER_TEMP/sq-release/v130-aligned.apk"
+          FINAL_APK="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_FIX.apk"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
 
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
           test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD secret is empty."; exit 1; }
           test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: SURVEYQUANT_KEY_ALIAS secret is empty."; exit 1; }
           test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: SURVEYQUANT_KEY_PASSWORD secret is empty."; exit 1; }
-
           printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
           test -s "$STORE"
 
           python3 "$V128_PATCH_DIR/SurveyQuant_v1.0.128_APPLY_CAD_ZOOM_DWG_PATCH.py" --apk "$BASE_APK" --output "$V128_APK"
-          python3 "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" --apk "$V128_APK" --output "$RAW_APK"
+          python3 "$V129_PATCH_DIR/SurveyQuant_v1.0.129_APPLY_DELETE_UNDO_REDO_PATCH.py" --apk "$V128_APK" --output "$V129_APK"
+          python3 "$V130_PATCHER" --apk "$V129_APK" --output "$RAW_APK"
           unzip -p "$RAW_APK" assets/index.html > "$APK_HTML"
-          node "$V128_PATCH_DIR/SurveyQuant_v1.0.128_CAD_ZOOM_DWG_REGRESSION_TEST.js" "$APK_HTML"
-          node "$V129_PATCH_DIR/SurveyQuant_v1.0.129_DELETE_UNDO_REDO_TEST.js" "$APK_HTML"
+          node "$V130_TEST" "$APK_HTML"
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT" || { echo "ERROR: Android SDK path is unavailable."; exit 1; }
@@ -193,7 +187,6 @@ jobs:
           fi
           test -x "$BUILD_TOOLS/zipalign" || { echo "ERROR: zipalign is not installed."; exit 1; }
           test -x "$BUILD_TOOLS/apksigner" || { echo "ERROR: apksigner is not installed."; exit 1; }
-
           "$BUILD_TOOLS/zipalign" -f -p 4 "$RAW_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS/apksigner" sign \
             --ks "$STORE" \
@@ -203,31 +196,30 @@ jobs:
             --out "$FINAL_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
-          V129_SOURCE_PATCH="$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip"
-          sha256sum "$FINAL_APK" "$V129_SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
-          printf 'V129 entity selection/delete/undo/redo patch validated and APK re-signed.\n' > "$RUNNER_TEMP/sq-release/V129_BUILD_RESULT.txt"
+          sha256sum "$FINAL_APK" "$RUNNER_TEMP/sq-release/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_SOURCE_PATCH.zip" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          printf 'V130 all-project DWG parsing, orientation text transform, and long-press multi-select tests passed.\n' > "$RUNNER_TEMP/sq-release/V130_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
-      - name: Upload v1.0.129 APK, source patch and checksums
+      - name: Upload V130 APK, source patch and checksum files
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.129-SELECT-DELETE-UNDO-REDO
+          name: SurveyQuant-v1.0.130-DWG-AXIS-MULTISELECT
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V129_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V130_BUILD_RESULT.txt
             ${{ runner.temp }}/sq-release/STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/sq-release/source-patch/STORM_CONVERSION_REPORT.md
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload STORM diagnostics if build or validation fails
+      - name: Upload diagnostics even if build fails
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.129-DIAGNOSTICS-${{ github.run_id }}
+          name: SurveyQuant-v1.0.130-DIAGNOSTICS-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/STORM_CONVERSION_REPORT.md
             ${{ runner.temp }}/sq-storm-output/**
