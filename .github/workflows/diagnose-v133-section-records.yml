@@ -97,10 +97,14 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          wf = Path('.github/workflows/build-v132-cad-original-view-preserve.yml')
-          if not wf.is_file():
-              raise SystemExit(f'Cannot find current workflow: {wf}')
-          lines = wf.read_text(encoding='utf-8').splitlines()
+          # The production workflow was renamed to this diagnostic workflow.
+          # Retrieve its embedded V132 patch kit from the immutable pre-rename commit.
+          import subprocess
+          old_spec = '2752ea8d483f2b89f3b5a23bfae4b8687f54ebee:.github/workflows/build-v132-cad-original-view-preserve.yml'
+          proc = subprocess.run(['git', 'show', old_spec], text=True, capture_output=True)
+          if proc.returncode != 0 or not proc.stdout:
+              raise SystemExit('Cannot retrieve the embedded V132 patch kit from the pinned production workflow commit: ' + proc.stderr[-1200:])
+          lines = proc.stdout.splitlines()
           start = next((i for i, line in enumerate(lines) if "<<'V132_PATCH_KIT_BASE64'" in line), None)
           if start is None:
               raise SystemExit('Embedded V132 patch payload marker was not found.')
@@ -221,7 +225,7 @@ jobs:
         with:
           name: SurveyQuant-v133-DWG-DXF-Forensic-Report
           path: forensic-v133-sectionRecords.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Publish forensic report to repository root
