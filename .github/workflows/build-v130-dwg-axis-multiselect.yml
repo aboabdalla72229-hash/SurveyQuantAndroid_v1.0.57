@@ -5,8 +5,7 @@ on:
   push:
     paths:
       - ".github/workflows/build-v130-dwg-axis-multiselect.yml"
-      - "SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
-      - "SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+      - "SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_PATCH.zip"
 
 permissions:
   contents: write
@@ -81,21 +80,28 @@ jobs:
 
           BASE_KIT="SurveyQuant_v1.0.126_DWG_ALL_PROJECTS_V117_BASE_FIX.zip"
           PATCH_KIT="SurveyQuant_v1.0.129_SELECT_DELETE_UNDO_REDO_PATCH.zip"
-          V130_PATCHER="$GITHUB_WORKSPACE/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
-          V130_TEST="$GITHUB_WORKSPACE/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+          V130_KIT="SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_PATCH.zip"
           test -s "$BASE_KIT" || { echo "ERROR: V126 base kit missing: $BASE_KIT"; exit 1; }
           test -s "$PATCH_KIT" || { echo "ERROR: V129 patch kit missing: $PATCH_KIT"; exit 1; }
-          test -s "$V130_PATCHER" || { echo "ERROR: V130 patcher missing: $V130_PATCHER"; exit 1; }
-          test -s "$V130_TEST" || { echo "ERROR: V130 regression test missing: $V130_TEST"; exit 1; }
+          test -s "$V130_KIT" || { echo "ERROR: V130 patch kit missing: $V130_KIT"; exit 1; }
           unzip -t "$BASE_KIT"
           unzip -t "$PATCH_KIT"
+          unzip -t "$V130_KIT"
 
           KIT_DIR="$RUNNER_TEMP/sq-v126-kit"
           PATCH_DIR="$RUNNER_TEMP/sq-v129-patch"
-          rm -rf "$KIT_DIR" "$PATCH_DIR"
-          mkdir -p "$KIT_DIR" "$PATCH_DIR"
+          V130_PATCH_DIR="$RUNNER_TEMP/sq-v130-patch"
+          rm -rf "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR"
+          mkdir -p "$KIT_DIR" "$PATCH_DIR" "$V130_PATCH_DIR"
           unzip -q "$BASE_KIT" -d "$KIT_DIR"
           unzip -q "$PATCH_KIT" -d "$PATCH_DIR"
+          unzip -q "$V130_KIT" -d "$V130_PATCH_DIR"
+
+          V130_PATCHER="$V130_PATCH_DIR/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
+          V130_TEST="$V130_PATCH_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+          test -s "$V130_PATCHER" || { echo "ERROR: V130 patcher is missing inside $V130_KIT"; exit 1; }
+          test -s "$V130_TEST" || { echo "ERROR: V130 regression test is missing inside $V130_KIT"; exit 1; }
+          test -s "$V130_PATCH_DIR/README_V130_AR.txt" || { echo "ERROR: V130 README is missing inside $V130_KIT"; exit 1; }
 
           test -s "$KIT_DIR/SurveyQuant_v1.0.126_RUN_RECIPE.py"
           test -s "$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py"
@@ -111,6 +117,7 @@ jobs:
           echo "V126_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
           echo "V128_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
           echo "V129_PATCH_DIR=$PATCH_DIR" >> "$GITHUB_ENV"
+          echo "V130_PATCH_DIR=$V130_PATCH_DIR" >> "$GITHUB_ENV"
           echo "V130_PATCHER=$V130_PATCHER" >> "$GITHUB_ENV"
           echo "V130_TEST=$V130_TEST" >> "$GITHUB_ENV"
           echo "V117_PATCHER=$KIT_DIR/SurveyQuant_v1.0.117_APPLY_PATCH.py" >> "$GITHUB_ENV"
@@ -146,7 +153,7 @@ jobs:
           node "$V130_TEST" "$SRC_DIR/index.html"
           cp "$V130_PATCHER" "$SRC_DIR/SurveyQuant_v1.0.130_APPLY_DWG_AXIS_MULTISELECT_PATCH.py"
           cp "$V130_TEST" "$SRC_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
-          cp "$GITHUB_WORKSPACE/README_V130_AR.txt" "$SRC_DIR/README_V130_AR.txt"
+          cp "$V130_PATCH_DIR/README_V130_AR.txt" "$SRC_DIR/README_V130_AR.txt"
           rm -f "$V130_SOURCE_PATCH"
           (cd "$SRC_DIR" && zip -qr "$V130_SOURCE_PATCH" .)
           unzip -t "$V130_SOURCE_PATCH"
