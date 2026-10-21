@@ -254,7 +254,7 @@ jobs:
             --out "$FINAL_APK" "$ALIGNED_APK"
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
-          sha256sum "$FINAL_APK" "$V131_SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
+          sha256sum "$FINAL_APK" "$V132_SOURCE_PATCH" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
           printf 'V132 CAD preview cleanup, larger orientation workspace, proportional text zoom, strict reference preservation, and V128-V131 regression tests passed.\n' > "$RUNNER_TEMP/sq-release/V132_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
