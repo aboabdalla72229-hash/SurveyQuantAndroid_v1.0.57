@@ -1,10 +1,10 @@
-name: Build SurveyQuant v1.0.134 - Android WebView classic DWG runtime R3
+name: Build SurveyQuant v1.0.134 - Android WebView classic DWG runtime R4
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v134-webview-classic-dwg-r3.yml"
+      - ".github/workflows/build-v134-webview-classic-dwg-r4.yml"
 
 permissions:
   contents: write
@@ -533,7 +533,12 @@ jobs:
           if(wasm.length<100000 || wasm.subarray(0,4).toString('hex')!=='0061736d') throw new Error('Classic runtime WASM sidecar is invalid');
           JS
           pnpm build
-          test -s dist/libredwg-web.js || { echo "ERROR: IIFE DWG API bundle missing."; exit 1; }
+          # Vite 5 emits a single IIFE as libredwg-web.iife.js by default.
+          # Normalize it to the canonical filename required by the APK patcher.
+          test -s dist/libredwg-web.iife.js || { echo "ERROR: Vite did not produce dist/libredwg-web.iife.js."; exit 1; }
+          cp -f dist/libredwg-web.iife.js dist/libredwg-web.js
+          cmp -s dist/libredwg-web.iife.js dist/libredwg-web.js || { echo "ERROR: canonical IIFE file differs from Vite output."; exit 1; }
+          test -s dist/libredwg-web.js || { echo "ERROR: normalized IIFE DWG API bundle missing."; exit 1; }
           node --check dist/libredwg-web.js
           node --input-type=module <<'JS'
           import fs from 'node:fs';
@@ -675,14 +680,14 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
           sha256sum "$FINAL_APK" "$V134_SOURCE_PATCH" "$V134_STORM_ZIP" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
-          printf '%s\n' 'V134 R3 PASS: two real STORM DWGs converted in Node, WebView classic loader + IIFE runtime packaged offline, local DXF parser, and exact-side convex quadrilateral regression tests.' > "$RUNNER_TEMP/sq-release/V134_BUILD_RESULT.txt"
+          printf '%s\n' 'V134 R4 PASS: two real STORM DWGs converted in Node, WebView classic loader + IIFE runtime packaged offline, local DXF parser, and exact-side convex quadrilateral regression tests.' > "$RUNNER_TEMP/sq-release/V134_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
       - name: Upload V134 APK, source patch, STORM conversion proof and checksums
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.134-WEBVIEW-CLASSIC-DWG-R3
+          name: SurveyQuant-v1.0.134-WEBVIEW-CLASSIC-DWG-R4
           path: |
             ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.134_OFFLINE_DWG_DXF_EXACT_LAND_QUAD_FIX.apk
             ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.134_OFFLINE_DWG_DXF_EXACT_LAND_QUAD_SOURCE_PATCH.zip
