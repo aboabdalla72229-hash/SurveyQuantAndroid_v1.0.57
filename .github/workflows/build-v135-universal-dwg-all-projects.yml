@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: "Optional successful V134 R4 run ID. Leave blank to start a fresh R4 base build automatically."
-        required: false
+        description: "Successful V134 R4 base run ID. The preverified successful run is 39763063697."
+        required: true
         type: string
+        default: "39763063697"
   workflow_run:
     workflows:
       - "Build SurveyQuant v1.0.134 - Android WebView classic DWG runtime R4"
@@ -18,19 +19,6 @@ permissions:
   contents: read
 
 jobs:
-  request_base_build:
-    if: github.event_name == 'workflow_dispatch' && inputs.source_run_id == ''
-    runs-on: ubuntu-latest
-    steps:
-      - name: Start a fresh R4 base build using the fixed local DWG engine workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh workflow run build-v134-webview-classic-dwg-r4.yml --repo "$GITHUB_REPOSITORY" --ref main
-          echo "Requested a clean V134 R4 build. When it succeeds, the V135 universal-DWG job starts automatically."
-
   patch_and_sign:
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
