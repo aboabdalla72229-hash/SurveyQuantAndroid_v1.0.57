@@ -48,18 +48,44 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Set up Android SDK signing tools
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android build tools
+      - name: Configure preinstalled Android SDK
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "build-tools;35.0.0" >/dev/null
-          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
-          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT" || { echo "ERROR: Android SDK directory not found: $SDK_ROOT"; exit 1; }
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager was not found beneath $SDK_ROOT/cmdline-tools."; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          if [ -d "$SDK_ROOT/platform-tools" ]; then echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"; fi
+          echo "Using preinstalled Android SDK at $SDK_ROOT"
+          echo "Using sdkmanager: $SDKMANAGER"
+
+      - name: Install Android build tools without deprecated setup-android action
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager was not found beneath $SDK_ROOT/cmdline-tools."; exit 1; }
+          # Accept SDK licenses; the legacy SDK-tools package is no longer in the current package index.
+          # Disable pipefail only for this pipeline so 'yes' closing on EOF cannot mask sdkmanager's status.
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
+          echo "PASS: Android SDK configured; build-tools 35.0.0 has zipalign, apksigner, and aapt."
 
       - name: Write audited V135 patcher and regression test
         shell: bash
