@@ -204,23 +204,36 @@ jobs:
           const j=JSON.parse(fs.readFileSync(p,'utf8'));
           const before=j.scripts['build:prepare'];
           if(!before) throw new Error('Missing build:prepare');
-          j.scripts['build:prepare']=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
-          if(/--disable-write\b|--disable-dxf\b/.test(j.scripts['build:prepare'])) throw new Error('Writer flags still disabled');
+          let prepare=before.replace(/\s--disable-write\b/g,'').replace(/\s--disable-dxf\b/g,'');
+          if(/--disable-write\b|--disable-dxf\b/.test(prepare)) throw new Error('Writer flags still disabled');
+          // The previous -O2 build still failed while wasm-emscripten-finalize parsed
+          // a function with too many locals. Build both C objects and embind glue for
+          // size, using -Os so optimization coalesces locals before finalization.
+          const cflags=(prepare.match(/CFLAGS="[^"]*"/)||[])[0];
+          if(!cflags) throw new Error('Could not find configure CFLAGS in build:prepare');
+          const compactCflags=cflags.replace(/-O[0-3sSz]+\b/,'-Os');
+          if(compactCflags===cflags || !/CFLAGS="-Os(?:\s|\")/.test(compactCflags))
+            throw new Error('Could not switch configure CFLAGS to -Os');
+          prepare=prepare.replace(cflags,compactCflags);
+          j.scripts['build:prepare']=prepare;
           const obj=j.scripts['build:obj'];
           if(!obj) throw new Error('Missing build:obj');
           j.scripts['build:obj']=obj.replace(/emmake\s+make(?=\s|$)/,'emmake make -C src');
           const wasm=j.scripts['build:wasm'];
           if(!wasm) throw new Error('Missing build:wasm');
-          // Do not set SINGLE_FILE=1: Emscripten wasm-emscripten-finalize failed
-          // on this large LibreDWG module with "parse exception: too many locals".
-          // Keep normal JS + separate WASM output, matching the known-good V115 builder.
-          j.scripts['build:wasm']=wasm.replace(/\s-s\s+SINGLE_FILE=1\b/g,'');
-          if(/SINGLE_FILE=1/.test(j.scripts['build:wasm'])) throw new Error('SINGLE_FILE must remain disabled for this engine build');
+          // -O2 had the same too-many-locals finalizer failure after SINGLE_FILE was
+          // removed. Switch the embind translation units and link step to -Os too.
+          let compactWasm=wasm.replace(/(^|\s)-O2(?=\s)/,'$1-Os');
+          compactWasm=compactWasm.replace(/\s-s\s+SINGLE_FILE=1\b/g,'');
+          if(compactWasm===wasm || !/(^|\s)-Os(?=\s)/.test(compactWasm))
+            throw new Error('Could not switch build:wasm optimization to -Os');
+          if(/SINGLE_FILE=1/.test(compactWasm)) throw new Error('SINGLE_FILE must remain disabled for this engine build');
+          j.scripts['build:wasm']=compactWasm;
           const cp=j.scripts.copy;
           if(!cp) throw new Error('Missing copy script');
           if(!/libredwg-web\.wasm/.test(cp)) throw new Error('copy script must copy separate libredwg-web.wasm');
           fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
-          console.log('PASS: writer enabled, object build scoped to src, SINGLE_FILE disabled, separate WASM sidecar retained.');
+          console.log('PASS: writer enabled, CFLAGS=-Os, build:wasm=-Os, SINGLE_FILE disabled, separate WASM sidecar retained.');
           JS
 
           cd "$LIBJS"
@@ -231,6 +244,11 @@ jobs:
           test -s ../../build-wasm/src/encode.o || { echo "ERROR: encode.o missing; DWG/DXF support not built."; exit 1; }
           pnpm build:wasm
           pnpm copy
+          test -s wasm/libredwg-web.wasm || { echo "ERROR: build/copy did not produce the separate WASM binary."; exit 1; }
+          # Independent validator: do not continue to APK packaging if the output still
+          # contains malformed or unsupported local declarations.
+          wasm-opt wasm/libredwg-web.wasm --validate -o "$RUNNER_TEMP/v134-libredwg-validated.wasm"
+          test -s "$RUNNER_TEMP/v134-libredwg-validated.wasm"
           pnpm build
           test -s dist/libredwg-web.js
           test -s wasm/libredwg-web.js
@@ -246,7 +264,7 @@ jobs:
           cat > "$ENGINE_DIR/BUILD_CONFIGURATION_V134.txt" <<'TXT'
           SurveyQuant v1.0.134 local CAD runtime
           Upstream: mlightcad/libredwg-web v0.7.14, GPL-3.0
-          Built with DXF writing enabled. WebAssembly remains a separate libredwg-web.wasm file to avoid the Emscripten SINGLE_FILE finalize error.
+          Built with DXF writing enabled using -Os for both configure CFLAGS and the embind/link step to reduce excessive WebAssembly local variables. WebAssembly remains a separate libredwg-web.wasm file.
           The dist JS module, WASM JS loader, and WASM binary are all bundled inside APK assets. No jsDelivr/unpkg runtime fetch is expected.
           TXT
 
