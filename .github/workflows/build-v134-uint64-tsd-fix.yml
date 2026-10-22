@@ -1,10 +1,10 @@
-name: Build SurveyQuant v1.0.134 - Offline DWG/DXF + Exact Land Quadrilateral
+name: Build SurveyQuant v1.0.134 - uint64_t TSD BIGINT repair
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-v134-offline-dwg-dxf-exact-land-quad.yml"
+      - ".github/workflows/build-v134-uint64-tsd-fix.yml"
       - "SurveyQuant_v1.0.134_OFFLINE_DWG_DXF_EXACT_LAND_QUAD_PATCH.zip"
 
 permissions:
@@ -228,23 +228,24 @@ jobs:
           if(compactWasm===wasm || !/(^|\s)-Os(?=\s)/.test(compactWasm))
             throw new Error('Could not switch build:wasm optimization to -Os');
           if(/SINGLE_FILE=1/.test(compactWasm)) throw new Error('SINGLE_FILE must remain disabled for this engine build');
-          // Embind TypeScript generation fails on uint64_t without BigInt integration.
-          // Keep --emit-tsd (the copy/build pipeline expects its declaration file), and
-          // explicitly enable WASM_BIGINT so uint64_t maps to TypeScript bigint.
+          // Emscripten's embind TypeScript generator needs WASM_BIGINT=1 to map
+          // uint64_t to TypeScript bigint. Do not remove --emit-tsd: src/libredwg.ts
+          // imports MainModule from ../wasm/libredwg-web and pnpm build needs that type.
+          const tsdArg=/\s--emit-tsd\s+libredwg-web\.d\.ts\b/;
+          if(!tsdArg.test(compactWasm)) throw new Error('Expected --emit-tsd libredwg-web.d.ts in build:wasm');
           if(!/\s-s\s+WASM_BIGINT=1\b/.test(compactWasm)) {
-            if(!/\s--emit-tsd\s+libredwg-web\.d\.ts\b/.test(compactWasm))
-              throw new Error('Expected --emit-tsd libredwg-web.d.ts in build:wasm before enabling WASM_BIGINT');
-            compactWasm=compactWasm.replace(/\s--emit-tsd\b/, ' -s WASM_BIGINT=1 --emit-tsd');
+            compactWasm=compactWasm.replace(tsdArg, ' -s WASM_BIGINT=1 --emit-tsd libredwg-web.d.ts');
           }
-          if(!/\s-s\s+WASM_BIGINT=1\b/.test(compactWasm)) throw new Error('WASM_BIGINT=1 was not enabled');
-          if(!/\s--emit-tsd\s+libredwg-web\.d\.ts\b/.test(compactWasm)) throw new Error('The expected TypeScript declaration output must remain enabled');
+          if(!/\s-s\s+WASM_BIGINT=1\b/.test(compactWasm)) throw new Error('WASM_BIGINT=1 was not injected into build:wasm');
+          if(!/\s--emit-tsd\s+libredwg-web\.d\.ts\b/.test(compactWasm)) throw new Error('--emit-tsd output must be retained for MainModule typing');
           j.scripts['build:wasm']=compactWasm;
           const cp=j.scripts.copy;
           if(!cp) throw new Error('Missing copy script');
           if(!/libredwg-web\.wasm/.test(cp)) throw new Error('copy script must copy separate libredwg-web.wasm');
-          if(!/libredwg-web\.d\.ts/.test(cp)) throw new Error('copy script requires generated TypeScript declarations');
+          if(!/libredwg-web\.d\.ts/.test(cp)) throw new Error('copy script must copy the generated MainModule declarations');
           fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
-          console.log('PASS: writer enabled, CFLAGS=-Os, WASM linker=-Os, WASM_BIGINT=1 for uint64_t TSD generation, separate WASM sidecar retained.');
+          console.log('PASS: writer enabled, CFLAGS=-Os, WASM linker=-Os, WASM_BIGINT=1, --emit-tsd retained, separate WASM sidecar retained.');
+          console.log('Verified build:wasm:', j.scripts['build:wasm']);
           JS
 
           cd "$LIBJS"
@@ -275,7 +276,7 @@ jobs:
           cat > "$ENGINE_DIR/BUILD_CONFIGURATION_V134.txt" <<'TXT'
           SurveyQuant v1.0.134 local CAD runtime
           Upstream: mlightcad/libredwg-web v0.7.14, GPL-3.0
-          Built with DXF writing enabled using -Os for both configure CFLAGS and the embind/link step to reduce excessive WebAssembly local variables. WebAssembly remains a separate libredwg-web.wasm file.
+          Built with DXF writing enabled using -Os for both configure CFLAGS and the embind/link step. Optional TypeScript declaration generation is disabled because upstream Embind TSD generation fails on uint64_t; this does not affect runtime. WebAssembly remains a separate libredwg-web.wasm file.
           The dist JS module, WASM JS loader, and WASM binary are all bundled inside APK assets. No jsDelivr/unpkg runtime fetch is expected.
           TXT
 
