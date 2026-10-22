@@ -97,9 +97,10 @@ jobs:
           #!/usr/bin/env python3
           """V135: detect CAD-board inputs across existing and dynamically-created projects.
           
-          Patches only the shared V117/V126 DWG bridge in HTML, or the same asset in an APK.
-          DWG files are converted by the app's existing LibreDWG bridge to a temporary DXF;
-          this patch does not rewrite the selected source DWG or redraw entities.
+          Patches only the shared V117/V126 DWG picker gate in HTML, or the same asset in an APK.
+          The gate expands accepted file types and leaves selected DWG files to the app's existing
+          native project handler. It neither rewrites the source DWG nor redraws/replaces entities.
+          The orientation project's independent temporary conversion behavior remains untouched.
           """
           from __future__ import annotations
           
@@ -488,7 +489,7 @@ jobs:
           assert(bridge.includes('strongCadHint'), 'CAD context detector missing');
           assert(bridge.includes('MutationObserver'), 'dynamically-created project pickers must be monitored');
           assert(bridge.includes('window.__sqV117DwgBridgeAPI'), 'original V117 bridge API is missing');
-          assert(bridge.includes('window.__sqOriAxisAutoTest'), 'native app DWG converter lookup must remain available');
+          assert(html.includes('window.__sqOriAxisAutoTest'), 'native app DWG converter lookup must remain available outside the shared picker bridge');
           assert(bridge.includes('function universalTransformBytes') === false,
             'universalTransformBytes belongs to the app drawing engine, not the bridge itself');
           assert(html.includes('function universalTransformBytes(input,t)'), 'byte-preserving CAD transform was removed');
@@ -601,21 +602,20 @@ jobs:
               return true;
             };
             const original = new TestEvent('change', { bubbles: true });
-            original.target = genericProjection;
-            for (const handler of listeners.change || []) handler(original);
-            assert(original.defaultPrevented && original.immediateStopped, 'DWG input event must wait for native conversion');
-            for (let i = 0; i < 50 && (genericProjection.__sqV117DwgBusy || genericProjection.files.some(f => /\.dwg$/i.test(f.name))); i++) {
-              await new Promise(resolve => setTimeout(resolve, 0));
-            }
-            assert.equal(genericProjection.files.length, 1, 'project must receive exactly one temporary DXF');
-            assert.equal(genericProjection.files[0].name, 'Unknown-Project-Board.dxf', 'DWG must pass to the original handler as DXF');
-            assert.equal(genericProjection.projectChangeCount, 1, 'converted file must invoke the original project handler exactly once');
+            genericProjection.dispatchEvent(original);
+            assert(!original.defaultPrevented && !original.immediateStopped,
+              'shared picker bridge must not intercept or replace native DWG change events');
+            assert.equal(genericProjection.projectChangeCount, 1,
+              'the selected DWG must continue through the existing project handler exactly once');
+            assert.equal(genericProjection.files.length, 1, 'the existing project handler must retain the selected source file');
+            assert.equal(genericProjection.files[0], source, 'the bridge must not substitute a temporary or redrawn file');
+            assert.equal(genericProjection.files[0].name, 'Unknown-Project-Board.DwG', 'the original DWG name and extension must remain intact');
             assert.equal(source.name, 'Unknown-Project-Board.DwG', 'original DWG object must remain unchanged');
-            assert.deepEqual(calls, ['Unknown-Project-Board.DwG'], 'native app converter must execute exactly once');
-            assert.deepEqual(Array.from(genericProjection.files[0].parts[0]), Array.from(testBytes), 'bridge must pass through converter bytes without redraw');
+            assert.equal(calls.length, 0, 'the generic picker bridge must not run orientation-only conversion');
+            assert.deepEqual(Array.from(source.parts[0]), Array.from(testBytes), 'source DWG bytes must remain unchanged');
             console.log('PASS V135: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
-            console.log('PASS V135: dynamically created board inputs are recognized; converted DXF returns through the existing project handler once.');
-            console.log('PASS V135: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; source DWG is untouched.');
+            console.log('PASS V135: dynamically created board inputs are recognized; native file-change handling is preserved.');
+            console.log('PASS V135: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; original DWG is untouched.');
           })().catch(error => { console.error(error); process.exitCode = 1; });
           JS
           python3 -m py_compile "$PATCHER"
@@ -670,7 +670,7 @@ jobs:
           
           - يوسّع جسر استيراد DWG المشترك بحيث يكتشف خانات اختيار اللوحات من نوع الملف أو اسم/عنوان الخانة أو سياق المشروع، حتى لو لم تكن ضمن قائمة IDs القديمة.
           - يشمل مشروع إسقاط الملفات ومشروعات الدمج والتوجيه والحصر والخرسانة وأي خانة ديناميكية يضيفها المشروع بعنوان يدل على لوحة CAD.
-          - يمرر DWG إلى محوّل LibreDWG المحلي الموجود بالتطبيق، ثم يسلّم DXF مؤقتًا إلى معالج المشروع الأصلي. لا يكتب فوق ملف DWG المحدد ولا يعيد رسم اللوحة من الصفر.
+          - يوسّع امتدادات خانات اختيار لوحات CAD لتشمل DWG ويُبقي معالجة الملف لدى قارئ DWG الأصلي للمشروع؛ لا يستبدل ملف DWG بـ DXF معاد رسمه ولا يكتب فوق الملف المحدد. التحويل المؤقت الخاص بمشروع التوجيه يظل كما هو في النسخة الأساسية.
           - يستثني خانات ملفات النقاط النصية TXT/CSV/SDR/PNT والصور وPDF حتى لا تتحول أداة نقاط أو صور إلى مستورد لوحات.
           - لا يعدّل هندسة الإسقاط أو التوجيه خارج كتلة الجسر المشتركة.
           - يرفع إصدار Android إلى 1.0.135/135 لإتاحة التحديث فوق النسخة السابقة.
