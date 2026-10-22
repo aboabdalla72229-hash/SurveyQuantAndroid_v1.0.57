@@ -1,0 +1,709 @@
+name: Build SurveyQuant v1.0.135 - Universal DWG for Every Drawing Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Optional successful V134 R4 run ID. Leave blank to start a fresh R4 base build automatically."
+        required: false
+        type: string
+  workflow_run:
+    workflows:
+      - "Build SurveyQuant v1.0.134 - Android WebView classic DWG runtime R4"
+    types:
+      - completed
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  request_base_build:
+    if: github.event_name == 'workflow_dispatch' && inputs.source_run_id == ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start a fresh R4 base build using the fixed local DWG engine workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-v134-webview-classic-dwg-r4.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Requested a clean V134 R4 build. When it succeeds, the V135 universal-DWG job starts automatically."
+
+  patch_and_sign:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.source_run_id != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+    steps:
+      - name: Check out repository for provenance and output metadata
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js regression runner
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Android SDK signing tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "build-tools;35.0.0" >/dev/null
+          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+      - name: Write audited V135 patcher and regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_PATCH.py"
+          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js"
+          cat > "$PATCHER" <<'PY'
+          #!/usr/bin/env python3
+          """V135: detect CAD-board inputs across existing and dynamically-created projects.
+          
+          Patches only the shared V117/V126 DWG bridge in HTML, or the same asset in an APK.
+          DWG files are converted by the app's existing LibreDWG bridge to a temporary DXF;
+          this patch does not rewrite the selected source DWG or redraw entities.
+          """
+          from __future__ import annotations
+          
+          import argparse
+          import copy
+          import re
+          import struct
+          import sys
+          import zipfile
+          from pathlib import Path
+          
+          BRIDGE_ID = "sq-v117-universal-dwg-bridge"
+          MARKER = "SQ_V135_UNIVERSAL_CAD_INPUT_GATE"
+          TARGET_APP_VERSION_CODE = 135
+          TARGET_APP_VERSION_NAME = "1.0.135"
+          OLD_APP_VERSION_NAME = "1.0.126"
+          
+          NEW_FUNCTION = r'''  function isCadInput(input) {
+              /* SQ_V135_UNIVERSAL_CAD_INPUT_GATE
+                 Detect CAD-board inputs from file type, control identity, and nearby project labels.
+                 This includes file controls created after startup by separate project screens. */
+              if (!input || String(input.tagName || '').toLowerCase() !== 'input' ||
+                  String(input.type || '').toLowerCase() !== 'file') return false;
+          
+              var id = String(input.id || '');
+              var name = String(input.name || '');
+              if (NON_CAD_DATA_IDS.has(id)) return false;
+              if (CAD_INPUT_IDS.has(id)) return true;
+          
+              var accept = String(input.accept || '').split(',').map(function (item) {
+                return item.trim().toLowerCase();
+              }).filter(Boolean);
+              var explicitCad = accept.some(function (item) {
+                return item === '.dwg' || item === '.dxf' ||
+                  item === 'application/dwg' || item === 'application/x-dwg' ||
+                  item === 'application/dxf' || item === 'application/x-dxf' ||
+                  item === 'application/acad' || item === 'application/x-acad' ||
+                  item === 'image/vnd.dwg';
+              });
+              if (explicitCad) return true;
+          
+              var hints = [id, name, input.title || '', input.placeholder || ''];
+              if (typeof input.getAttribute === 'function') {
+                ['aria-label', 'data-project', 'data-role', 'data-import-kind', 'title', 'placeholder'].forEach(function (key) {
+                  var value = input.getAttribute(key);
+                  if (value) hints.push(value);
+                });
+              }
+              try {
+                Array.prototype.slice.call(input.labels || []).forEach(function (label) {
+                  if (label && label.textContent) hints.push(label.textContent);
+                });
+              } catch (_) {}
+              try {
+                var node = input.parentElement;
+                for (var depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+                  if (node.textContent) hints.push(String(node.textContent).slice(0, 320));
+                  if (node.tagName && String(node.tagName).toLowerCase() === 'body') break;
+                }
+              } catch (_) {}
+          
+              var context = hints.join(' ').toLowerCase().replace(/\s+/g, ' ');
+              var mediaOrPointType = accept.some(function (item) {
+                return /^(?:\.sdr|\.pnt|\.pt|\.csv|\.txt|\.dat|\.pdf|\.png|\.jpe?g|\.webp|\.bmp|\.gif|\.heic|\.tiff?|\.xlsx?|\.ods|\.json|\.kml|\.kmz|\.gpx|text\/plain|text\/csv|application\/pdf|image\/)/i.test(item);
+              });
+              var hasGenericType = accept.some(function (item) {
+                return item === '*/*' || item === 'application/octet-stream';
+              });
+              var pointOrMediaHint = /(?:\b(?:point[\s_-]*list|point[\s_-]*file|survey[\s_-]*points|file[\s_-]*to[\s_-]*dxf|clean[\s_-]*files|clean[\s_-]*points|image|photo|picture|raster|pdf|spreadsheet|excel)\b)|(?:قائمة\s*نقاط|نقاط\s*(?:المساحة|الرفع|الإحداثيات)|ملف\s*نقاط|تنظيف\s*الملفات|صورة|صور|ملف\s*PDF)/i.test(context);
+              if (pointOrMediaHint || (mediaOrPointType && !hasGenericType)) return false;
+          
+              var strongCadHint = /(?:\b(?:cad|dwg|dxf|drawing|board|blueprint|plan|projection|overlay|merge|orientation|section|concrete|quantity|grading|reference[\s_-]*board|target[\s_-]*board|source[\s_-]*board|import[\s_-]*drawing)\b)|(?:لوح|لوحة|رسم|اسقاط|إسقاط|توجيه|دمج|حصر|خرسانة|كميات|قطاع|القطاع|مرجع\s*اللوح|لوحة\s*المرجع|لوحة\s*الهدف|لوحة\s*المصدر)/i.test(context);
+              if (strongCadHint) return true;
+          
+              /* Generic */
+              return false;
+            }'''
+          
+          
+          def replace_bridge_function(html: str) -> str:
+              tag = re.compile(
+                  r'(<script\s+id=["\']' + re.escape(BRIDGE_ID) + r'["\']\s*>)([\s\S]*?)(</script\s*>)',
+                  re.I,
+              )
+              matches = list(tag.finditer(html))
+              if len(matches) != 1:
+                  raise SystemExit(f"ERROR V135: expected one embedded {BRIDGE_ID} script; found {len(matches)}.")
+              match = matches[0]
+              bridge = match.group(2)
+              function_re = re.compile(
+                  r"(?m)^  function isCadInput\(input\) \{[\s\S]*?^  \}\n[ \t]*\n?  function addAcceptedTypes",
+                  re.M,
+              )
+              found = list(function_re.finditer(bridge))
+              if len(found) != 1:
+                  raise SystemExit(f"ERROR V135: expected one isCadInput function; found {len(found)}. Apply V126 first.")
+              replacement = NEW_FUNCTION + "\n\n  function addAcceptedTypes"
+              patched_bridge = function_re.sub(lambda _m: replacement, bridge, count=1)
+              if patched_bridge.count(MARKER) != 1:
+                  raise SystemExit("ERROR V135: universal CAD input marker was not inserted exactly once.")
+              if "var CAD_INPUT_IDS = new Set([" not in patched_bridge or \
+                 "var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);" not in patched_bridge:
+                  raise SystemExit("ERROR V135: V126 file input allow/deny lists changed unexpectedly.")
+              if "if (!isCadInput(input)) return;" not in patched_bridge:
+                  raise SystemExit("ERROR V135: shared accepted-types handler no longer uses isCadInput.")
+              result = html[:match.start(2)] + "\n" + patched_bridge.rstrip() + "\n" + html[match.end(2):]
+              if result.count(MARKER) != 1 or result.count('id="' + BRIDGE_ID + '"') != 1:
+                  raise SystemExit("ERROR V135: final HTML has missing or duplicate bridge code.")
+          
+              # Keep app-side update checks aligned with the APK's Android package version.
+              version_re = re.compile(r"(?m)(const\s+SQ_APP_VERSION_CODE\s*=\s*)(126|135)(\s*;)")
+              version_matches = list(version_re.finditer(result))
+              if len(version_matches) != 1:
+                  raise SystemExit(f"ERROR V135: expected one SQ_APP_VERSION_CODE value (126/135); found {len(version_matches)}.")
+              version_match = version_matches[0]
+              result = result[:version_match.start()] + version_match.group(1) + "135" + version_match.group(3) + result[version_match.end():]
+              if "function universalTransformBytes(input,t)" not in result or "dwg_write_dxf(bytes.buffer)" not in result:
+                  raise SystemExit("ERROR V135: byte-preserving CAD transform or existing DWG writer is missing.")
+              return result
+          
+          
+          def patch_html(path: Path) -> None:
+              original = path.read_text(encoding="utf-8")
+              updated = replace_bridge_function(original)
+              path.write_text(updated, encoding="utf-8")
+              print("PASS V135: all CAD-board pickers are detected by input type or board/project context.")
+              print("PASS V135: point-list-only and photo/PDF-only controls remain excluded.")
+              print("PASS V135: V117 converter and original orientation/geometry code outside the bridge are unchanged.")
+          
+          
+          def _read_len8(data: bytes, pos: int) -> tuple[int, int]:
+              first = data[pos]
+              if first & 0x80:
+                  return (((first & 0x7F) << 8) | data[pos + 1]), pos + 2
+              return first, pos + 1
+          
+          
+          def _read_len16(data: bytes, pos: int) -> tuple[int, int]:
+              first = struct.unpack_from("<H", data, pos)[0]
+              if first & 0x8000:
+                  second = struct.unpack_from("<H", data, pos + 2)[0]
+                  return (((first & 0x7FFF) << 16) | second), pos + 4
+              return first, pos + 2
+          
+          
+          def _string_pool(data: bytes, chunk_start: int, chunk_size: int, header_size: int) -> tuple[list[str], list[tuple[int, int, bool]]]:
+              if header_size < 28 or chunk_start + chunk_size > len(data):
+                  raise ValueError("invalid Android binary XML string pool")
+              string_count, _style_count, flags, strings_start, _styles_start = struct.unpack_from("<IIIII", data, chunk_start + 8)
+              if string_count > 100_000:
+                  raise ValueError("unreasonable Android XML string count")
+              offsets_start = chunk_start + header_size
+              strings_base = chunk_start + strings_start
+              utf8 = bool(flags & 0x100)
+              strings: list[str] = []
+              spans: list[tuple[int, int, bool]] = []
+              for index in range(string_count):
+                  rel = struct.unpack_from("<I", data, offsets_start + index * 4)[0]
+                  p = strings_base + rel
+                  if utf8:
+                      _u16_len, p = _read_len8(data, p)
+                      byte_len, p = _read_len8(data, p)
+                      begin = p
+                      end = begin + byte_len
+                      strings.append(data[begin:end].decode("utf-8", errors="strict"))
+                      spans.append((begin, end, True))
+                  else:
+                      char_len, p = _read_len16(data, p)
+                      begin = p
+                      end = begin + char_len * 2
+                      strings.append(data[begin:end].decode("utf-16le", errors="strict"))
+                      spans.append((begin, end, False))
+              return strings, spans
+          
+          
+          def patch_binary_manifest(manifest: bytes, version_code: int = TARGET_APP_VERSION_CODE,
+                                    version_name: str = TARGET_APP_VERSION_NAME) -> bytes:
+              if len(manifest) < 8 or struct.unpack_from("<H", manifest, 0)[0] != 0x0003:
+                  raise ValueError("AndroidManifest.xml is not Android binary XML")
+              result = bytearray(manifest)
+              pos = struct.unpack_from("<H", result, 2)[0]
+              total_size = struct.unpack_from("<I", result, 4)[0]
+              if total_size > len(result) or total_size < pos:
+                  raise ValueError("invalid Android binary XML size")
+              strings: list[str] | None = None
+              spans: list[tuple[int, int, bool]] = []
+              pool_info: tuple[int, int, int] | None = None
+              chunks = []
+              while pos < total_size:
+                  if pos + 8 > total_size:
+                      raise ValueError("truncated Android XML chunk header")
+                  chunk_type, header_size, chunk_size = struct.unpack_from("<HHI", result, pos)
+                  if chunk_size < header_size or pos + chunk_size > total_size:
+                      raise ValueError("invalid Android XML chunk bounds")
+                  chunks.append((pos, chunk_type, header_size, chunk_size))
+                  if chunk_type == 0x0001:
+                      strings, spans = _string_pool(bytes(result), pos, chunk_size, header_size)
+                      pool_info = (pos, chunk_size, header_size)
+                  pos += chunk_size
+              if strings is None or pool_info is None:
+                  raise ValueError("Android XML string pool not found")
+          
+              # versionName string is same length (1.0.126 -> 1.0.135), so pool offsets stay valid.
+              old_names = [i for i, value in enumerate(strings) if value == OLD_APP_VERSION_NAME]
+              if not old_names and version_name not in strings:
+                  raise ValueError(f"Android manifest string pool has neither {OLD_APP_VERSION_NAME!r} nor {version_name!r}")
+              for idx in old_names:
+                  begin, end, is_utf8 = spans[idx]
+                  encoded = version_name.encode("utf-8") if is_utf8 else version_name.encode("utf-16le")
+                  if len(encoded) != end - begin:
+                      raise ValueError("versionName replacement changes string-pool byte length")
+                  result[begin:end] = encoded
+                  strings[idx] = version_name
+          
+              # Locate the manifest root's android:versionCode typed value and replace its integer.
+              version_fields = []
+              for chunk_pos, chunk_type, header_size, chunk_size in chunks:
+                  if chunk_type != 0x0102 or chunk_size < 36:
+                      continue
+                  node_name_idx = struct.unpack_from("<I", result, chunk_pos + 20)[0]
+                  if node_name_idx >= len(strings) or strings[node_name_idx] != "manifest":
+                      continue
+                  attr_start = struct.unpack_from("<H", result, chunk_pos + 24)[0]
+                  attr_size = struct.unpack_from("<H", result, chunk_pos + 26)[0]
+                  attr_count = struct.unpack_from("<H", result, chunk_pos + 28)[0]
+                  if attr_size < 20 or attr_count > 1024:
+                      raise ValueError("invalid manifest attribute table")
+                  first_attr = chunk_pos + 16 + attr_start
+                  for n in range(attr_count):
+                      at = first_attr + n * attr_size
+                      name_idx = struct.unpack_from("<I", result, at + 4)[0]
+                      if name_idx >= len(strings) or strings[name_idx] != "versionCode":
+                          continue
+                      value_size = struct.unpack_from("<H", result, at + 12)[0]
+                      value_type = result[at + 15]
+                      if value_size < 8 or value_type not in (0x10, 0x11):
+                          raise ValueError("manifest versionCode is not a typed integer")
+                      version_fields.append(at + 16)
+              if len(version_fields) != 1:
+                  raise ValueError(f"expected exactly one manifest versionCode field, found {len(version_fields)}")
+              struct.pack_into("<I", result, version_fields[0], version_code)
+              return bytes(result)
+          
+          
+          def patch_apk(input_apk: Path, output_apk: Path) -> None:
+              if not input_apk.is_file() or input_apk.stat().st_size == 0:
+                  raise SystemExit("ERROR V135: input APK is missing or empty.")
+              if input_apk.resolve() == output_apk.resolve():
+                  raise SystemExit("ERROR V135: output APK must differ from input APK.")
+              output_apk.parent.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(input_apk, "r") as zin:
+                  names = [info.filename for info in zin.infolist()]
+                  if names.count("assets/index.html") != 1:
+                      raise SystemExit("ERROR V135: input APK must contain exactly one assets/index.html.")
+                  if names.count("AndroidManifest.xml") != 1:
+                      raise SystemExit("ERROR V135: input APK must contain exactly one AndroidManifest.xml.")
+                  seen = set()
+                  with zipfile.ZipFile(output_apk, "w", allowZip64=True) as zout:
+                      for info in zin.infolist():
+                          name = info.filename
+                          if name in seen:
+                              raise SystemExit("ERROR V135: duplicate APK ZIP entry: " + name)
+                          seen.add(name)
+                          upper = name.upper()
+                          if upper.startswith("META-INF/") and (
+                              upper.endswith(".SF") or upper.endswith(".RSA") or upper.endswith(".DSA") or
+                              upper.endswith(".EC") or upper.endswith("MANIFEST.MF")
+                          ):
+                              continue
+                          data = zin.read(name)
+                          if name == "assets/index.html":
+                              html = data.decode("utf-8")
+                              data = replace_bridge_function(html).encode("utf-8")
+                          elif name == "AndroidManifest.xml":
+                              data = patch_binary_manifest(data)
+                          clone = copy.copy(info)
+                          # The destination zip must not retain the old APK's data descriptors or signatures.
+                          zout.writestr(clone, data)
+              with zipfile.ZipFile(output_apk, "r") as check:
+                  html = check.read("assets/index.html").decode("utf-8")
+                  manifest = check.read("AndroidManifest.xml")
+                  if html.count(MARKER) != 1:
+                      raise SystemExit("ERROR V135: APK output is missing the V135 HTML gate.")
+                  patch_binary_manifest(manifest)  # validates the resulting manifest can be safely updated again
+                  if "assets/libredwg-writer/wasm/libredwg-web.wasm" not in check.namelist():
+                      raise SystemExit("ERROR V135: APK output lost the local DWG WebAssembly engine.")
+              print("PASS V135: shared DWG picker gate patched in APK assets; package version raised to 1.0.135/135.")
+              print("PASS V135: source DWG is not written over; app's local DWG/DXF engine and all unrelated assets are retained.")
+          
+          
+          def _make_axml_test_fixture() -> bytes:
+              """Build a small valid-enough binary XML manifest for the self-test."""
+              strings = ["manifest", "versionCode", "versionName", OLD_APP_VERSION_NAME]
+              enc_strings = []
+              offsets = []
+              for s in strings:
+                  raw = s.encode("utf-8")
+                  encoded = bytes([len(s), len(raw)]) + raw + b"\0"
+                  offsets.append(sum(len(item) for item in enc_strings))
+                  enc_strings.append(encoded)
+              data_strings = b"".join(enc_strings)
+              pool_header_size = 28
+              offsets_bytes = b"".join(struct.pack("<I", off) for off in offsets)
+              strings_start = pool_header_size + len(offsets_bytes)
+              pool_size = strings_start + len(data_strings)
+              pool = struct.pack("<HHI", 0x0001, pool_header_size, pool_size)
+              pool += struct.pack("<IIIII", len(strings), 0, 0x100, strings_start, 0)
+              pool += offsets_bytes + data_strings
+          
+              # Attributes follow the ResXMLTree_attrExt (20 bytes). Each attribute is 20 bytes.
+              node_header = struct.pack("<HHIII", 0x0102, 16, 16 + 20 + 40, 1, 0xFFFFFFFF)
+              attr_ext = struct.pack("<IIHHHHHH", 0xFFFFFFFF, 0, 20, 20, 2, 0, 0, 0)
+              # Namespace, name index, rawValue index, typedValue.size, res0, type, data.
+              attr_code = struct.pack("<IIIHBBI", 0xFFFFFFFF, 1, 0xFFFFFFFF, 8, 0, 0x10, 126)
+              attr_name = struct.pack("<IIIHBBI", 0xFFFFFFFF, 2, 3, 8, 0, 0x03, 3)
+              start_element = node_header + attr_ext + attr_code + attr_name
+              end_element = struct.pack("<HHIIIII", 0x0103, 16, 24, 1, 0xFFFFFFFF, 0xFFFFFFFF, 0)  # element name index 0
+              size = 8 + len(pool) + len(start_element) + len(end_element)
+              xml_header = struct.pack("<HHI", 0x0003, 8, size)
+              return xml_header + pool + start_element + end_element
+          
+          
+          def self_test() -> None:
+              fixture = _make_axml_test_fixture()
+              result = patch_binary_manifest(fixture)
+              again = patch_binary_manifest(result)
+              if len(fixture) != len(result) or len(result) != len(again):
+                  raise SystemExit("FAIL V135 self-test: manifest patch changed binary XML length")
+              # Root versionCode is the final typed data word in the first attribute.
+              chunks = []
+              pos = 8
+              while pos < len(result):
+                  typ, hdr, size = struct.unpack_from("<HHI", result, pos)
+                  chunks.append((pos, typ, hdr, size))
+                  pos += size
+              strings_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0001)
+              strings, _spans = _string_pool(result, strings_chunk, struct.unpack_from("<I", result, strings_chunk + 4)[0], 28)
+              if TARGET_APP_VERSION_NAME not in strings:
+                  raise SystemExit("FAIL V135 self-test: versionName was not updated")
+              code_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0102)
+              attr_start = struct.unpack_from("<H", result, code_chunk + 24)[0]
+              attr0 = code_chunk + 16 + attr_start
+              actual = struct.unpack_from("<I", result, attr0 + 16)[0]
+              if actual != TARGET_APP_VERSION_CODE:
+                  raise SystemExit(f"FAIL V135 self-test: versionCode={actual}, expected {TARGET_APP_VERSION_CODE}")
+              print("PASS V135 self-test: binary Android manifest is version-bumped in place with offsets preserved.")
+          
+          
+          def main() -> int:
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--html", type=Path)
+              parser.add_argument("--apk", type=Path)
+              parser.add_argument("--output", type=Path)
+              parser.add_argument("--self-test", action="store_true")
+              args = parser.parse_args()
+              if args.self_test:
+                  self_test()
+                  return 0
+              if args.html and not args.apk and not args.output:
+                  patch_html(args.html)
+                  return 0
+              if args.apk and args.output and not args.html:
+                  patch_apk(args.apk, args.output)
+                  return 0
+              parser.error("use --html FILE, --apk INPUT.apk --output OUTPUT.apk, or --self-test")
+              return 2
+          
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          cat > "$TESTER" <<'JS'
+          'use strict';
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const vm = require('node:vm');
+          const [htmlPath] = process.argv.slice(2);
+          assert(htmlPath, 'usage: node SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js INDEX_OR_EXTRACTED_APK_HTML');
+          const html = fs.readFileSync(htmlPath, 'utf8');
+          const bridgeTag = html.match(/<script\s+id=["']sq-v117-universal-dwg-bridge["']\s*>([\s\S]*?)<\/script\s*>/i);
+          assert(bridgeTag, 'the shared V117/V126 DWG bridge script is missing');
+          const bridge = bridgeTag[1];
+          assert.equal((html.match(/SQ_V135_UNIVERSAL_CAD_INPUT_GATE/g) || []).length, 1,
+            'V135 shared CAD picker gate must be embedded exactly once');
+          assert.match(html, /const\s+SQ_APP_VERSION_CODE\s*=\s*135\s*;/,
+            'the embedded app version check must advance to 135');
+          assert(bridge.includes('strongCadHint'), 'CAD context detector missing');
+          assert(bridge.includes('MutationObserver'), 'dynamically-created project pickers must be monitored');
+          assert(bridge.includes('window.__sqV117DwgBridgeAPI'), 'original V117 bridge API is missing');
+          assert(bridge.includes('window.__sqOriAxisAutoTest'), 'native app DWG converter lookup must remain available');
+          assert(bridge.includes('function universalTransformBytes') === false,
+            'universalTransformBytes belongs to the app drawing engine, not the bridge itself');
+          assert(html.includes('function universalTransformBytes(input,t)'), 'byte-preserving CAD transform was removed');
+          assert(html.includes('dwg_write_dxf(bytes.buffer)'), 'local DWG-to-DXF writer was removed');
+          assert(html.includes('safeDownloadFile'), 'existing safe download path was removed');
+          assert(bridge.includes("var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);"),
+            'dedicated point-list utilities must remain excluded');
+          
+          class TestBlob {
+            constructor(parts = [], options = {}) {
+              this.parts = parts;
+              this.type = options.type || '';
+              this.size = parts.reduce((n, part) => n + (part && part.byteLength != null ? part.byteLength : Buffer.byteLength(String(part))), 0);
+            }
+          }
+          class TestFile extends TestBlob {
+            constructor(parts, name, options = {}) { super(parts, options); this.name = name; this.lastModified = options.lastModified || 0; }
+          }
+          class TestDataTransfer {
+            constructor() { this._files = []; this.items = { add: file => this._files.push(file) }; }
+            get files() { return this._files.slice(); }
+          }
+          class TestEvent {
+            constructor(type, options = {}) { this.type = type; this.bubbles = !!options.bubbles; this.defaultPrevented = false; }
+            preventDefault() { this.defaultPrevented = true; }
+            stopImmediatePropagation() { this.immediateStopped = true; }
+          }
+          function makeInput(id, accept, ariaLabel, parentText) {
+            const attrs = { 'aria-label': ariaLabel || '' };
+            return {
+              nodeType: 1, id, tagName: 'INPUT', type: 'file', accept: accept || '', files: [], value: '',
+              labels: ariaLabel ? [{ textContent: ariaLabel }] : [], projectChangeCount: 0,
+              getAttribute(name) { return attrs[String(name).toLowerCase()] || null; },
+              parentElement: { nodeType: 1, tagName: 'DIV', textContent: parentText || ariaLabel || '', parentElement: null }
+            };
+          }
+          const cadIds = [
+            'concreteDxfInput', 'quantBeforeFile', 'quantAfterFile', 'quantFileInput',
+            'profileFileInput', 'dropSurveyFiles', 'dropCadFile', 'sqOriReferenceFile',
+            'sqOriTargetFile', 'sq108File', 'sq110TargetFile', 'sq110ReferenceFile'
+          ];
+          const knownInputs = cadIds.map(id => makeInput(id, '*/*'));
+          const genericProjection = makeInput('projectFileInputX9', '*/*',
+            'اختيار لوحة المصدر لمشروع إسقاط الملفات', 'إسقاط الملفات: اختر اللوحة المصدر');
+          const genericMerge = makeInput('mergeDrawingUpload', '*/*',
+            'Import CAD drawing to merge', 'Merge drawings');
+          const pointList = makeInput('pointListInput', '*/*,.txt,.csv,.sdr,.pnt',
+            'قائمة نقاط TXT CSV SDR PNT', 'استيراد قائمة نقاط');
+          const imagePdf = makeInput('referencePhotoInput', 'image/*,.pdf',
+            'اختيار صورة مرجعية PDF', 'إرفاق صورة مرجعية PDF');
+          const textOnlyTools = [
+            makeInput('fileToDxfInput', '.sdr,.txt,.csv,.pt,.pnt,text/plain,text/csv,*/*'),
+            makeInput('cleanFilesInput', '.sdr,.pnt,.txt,.csv,.dat,text/plain,text/csv,*/*')
+          ];
+          const allInputs = [...knownInputs, genericProjection, genericMerge, pointList, imagePdf, ...textOnlyTools];
+          const listeners = Object.create(null);
+          let mutationCallback = null;
+          const documentMock = {
+            nodeType: 9,
+            documentElement: {},
+            querySelectorAll(selector) { return selector === 'input[type="file"]' ? allInputs : []; },
+            addEventListener(type, fn) { (listeners[type] ||= []).push(fn); }
+          };
+          const calls = [];
+          const testBytes = new Uint8Array([0, 10, 13, 255, 7, 8]);
+          const windowMock = {
+            __sqOriAxisAutoTest: {
+              async convertTargetToDxf(file) {
+                calls.push(file.name);
+                return { ok: true, bytes: testBytes.slice(), name: file.name.replace(/\.dwg$/i, '.dxf') };
+              }
+            }
+          };
+          const context = {
+            window: windowMock, document: documentMock,
+            MutationObserver: class { constructor(fn) { mutationCallback = fn; } observe() {} },
+            File: TestFile, Blob: TestBlob, DataTransfer: TestDataTransfer, Event: TestEvent,
+            DragEvent: class extends TestEvent {}, alert() {},
+            console: { log() {}, warn() {}, error() {} },
+            ArrayBuffer, Uint8Array, Set, Map, Array, String, Number, Object, RegExp, Error, Date, Promise, Buffer
+          };
+          vm.createContext(context);
+          vm.runInContext(bridge, context, { filename: 'embedded-sq-universal-dwg-bridge.js' });
+          
+          for (const id of cadIds) {
+            const control = knownInputs.find(x => x.id === id);
+            assert(control.accept.toLowerCase().includes('.dwg'), `known board picker failed DWG acceptance: ${id}`);
+            assert(control.accept.toLowerCase().includes('.dxf'), `known board picker failed DXF preservation: ${id}`);
+          }
+          assert(genericProjection.accept.toLowerCase().includes('.dwg'), 'unknown Arabic projection-board picker must accept DWG');
+          assert(genericProjection.accept.toLowerCase().includes('.dxf'), 'unknown Arabic projection-board picker must continue accepting DXF');
+          assert(genericMerge.accept.toLowerCase().includes('.dwg'), 'unknown English CAD merge picker must accept DWG');
+          assert(!pointList.accept.toLowerCase().includes('.dwg'), 'point-list text upload must not become a CAD picker');
+          assert(!imagePdf.accept.toLowerCase().includes('.dwg'), 'image/PDF picker must remain outside automatic DWG conversion');
+          for (const item of textOnlyTools) assert(!item.accept.toLowerCase().includes('.dwg'), `${item.id} must stay a point-list utility`);
+          assert(mutationCallback, 'MutationObserver must be installed for controls dynamically created in project screens');
+          const dynamicBoard = makeInput('dynamicUploadR8', '*/*', 'Upload drawing board for orientation', 'Reference board / CAD drawing');
+          mutationCallback([{ addedNodes: [dynamicBoard] }]);
+          assert(dynamicBoard.accept.toLowerCase().includes('.dwg'), 'dynamically created board picker must accept DWG');
+          assert(dynamicBoard.accept.toLowerCase().includes('.dxf'), 'dynamically created board picker must keep DXF');
+          
+          (async () => {
+            const source = new TestFile([testBytes], 'Unknown-Project-Board.DwG', { type: 'application/octet-stream' });
+            genericProjection.files = [source];
+            genericProjection.value = 'Unknown-Project-Board.DwG';
+            genericProjection.dispatchEvent = function (event) {
+              event.target = this;
+              for (const handler of listeners.change || []) handler(event);
+              if (!event.defaultPrevented) this.projectChangeCount++;
+              return true;
+            };
+            const original = new TestEvent('change', { bubbles: true });
+            original.target = genericProjection;
+            for (const handler of listeners.change || []) handler(original);
+            assert(original.defaultPrevented && original.immediateStopped, 'DWG input event must wait for native conversion');
+            for (let i = 0; i < 50 && (genericProjection.__sqV117DwgBusy || genericProjection.files.some(f => /\.dwg$/i.test(f.name))); i++) {
+              await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            assert.equal(genericProjection.files.length, 1, 'project must receive exactly one temporary DXF');
+            assert.equal(genericProjection.files[0].name, 'Unknown-Project-Board.dxf', 'DWG must pass to the original handler as DXF');
+            assert.equal(genericProjection.projectChangeCount, 1, 'converted file must invoke the original project handler exactly once');
+            assert.equal(source.name, 'Unknown-Project-Board.DwG', 'original DWG object must remain unchanged');
+            assert.deepEqual(calls, ['Unknown-Project-Board.DwG'], 'native app converter must execute exactly once');
+            assert.deepEqual(Array.from(genericProjection.files[0].parts[0]), Array.from(testBytes), 'bridge must pass through converter bytes without redraw');
+            console.log('PASS V135: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
+            console.log('PASS V135: dynamically created board inputs are recognized; converted DXF returns through the existing project handler once.');
+            console.log('PASS V135: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; source DWG is untouched.');
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          JS
+          python3 -m py_compile "$PATCHER"
+          python3 "$PATCHER" --self-test
+          node --check "$TESTER"
+          echo "PATCHER=$PATCHER" >> "$GITHUB_ENV"
+          echo "TESTER=$TESTER" >> "$GITHUB_ENV"
+
+      - name: Download the successful V134 R4 APK and reproducible source patch
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_RUN_ID" || { echo "ERROR: no source R4 run ID was selected."; exit 1; }
+          ROOT="$RUNNER_TEMP/v134-r4-artifact"
+          mkdir -p "$ROOT"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.134-WEBVIEW-CLASSIC-DWG-R4" --dir "$ROOT"
+          APK="$(find "$ROOT" -type f -name 'SurveyQuant_v1.0.134_OFFLINE_DWG_DXF_EXACT_LAND_QUAD_FIX.apk' -print -quit)"
+          SOURCE_PATCH="$(find "$ROOT" -type f -name 'SurveyQuant_v1.0.134_OFFLINE_DWG_DXF_EXACT_LAND_QUAD_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$APK" || { echo "ERROR: source workflow artifact has no signed V134 APK. Confirm R4 completed successfully."; exit 1; }
+          test -s "$SOURCE_PATCH" || { echo "ERROR: source workflow artifact has no V134 source-patch ZIP."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/sq-release"
+          echo "V134_APK=$APK" >> "$GITHUB_ENV"
+          echo "V134_SOURCE_PATCH=$SOURCE_PATCH" >> "$GITHUB_ENV"
+          echo "V134_ARTIFACT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Downloaded signed base APK and source patch from R4 run $SOURCE_RUN_ID."
+
+      - name: Apply universal board-DWG gate, test, align, and re-sign as V135
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE="$RUNNER_TEMP/sq-release"
+          SOURCE_DIR="$RUNNER_TEMP/v135-source-patch"
+          RAW_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_UNSIGNED.apk"
+          ALIGNED_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_ALIGNED.apk"
+          FINAL_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk"
+          FINAL_SOURCE="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip"
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          rm -rf "$SOURCE_DIR" "$RAW_APK" "$ALIGNED_APK" "$FINAL_APK" "$FINAL_SOURCE"
+          mkdir -p "$SOURCE_DIR"
+
+          unzip -t "$V134_SOURCE_PATCH"
+          unzip -q "$V134_SOURCE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html" || { echo "ERROR: V134 source patch has no index.html at its root."; exit 1; }
+          python3 "$PATCHER" --html "$SOURCE_DIR/index.html"
+          node "$TESTER" "$SOURCE_DIR/index.html"
+          cp "$PATCHER" "$SOURCE_DIR/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_PATCH.py"
+          cp "$TESTER" "$SOURCE_DIR/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js"
+          cat > "$SOURCE_DIR/README_V135_UNIVERSAL_CAD_DWG_AR.txt" <<'TXT'
+          SurveyQuant V135: دعم DWG تلقائيًا في كل مشروع يستقبل لوحات CAD
+          
+          - يوسّع جسر استيراد DWG المشترك بحيث يكتشف خانات اختيار اللوحات من نوع الملف أو اسم/عنوان الخانة أو سياق المشروع، حتى لو لم تكن ضمن قائمة IDs القديمة.
+          - يشمل مشروع إسقاط الملفات ومشروعات الدمج والتوجيه والحصر والخرسانة وأي خانة ديناميكية يضيفها المشروع بعنوان يدل على لوحة CAD.
+          - يمرر DWG إلى محوّل LibreDWG المحلي الموجود بالتطبيق، ثم يسلّم DXF مؤقتًا إلى معالج المشروع الأصلي. لا يكتب فوق ملف DWG المحدد ولا يعيد رسم اللوحة من الصفر.
+          - يستثني خانات ملفات النقاط النصية TXT/CSV/SDR/PNT والصور وPDF حتى لا تتحول أداة نقاط أو صور إلى مستورد لوحات.
+          - لا يعدّل هندسة الإسقاط أو التوجيه خارج كتلة الجسر المشتركة.
+          - يرفع إصدار Android إلى 1.0.135/135 لإتاحة التحديث فوق النسخة السابقة.
+          - الاختبارات تشمل الخانات الـ12 القديمة وخانة إسقاط عربية عامة وخانة دمج إنجليزية وخانة تضاف ديناميكيًا، واستثناء نقاط المساحة والصور/PDF.
+          
+          تنبيه: دعم كل كائن DWG يظل معتمدًا على الكائنات التي يستطيع محوّل LibreDWG قراءتها؛ قد تبقى كائنات Proxy/مملوكة غير مدعومة بحاجة إلى محوّل يدعمها.
+          TXT
+          (cd "$SOURCE_DIR" && zip -qr "$FINAL_SOURCE" .)
+          unzip -t "$FINAL_SOURCE"
+
+          python3 "$PATCHER" --apk "$V134_APK" --output "$RAW_APK"
+          unzip -p "$RAW_APK" assets/index.html > "$RUNNER_TEMP/v135-apk-index.html"
+          node "$TESTER" "$RUNNER_TEMP/v135-apk-index.html"
+          unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/wasm/libredwg-web.wasm'
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$RAW_APK" | grep -E "package: name=.*versionCode='135'.*versionName='1.0.135'" || {
+            echo "ERROR: APK manifest version was not raised to 1.0.135 (135)."; exit 1;
+          }
+
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: SURVEYQUANT_KEYSTORE_PASSWORD secret is empty."; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: SURVEYQUANT_KEY_ALIAS secret is empty."; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: SURVEYQUANT_KEY_PASSWORD secret is empty."; exit 1; }
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW_APK" "$ALIGNED_APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL_APK" "$ALIGNED_APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL_APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL_APK" | grep -E "package: name=.*versionCode='135'.*versionName='1.0.135'"
+
+          STORM_REPORT="$(find "$V134_ARTIFACT_ROOT" -type f -name 'SurveyQuant_v1.0.134_STORM_CONVERSION_REPORT.md' -print -quit)"
+          STORM_DXF="$(find "$V134_ARTIFACT_ROOT" -type f -name 'SurveyQuant_v1.0.134_STORM_CONVERTED_DXF.zip' -print -quit)"
+          if [ -n "$STORM_DXF" ]; then sha256sum "$FINAL_APK" "$FINAL_SOURCE" "$STORM_DXF" > "$RELEASE/SHA256SUMS.txt"; else sha256sum "$FINAL_APK" "$FINAL_SOURCE" > "$RELEASE/SHA256SUMS.txt"; fi
+          printf '%s\n' \
+            'V135 PASS: CAD board picker auto-detection is installed; APK reports versionCode 135/versionName 1.0.135; local DWG WASM engine is retained; JS regression tests and apksigner verification passed.' \
+            > "$RELEASE/V135_BUILD_RESULT.txt"
+          cat "$RELEASE/SHA256SUMS.txt"
+
+      - name: Upload V135 signed APK, source patch, checksums, and STORM proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.135-UNIVERSAL-DWG-ALL-PROJECTS
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/V135_BUILD_RESULT.txt
+            ${{ runner.temp }}/v134-r4-artifact/SurveyQuant_v1.0.134_STORM_CONVERTED_DXF.zip
+            ${{ runner.temp }}/v134-r4-artifact/SurveyQuant_v1.0.134_STORM_CONVERSION_REPORT.md
+          if-no-files-found: warn
+          retention-days: 14
