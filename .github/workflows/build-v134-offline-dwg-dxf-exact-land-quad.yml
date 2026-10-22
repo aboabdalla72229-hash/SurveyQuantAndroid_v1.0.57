@@ -211,16 +211,16 @@ jobs:
           j.scripts['build:obj']=obj.replace(/emmake\s+make(?=\s|$)/,'emmake make -C src');
           const wasm=j.scripts['build:wasm'];
           if(!wasm) throw new Error('Missing build:wasm');
-          if(!wasm.includes('SINGLE_FILE=1')) {
-            if(!wasm.includes('--emit-tsd')) throw new Error('Cannot append SINGLE_FILE=1 safely');
-            j.scripts['build:wasm']=wasm.replace(/\s--emit-tsd\b/,' -s SINGLE_FILE=1 --emit-tsd');
-          }
+          // Do not set SINGLE_FILE=1: Emscripten wasm-emscripten-finalize failed
+          // on this large LibreDWG module with "parse exception: too many locals".
+          // Keep normal JS + separate WASM output, matching the known-good V115 builder.
+          j.scripts['build:wasm']=wasm.replace(/\s-s\s+SINGLE_FILE=1\b/g,'');
+          if(/SINGLE_FILE=1/.test(j.scripts['build:wasm'])) throw new Error('SINGLE_FILE must remain disabled for this engine build');
           const cp=j.scripts.copy;
           if(!cp) throw new Error('Missing copy script');
-          j.scripts.copy=cp.replace(/\s+\.\.\/\.\.\/build-wasm\/libredwg-web\.wasm\b/,'');
-          if(/\.\.\/build-wasm\/libredwg-web\.wasm/.test(j.scripts.copy)) throw new Error('copy script still requires a separate WASM file');
+          if(!/libredwg-web\.wasm/.test(cp)) throw new Error('copy script must copy separate libredwg-web.wasm');
           fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');
-          console.log('PASS: writer enabled, object build scoped to src, SINGLE_FILE WASM and copy script configured.');
+          console.log('PASS: writer enabled, object build scoped to src, SINGLE_FILE disabled, separate WASM sidecar retained.');
           JS
 
           cd "$LIBJS"
@@ -234,7 +234,9 @@ jobs:
           pnpm build
           test -s dist/libredwg-web.js
           test -s wasm/libredwg-web.js
-          grep -qi 'base64' wasm/libredwg-web.js || { echo "ERROR: SINGLE_FILE output has no embedded WASM data; offline use is unsafe."; exit 1; }
+          test -s wasm/libredwg-web.wasm || { echo "ERROR: separate libredwg-web.wasm was not copied."; exit 1; }
+          WASM_MAGIC="$(od -An -tx1 -N4 wasm/libredwg-web.wasm | tr -d ' \n')"
+          test "$WASM_MAGIC" = "0061736d" || { echo "ERROR: invalid WebAssembly magic: $WASM_MAGIC"; exit 1; }
           node --check dist/libredwg-web.js
           node --check wasm/libredwg-web.js
 
@@ -244,8 +246,8 @@ jobs:
           cat > "$ENGINE_DIR/BUILD_CONFIGURATION_V134.txt" <<'TXT'
           SurveyQuant v1.0.134 local CAD runtime
           Upstream: mlightcad/libredwg-web v0.7.14, GPL-3.0
-          Built with DXF writing enabled and Emscripten SINGLE_FILE=1 so the WASM payload is embedded in wasm/libredwg-web.js.
-          This runtime is bundled inside the APK assets and should not require jsDelivr/unpkg network access.
+          Built with DXF writing enabled. WebAssembly remains a separate libredwg-web.wasm file to avoid the Emscripten SINGLE_FILE finalize error.
+          The dist JS module, WASM JS loader, and WASM binary are all bundled inside APK assets. No jsDelivr/unpkg runtime fetch is expected.
           TXT
 
           npm pack dxf-parser@1.1.2 --pack-destination "$DXF_DIR"
@@ -307,10 +309,11 @@ jobs:
           cp "$V131_TEST" "$SRC_DIR/SurveyQuant_v1.0.131_ENGINEERING_CAD_PRESERVE_TEST.js"
           cp "$V131_PATCH_DIR/README_V131_AR.txt" "$SRC_DIR/README_V131_AR.txt"
 
-          # Bundle the two dependency files before patching references in HTML.
+          # Bundle the DWG ESM module, its WASM JS loader + binary, and DXF parser.
           mkdir -p "$SRC_DIR/libredwg-writer/dist" "$SRC_DIR/libredwg-writer/wasm"
           cp "$V134_ENGINE_DIR/dist/libredwg-web.js" "$SRC_DIR/libredwg-writer/dist/libredwg-web.js"
           cp "$V134_ENGINE_DIR/wasm/libredwg-web.js" "$SRC_DIR/libredwg-writer/wasm/libredwg-web.js"
+          cp "$V134_ENGINE_DIR/wasm/libredwg-web.wasm" "$SRC_DIR/libredwg-writer/wasm/libredwg-web.wasm"
           cp "$V134_DXF_PARSER" "$SRC_DIR/dxf-parser.js"
           cp "$V134_ENGINE_DIR/BUILD_CONFIGURATION_V134.txt" "$SRC_DIR/libredwg-writer/BUILD_CONFIGURATION_V134.txt"
           if [ -s "$V134_ENGINE_DIR/LICENSE" ]; then cp "$V134_ENGINE_DIR/LICENSE" "$SRC_DIR/libredwg-writer/LICENSE"; fi
@@ -320,7 +323,9 @@ jobs:
           node --check "$SRC_DIR/dxf-parser.js"
           test -s "$SRC_DIR/libredwg-writer/dist/libredwg-web.js"
           test -s "$SRC_DIR/libredwg-writer/wasm/libredwg-web.js"
-          grep -qi base64 "$SRC_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SRC_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          SOURCE_WASM_MAGIC="$(od -An -tx1 -N4 "$SRC_DIR/libredwg-writer/wasm/libredwg-web.wasm" | tr -d ' \n')"
+          test "$SOURCE_WASM_MAGIC" = "0061736d" || { echo "ERROR: bundled source-patch WASM binary is invalid."; exit 1; }
           cp "$V134_PATCHER" "$SRC_DIR/SurveyQuant_v1.0.134_APPLY_PATCH.py"
           cp "$V134_TEST" "$SRC_DIR/SurveyQuant_v1.0.134_REGRESSION_TEST.js"
           cp "$V134_PATCH_DIR/README_V134_AR.txt" "$SRC_DIR/README_V134_AR.txt"
@@ -366,6 +371,16 @@ jobs:
           node "$V134_TEST" "$APK_HTML"
           unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/dist/libredwg-web.js'
           unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/wasm/libredwg-web.js'
+          unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/wasm/libredwg-web.wasm'
+          python3 - "$RAW_APK" <<'PYWASM'
+          import sys, zipfile
+          apk=sys.argv[1]
+          with zipfile.ZipFile(apk) as z:
+              b=z.read('assets/libredwg-writer/wasm/libredwg-web.wasm')
+          if len(b)<100_000 or b[:4] != b'\x00asm':
+              raise SystemExit('ERROR: APK contains an invalid or missing libredwg-web.wasm')
+          print('PASS: packaged APK has a valid separate WebAssembly binary:', len(b), 'bytes')
+          PYWASM
           unzip -l "$RAW_APK" | grep -F 'assets/dxf-parser.js'
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -382,7 +397,7 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose "$FINAL_APK"
 
           sha256sum "$FINAL_APK" "$V134_SOURCE_PATCH" "$V134_STORM_ZIP" > "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
-          printf '%s\n' 'V134 PASS: local writer-enabled LibreDWG + embedded WASM, local DXF parser, two real STORM DWG conversions, and exact-side convex quadrilateral regression tests.' > "$RUNNER_TEMP/sq-release/V134_BUILD_RESULT.txt"
+          printf '%s\n' 'V134 PASS: local writer-enabled LibreDWG + separate validated WASM binary, local DXF parser, two real STORM DWG conversions, and exact-side convex quadrilateral regression tests.' > "$RUNNER_TEMP/sq-release/V134_BUILD_RESULT.txt"
           cat "$RUNNER_TEMP/sq-release/SHA256SUMS.txt"
 
       - name: Upload V134 APK, source patch, STORM conversion proof and checksums
