@@ -1,0 +1,665 @@
+name: Build SurveyQuant v1.0.140 - Restore V127 Orientation + Fresh Board Session
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-v140-v127-orientation-fresh-session.yml"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V136 base artifact run ID"
+        required: true
+        type: string
+        default: "39920564869"
+      reference_run_id:
+        description: "Successful V127 orientation reference artifact run ID"
+        required: true
+        type: string
+        default: "39473214385"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build_v140:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '39920564869' }}
+      REFERENCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_run_id || '39473214385' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+    steps:
+      - name: Check out workflow source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python and Node regression runner
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT" || { echo "ERROR: Android SDK directory not found: $SDK_ROOT"; exit 1; }
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager not found"; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
+          echo "PASS: Android build tools configured."
+
+      - name: Create V127 transfer patcher and regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.140_RESTORE_V127_ORIENTATION.py"
+          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.140_V127_SESSION_REGRESSION_TEST.js"
+          cat > "$PATCHER" <<'PY'
+          #!/usr/bin/env python3
+          """Restore the exact V127 orientation script modules into the current V136 base.
+
+          Only the orientation module bodies are copied from V127. The current V136 universal
+          DWG bridge, packaged WASM runtime, and unrelated project modules are retained. A small
+          fresh-board-session guard clears transient drawing storage and reloads the WebView on
+          return from the Android background, while preserving device/payment/settings keys.
+          """
+          from __future__ import annotations
+          import argparse
+          import hashlib
+          import re
+          import struct
+          import copy
+          import zipfile
+          from pathlib import Path
+
+          ORIENTATION_SCRIPT_IDS = (
+              "sq-orientation-module",
+              "sq-orientation-axis-reader-module",
+              "sq-orientation-manual-points-module",
+              "sq-orientation-reference-board-module",
+              "sq-orientation-dxf-faithful-recovery-module",
+              "sq-orientation-cad-preserve-module",
+              "sq-orientation-v115-tools-module",
+          )
+          VERSION_OLD = 136
+          VERSION_NEW = 140
+          VERSION_OLD_NAME = "1.0.136"
+          VERSION_NEW_NAME = "1.0.140"
+          WASM_PROMISE_OLD = b"return new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;"
+          WASM_PROMISE_FIXED = b"return new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;"
+
+          FRESH_SESSION_SCRIPT = r'''<script id="surveyquant-v140-fresh-board-session">
+          (function(){
+            "use strict";
+            var hiddenSince = 0;
+            var filePickerPending = false;
+            var filePickerStartedAt = 0;
+            var filePickerResumeExempt = false;
+            var reloadQueued = false;
+
+            function clearBoardStorage(){
+              var boardKey = /(?:drawing|cad|dxf|dwg|board|orient(?:ation)?|projection|overlay|last[_ .-]?(?:file|board|drawing|project)|recent[_ .-]?(?:file|board|drawing)|imported[_ .-]?file|file[_ .-]?data|canvas[_ .-]?state|entities|geometry)/i;
+              try {
+                if (window.localStorage) {
+                  var localKeys = [];
+                  for (var i = 0; i < window.localStorage.length; i++) {
+                    var key = window.localStorage.key(i);
+                    if (key && boardKey.test(key)) localKeys.push(key);
+                  }
+                  localKeys.forEach(function(key){ try { window.localStorage.removeItem(key); } catch (_) {} });
+                }
+              } catch (_) {}
+              try { if (window.sessionStorage) window.sessionStorage.clear(); } catch (_) {}
+              // SurveyQuant does not need IndexedDB for settings or the payment/device identity.
+              // Delete origin databases to prevent a prior CAD drawing cache from surviving.
+              try {
+                if (window.indexedDB && typeof window.indexedDB.databases === "function") {
+                  window.indexedDB.databases().then(function(list){
+                    (list || []).forEach(function(db){
+                      if (db && db.name) { try { window.indexedDB.deleteDatabase(db.name); } catch (_) {} }
+                    });
+                  }).catch(function(){});
+                }
+              } catch (_) {}
+            }
+            function isFileInput(node){
+              try { return !!(node && (node.matches ? node.matches('input[type="file"]') : String(node.type||'').toLowerCase()==='file')); }
+              catch (_) { return false; }
+            }
+            function fileInputFromEvent(event){
+              var node = event && event.target;
+              if (isFileInput(node)) return node;
+              try { return node && node.closest ? node.closest('input[type="file"]') : null; }
+              catch (_) { return null; }
+            }
+            function clearFilePicker(){ filePickerPending = false; filePickerStartedAt = 0; filePickerResumeExempt = false; }
+            function markFilePickerFinished(){ filePickerPending = false; }
+
+            // Initial document load always starts without any persisted CAD drawing/session data.
+            clearBoardStorage();
+            window.addEventListener("pagehide", clearBoardStorage, {once:true});
+            window.addEventListener("beforeunload", clearBoardStorage, {once:true});
+
+            // Android's native chooser briefly hides the WebView. Do not reload while it returns,
+            // otherwise the just-selected File object would be discarded before the change handler.
+            document.addEventListener("click", function(event){
+              var input = fileInputFromEvent(event);
+              if (input) { filePickerPending = true; filePickerStartedAt = Date.now(); }
+            }, true);
+            document.addEventListener("change", function(event){ if (fileInputFromEvent(event)) markFilePickerFinished(); }, true);
+            document.addEventListener("cancel", function(event){ if (fileInputFromEvent(event)) markFilePickerFinished(); }, true);
+            window.addEventListener("focus", function(){
+              if (filePickerPending && Date.now() - filePickerStartedAt > 180000) clearFilePicker();
+            });
+            function resetOnReturn(awayMs){
+              clearBoardStorage();
+              if (awayMs < 500) return;
+              var pickerAge = filePickerStartedAt ? Date.now() - filePickerStartedAt : Infinity;
+              // change/cancel can fire before the visible/focus event; use the recorded picker cycle,
+              // not just the current filePickerPending flag, so the selected File is not lost by reload.
+              if (pickerAge < 180000 && (filePickerResumeExempt || filePickerPending)) { clearFilePicker(); return; }
+              clearFilePicker();
+              if (reloadQueued) return;
+              reloadQueued = true;
+              // Recreate the drawing WebView so no in-memory source/target board survives re-entry.
+              try { window.location.reload(); } catch (_) { reloadQueued = false; }
+            }
+            document.addEventListener("visibilitychange", function(){
+              if (document.visibilityState === "hidden") {
+                if (filePickerPending) filePickerResumeExempt = true;
+                hiddenSince = Date.now();
+                clearBoardStorage();
+                return;
+              }
+              if (!hiddenSince) return;
+              var awayMs = Date.now() - hiddenSince;
+              hiddenSince = 0;
+              resetOnReturn(awayMs);
+            });
+            // Some WebView/Android combinations do not deliver visibilitychange on Activity pause.
+            // A file chooser's blur/focus is tracked separately and never causes a reload.
+            window.addEventListener("blur", function(){
+              if (filePickerPending) { filePickerResumeExempt = true; return; }
+              hiddenSince = Date.now();
+            });
+            window.addEventListener("focus", function(){
+              if (hiddenSince && document.visibilityState !== "hidden") {
+                var awayMs = Date.now() - hiddenSince;
+                hiddenSince = 0;
+                resetOnReturn(awayMs);
+                return;
+              }
+              if (filePickerResumeExempt && document.visibilityState !== "hidden") {
+                resetOnReturn(filePickerStartedAt ? Date.now() - filePickerStartedAt : 1000);
+                return;
+              }
+              if (filePickerPending && Date.now() - filePickerStartedAt > 180000) clearFilePicker();
+            });
+          })();
+          </script>'''
+
+
+          def script_pattern(script_id: str) -> re.Pattern[str]:
+              return re.compile(
+                  r'(<script\b(?=[^>]*\bid=["\']' + re.escape(script_id) + r'["\'])[^>]*>)([\s\S]*?)(</script\s*>)',
+                  re.IGNORECASE,
+              )
+
+
+          def get_script(html: str, script_id: str) -> str:
+              hits = list(script_pattern(script_id).finditer(html))
+              if len(hits) != 1:
+                  raise ValueError(f"Expected exactly one script id={script_id!r}, found {len(hits)}")
+              return hits[0].group(2)
+
+
+          def replace_script(html: str, script_id: str, body: str) -> str:
+              pat = script_pattern(script_id)
+              hits = list(pat.finditer(html))
+              if len(hits) != 1:
+                  raise ValueError(f"Expected exactly one script id={script_id!r}, found {len(hits)}")
+              m = hits[0]
+              return html[:m.start(2)] + body + html[m.end(2):]
+
+
+          def apply(source_html: str, reference_html: str) -> tuple[str, dict[str, str]]:
+              result = source_html
+              reference_hashes: dict[str, str] = {}
+              # Copy the complete embedded orientation modules without editing their contents.
+              for script_id in ORIENTATION_SCRIPT_IDS:
+                  reference_body = get_script(reference_html, script_id)
+                  source_body = get_script(result, script_id)
+                  result = replace_script(result, script_id, reference_body)
+                  # byte-for-byte source equality is verified after insertion below
+                  reference_hashes[script_id] = hashlib.sha256(reference_body.encode("utf-8")).hexdigest()
+                  if get_script(result, script_id) != source_body and source_body == reference_body:
+                      raise AssertionError(f"Unexpected change while copying {script_id}")
+
+              # Replace the over-broad V134 reset (it cleared app preferences/payment/device ID too)
+              # with a board-only store purge plus a WebView refresh on Android background re-entry.
+              old_ids = ["surveyquant-v134-session-reset", "surveyquant-v140-fresh-board-session"]
+              existing = []
+              for sid in old_ids:
+                  existing.extend(list(script_pattern(sid).finditer(result)))
+              if len(existing) != 1:
+                  raise ValueError(f"Expected one existing session reset script, found {len(existing)}")
+              m = existing[0]
+              result = result[:m.start()] + FRESH_SESSION_SCRIPT + result[m.end():]
+
+              old_version = f"const SQ_APP_VERSION_CODE = {VERSION_OLD};"
+              new_version = f"const SQ_APP_VERSION_CODE = {VERSION_NEW};"
+              if result.count(old_version) != 1:
+                  raise ValueError(f"Expected exactly one app version constant {VERSION_OLD}, found {result.count(old_version)}")
+              result = result.replace(old_version, new_version, 1)
+
+              # Verify exact byte-for-byte restoration and that general DWG support did not change.
+              for script_id in ORIENTATION_SCRIPT_IDS:
+                  if get_script(result, script_id) != get_script(reference_html, script_id):
+                      raise AssertionError(f"Orientation module {script_id} is not identical to V127")
+              if 'id="sq-v117-universal-dwg-bridge"' not in result:
+                  raise ValueError("Current universal DWG picker bridge is missing")
+              if "function sqDwgWasmRuntimePath()" not in result:
+                  raise ValueError("Current WASM runtime path helper is missing")
+              if "const SQ_APP_VERSION_CODE = 140;" not in result:
+                  raise ValueError("App version code was not updated to 140")
+              if 'id="surveyquant-v140-fresh-board-session"' not in result:
+                  raise ValueError("Fresh-board session guard is missing")
+              return result, reference_hashes
+
+
+          def _read_len8(data: bytes, pos: int) -> tuple[int, int]:
+              first = data[pos]
+              if first & 0x80:
+                  return (((first & 0x7F) << 8) | data[pos + 1]), pos + 2
+              return first, pos + 1
+
+
+          def _read_len16(data: bytes, pos: int) -> tuple[int, int]:
+              first = struct.unpack_from("<H", data, pos)[0]
+              if first & 0x8000:
+                  second = struct.unpack_from("<H", data, pos + 2)[0]
+                  return (((first & 0x7FFF) << 16) | second), pos + 4
+              return first, pos + 2
+
+
+          def _string_pool(data: bytes, chunk_start: int, chunk_size: int, header_size: int) -> tuple[list[str], list[tuple[int, int, bool]]]:
+              if header_size < 28 or chunk_start + chunk_size > len(data):
+                  raise ValueError("invalid Android binary XML string pool")
+              string_count, _style_count, flags, strings_start, _styles_start = struct.unpack_from("<IIIII", data, chunk_start + 8)
+              if string_count > 100_000:
+                  raise ValueError("unreasonable Android XML string count")
+              offsets_start = chunk_start + header_size
+              strings_base = chunk_start + strings_start
+              utf8 = bool(flags & 0x100)
+              strings: list[str] = []
+              spans: list[tuple[int, int, bool]] = []
+              for index in range(string_count):
+                  rel = struct.unpack_from("<I", data, offsets_start + index * 4)[0]
+                  p = strings_base + rel
+                  if utf8:
+                      _char_len, p = _read_len8(data, p)
+                      byte_len, p = _read_len8(data, p)
+                      begin, end = p, p + byte_len
+                      strings.append(data[begin:end].decode("utf-8", errors="strict"))
+                      spans.append((begin, end, True))
+                  else:
+                      char_len, p = _read_len16(data, p)
+                      begin, end = p, p + char_len * 2
+                      strings.append(data[begin:end].decode("utf-16le", errors="strict"))
+                      spans.append((begin, end, False))
+              return strings, spans
+
+
+          def patch_binary_manifest(manifest: bytes) -> bytes:
+              if len(manifest) < 8 or struct.unpack_from("<H", manifest, 0)[0] != 0x0003:
+                  raise ValueError("AndroidManifest.xml is not Android binary XML")
+              result = bytearray(manifest)
+              pos = struct.unpack_from("<H", result, 2)[0]
+              total_size = struct.unpack_from("<I", result, 4)[0]
+              if total_size > len(result) or total_size < pos:
+                  raise ValueError("invalid Android binary XML size")
+              strings = None
+              spans = []
+              chunks = []
+              while pos < total_size:
+                  if pos + 8 > total_size: raise ValueError("truncated Android XML chunk header")
+                  chunk_type, header_size, chunk_size = struct.unpack_from("<HHI", result, pos)
+                  if chunk_size < header_size or pos + chunk_size > total_size: raise ValueError("invalid Android XML chunk bounds")
+                  chunks.append((pos, chunk_type, header_size, chunk_size))
+                  if chunk_type == 0x0001:
+                      strings, spans = _string_pool(bytes(result), pos, chunk_size, header_size)
+                  pos += chunk_size
+              if strings is None: raise ValueError("Android XML string pool not found")
+              old_ids = [i for i, v in enumerate(strings) if v == VERSION_OLD_NAME]
+              if not old_ids and VERSION_NEW_NAME not in strings:
+                  raise ValueError(f"manifest does not contain {VERSION_OLD_NAME!r} or {VERSION_NEW_NAME!r}")
+              for idx in old_ids:
+                  begin, end, is_utf8 = spans[idx]
+                  encoded = VERSION_NEW_NAME.encode("utf-8" if is_utf8 else "utf-16le")
+                  if len(encoded) != end - begin: raise ValueError("versionName replacement changes Android string-pool byte length")
+                  result[begin:end] = encoded
+                  strings[idx] = VERSION_NEW_NAME
+              fields=[]
+              for chunk_pos, chunk_type, _header_size, chunk_size in chunks:
+                  if chunk_type != 0x0102 or chunk_size < 36: continue
+                  node_name_idx = struct.unpack_from("<I", result, chunk_pos + 20)[0]
+                  if node_name_idx >= len(strings) or strings[node_name_idx] != "manifest": continue
+                  attr_start = struct.unpack_from("<H", result, chunk_pos + 24)[0]
+                  attr_size = struct.unpack_from("<H", result, chunk_pos + 26)[0]
+                  attr_count = struct.unpack_from("<H", result, chunk_pos + 28)[0]
+                  if attr_size < 20 or attr_count > 1024: raise ValueError("invalid Android manifest attribute table")
+                  first_attr = chunk_pos + 16 + attr_start
+                  for n in range(attr_count):
+                      at = first_attr + n * attr_size
+                      name_idx = struct.unpack_from("<I", result, at + 4)[0]
+                      if name_idx < len(strings) and strings[name_idx] == "versionCode":
+                          value_size = struct.unpack_from("<H", result, at + 12)[0]
+                          value_type = result[at + 15]
+                          if value_size < 8 or value_type not in (0x10, 0x11): raise ValueError("manifest versionCode is not typed integer")
+                          fields.append(at + 16)
+              if len(fields) != 1: raise ValueError(f"expected exactly one Android versionCode field, found {len(fields)}")
+              struct.pack_into("<I", result, fields[0], VERSION_NEW)
+              return bytes(result)
+
+
+          def package_apk(input_apk: Path, output_apk: Path, patched_html: Path) -> None:
+              if not input_apk.is_file() or input_apk.stat().st_size == 0: raise ValueError("base APK missing or empty")
+              if not patched_html.is_file(): raise ValueError("patched index.html missing")
+              html_bytes = patched_html.read_bytes()
+              # Fail closed before replacing the APK asset.
+              html = html_bytes.decode("utf-8")
+              if 'const SQ_APP_VERSION_CODE = 140;' not in html or 'id="surveyquant-v140-fresh-board-session"' not in html:
+                  raise ValueError("patched HTML does not carry V140 identity/session guard")
+              output_apk.parent.mkdir(parents=True, exist_ok=True)
+              with zipfile.ZipFile(input_apk, "r") as zin:
+                  names = [x.filename for x in zin.infolist()]
+                  if names.count("assets/index.html") != 1 or names.count("AndroidManifest.xml") != 1:
+                      raise ValueError("base APK does not have unique index.html and AndroidManifest.xml")
+                  seen = set()
+                  with zipfile.ZipFile(output_apk, "w", allowZip64=True) as zout:
+                      for info in zin.infolist():
+                          name = info.filename
+                          if name in seen: raise ValueError("duplicate entry in base APK: " + name)
+                          seen.add(name)
+                          upper = name.upper()
+                          if upper.startswith("META-INF/") and (upper.endswith(".SF") or upper.endswith(".RSA") or upper.endswith(".DSA") or upper.endswith(".EC") or upper.endswith("MANIFEST.MF")):
+                              continue
+                          data = zin.read(name)
+                          if name == "assets/index.html":
+                              data = html_bytes
+                          elif name == "AndroidManifest.xml":
+                              data = patch_binary_manifest(data)
+                          elif name == "assets/libredwg-writer/wasm/libredwg-web.js":
+                              # The V136 base already carries the corrected WASM promise order; repair only if stale.
+                              if WASM_PROMISE_OLD in data: data = data.replace(WASM_PROMISE_OLD, WASM_PROMISE_FIXED)
+                          zout.writestr(copy.copy(info), data)
+              with zipfile.ZipFile(output_apk, "r") as check:
+                  if check.read("assets/index.html") != html_bytes: raise ValueError("APK HTML asset differs from the tested restored index.html")
+                  names = check.namelist()
+                  if "assets/libredwg-writer/wasm/libredwg-web.wasm" not in names: raise ValueError("APK lost local DWG WebAssembly engine")
+                  manifest = check.read("AndroidManifest.xml")
+                  checked = patch_binary_manifest(manifest)
+                  if checked != manifest: raise ValueError("APK manifest was not updated to V140")
+                  js = check.read("assets/libredwg-writer/wasm/libredwg-web.js")
+                  if WASM_PROMISE_OLD in js: raise ValueError("APK retains broken file:// WASM Promise order")
+              print("PASS: APK was repacked with the exact tested index.html, versionName 1.0.140, versionCode 140, and current DWG runtime.")
+
+
+          def main() -> None:
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--source-html", type=Path)
+              ap.add_argument("--reference-html", type=Path)
+              ap.add_argument("--output-html", type=Path)
+              ap.add_argument("--report", type=Path)
+              ap.add_argument("--apk-input", type=Path)
+              ap.add_argument("--apk-output", type=Path)
+              ap.add_argument("--html-to-inject", type=Path)
+              args = ap.parse_args()
+              if args.source_html and args.reference_html and args.output_html and not args.apk_input:
+                  source = args.source_html.read_text(encoding="utf-8")
+                  reference = args.reference_html.read_text(encoding="utf-8")
+                  patched, hashes = apply(source, reference)
+                  args.output_html.parent.mkdir(parents=True, exist_ok=True)
+                  args.output_html.write_text(patched, encoding="utf-8", newline="")
+                  if args.report:
+                      lines = ["# SurveyQuant V140 restoration report", "", "Restored embedded orientation modules byte-for-byte from V127.", ""]
+                      lines += [f"- `{sid}` SHA-256: `{digest}`" for sid, digest in hashes.items()]
+                      lines += ["", "The V136 universal DWG picker bridge and WASM path helper were retained.",
+                                "Board-only storage is cleared on startup and pagehide; returning to the app reloads the WebView unless returning from Android's file chooser.",
+                                "Local app preferences and device/payment identity keys are preserved."]
+                      args.report.write_text("\n".join(lines)+"\n", encoding="utf-8")
+                  print(f"PASS: transplanted {len(hashes)} exact V127 orientation modules; target app version code {VERSION_NEW}.")
+                  for sid, digest in hashes.items(): print(f"PASS: {sid} {digest}")
+                  return
+              if args.apk_input and args.apk_output and args.html_to_inject:
+                  package_apk(args.apk_input, args.apk_output, args.html_to_inject)
+                  return
+              ap.error("use --source-html CURRENT --reference-html V127 --output-html OUTPUT, or --apk-input APK --apk-output APK --html-to-inject HTML")
+
+          if __name__ == "__main__":
+              main()
+          PY
+          cat > "$TESTER" <<'JS'
+          'use strict';
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const vm = require('node:vm');
+          const htmlPath = process.argv[2];
+          const referencePath = process.argv[3];
+          assert(htmlPath && referencePath, 'usage: node SurveyQuant_v1.0.140_V127_SESSION_REGRESSION_TEST.js CURRENT_INDEX.HTML V127_INDEX.HTML');
+          const html = fs.readFileSync(htmlPath, 'utf8');
+          const reference = fs.readFileSync(referencePath, 'utf8');
+          const moduleIds = [
+            'sq-orientation-module',
+            'sq-orientation-axis-reader-module',
+            'sq-orientation-manual-points-module',
+            'sq-orientation-reference-board-module',
+            'sq-orientation-dxf-faithful-recovery-module',
+            'sq-orientation-cad-preserve-module',
+            'sq-orientation-v115-tools-module'
+          ];
+          function body(text, id) {
+            const re = new RegExp(`(<script\\b(?=[^>]*\\bid=["']${id}["'])[^>]*>)([\\s\\S]*?)(<\\/script\\s*>)`, 'i');
+            const m = text.match(re);
+            assert(m, `script ${id} missing`);
+            assert.equal((text.match(new RegExp(`id=["']${id}["']`, 'g')) || []).length, 1, `script ${id} must be unique`);
+            return m[2];
+          }
+          for (const id of moduleIds) {
+            assert.equal(body(html, id), body(reference, id), `orientation module ${id} must remain byte-for-byte identical to V127`);
+          }
+          assert(html.includes('const SQ_APP_VERSION_CODE = 140;'), 'app version must be code 140');
+          assert(html.includes('id="sq-v117-universal-dwg-bridge"'), 'latest universal DWG bridge must remain embedded');
+          assert(html.includes('function sqDwgWasmRuntimePath()'), 'latest WASM URL helper must remain embedded');
+          assert(html.includes('id="surveyquant-v140-fresh-board-session"'), 'fresh-session lifecycle guard must be installed');
+          assert(!html.includes('id="surveyquant-v134-session-reset"'), 'legacy broad storage reset must be replaced');
+
+          function makeHarness({picker = false} = {}) {
+            let fakeNow = 0;
+            class TestDate extends Date { static now() { return fakeNow; } }
+            const advance = ms => { fakeNow += ms; };
+            const listeners = Object.create(null);
+            const windowListeners = Object.create(null);
+            const values = new Map([
+              ['surveyquant.projectOutputSettings.v2', '{"project1Card":{"lineColor":"#123456"}}'],
+              ['sq_device_id', 'SQ-device-preserved'],
+              ['sq_access_until', '2099-01-01T00:00:00.000Z'],
+              ['old_dwg_blob', 'previous-drawing-data'],
+              ['lastOpenedBoard', 'previous-board-name']
+            ]);
+            const storage = {
+              get length() { return values.size; },
+              key(i) { return Array.from(values.keys())[i] ?? null; },
+              getItem(k) { return values.has(k) ? values.get(k) : null; },
+              setItem(k,v) { values.set(k, String(v)); },
+              removeItem(k) { values.delete(k); },
+              clear() { values.clear(); }
+            };
+            const session = {cleared:0, clear(){this.cleared++;}};
+            const deletedDbs = [];
+            const idb = {databases(){return Promise.resolve([{name:'SurveyQuantCAD'}, {name:'other'}]);},deleteDatabase(name){deletedDbs.push(name);}};
+            const doc = {visibilityState:'visible',body:{classList:{contains(){return false;}}},addEventListener(name,fn){(listeners[name] ||= []).push(fn);}};
+            const win = {localStorage:storage,sessionStorage:session,indexedDB:idb,location:{reloadCount:0,reload(){this.reloadCount++;}},addEventListener(name,fn){(windowListeners[name] ||= []).push(fn);}};
+            const ctx = {window:win,document:doc,Date:TestDate,RegExp,String,Number,Array,Object,Promise,Math,console};
+            vm.createContext(ctx);
+            vm.runInContext(body(html,'surveyquant-v140-fresh-board-session'),ctx,{filename:'surveyquant-v140-fresh-board-session.js'});
+            function fire(name,event={}) { for (const fn of listeners[name]||[]) fn(event); }
+            function visibility(state) { doc.visibilityState=state; fire('visibilitychange'); }
+            return {listeners,windowListeners,values,storage,session,deletedDbs,doc,win,fire,visibility,advance};
+          }
+          (async()=>{
+            const normal=makeHarness();
+            await Promise.resolve();
+            assert.equal(normal.values.has('old_dwg_blob'),false,'board-shaped localStorage values must be removed');
+            assert.equal(normal.values.has('lastOpenedBoard'),false,'last opened board state must be removed');
+            assert.equal(normal.values.get('surveyquant.projectOutputSettings.v2')?.includes('#123456'),true,'output settings must survive session reset');
+            assert.equal(normal.values.get('sq_device_id'),'SQ-device-preserved','device identity must survive session reset');
+            assert.equal(normal.values.has('sq_access_until'),true,'access/payment state must survive session reset');
+            assert.equal(normal.session.cleared,1,'sessionStorage must be cleared on startup');
+            normal.advance(1000); normal.visibility('hidden'); normal.advance(2000); normal.visibility('visible');
+            assert.equal(normal.win.location.reloadCount,1,'returning from background must reload WebView to drop in-memory drawings');
+
+            const blurFallback=makeHarness();
+            blurFallback.advance(1000);
+            for (const fn of blurFallback.windowListeners.blur || []) fn();
+            blurFallback.advance(2000);
+            for (const fn of blurFallback.windowListeners.focus || []) fn();
+            assert.equal(blurFallback.win.location.reloadCount,1,'blur/focus fallback must reload even if visibilitychange is missing');
+
+            const picker=makeHarness({picker:true});
+            picker.advance(1000); picker.fire('click',{target:{closest(){return {type:'file',matches(){return true;}};}}});
+            picker.advance(100); picker.visibility('hidden');
+            // Android can deliver input.change before it reports the WebView as visible again.
+            picker.fire('change',{target:{type:'file',matches(){return true;}}});
+            picker.advance(800); picker.visibility('visible');
+            assert.equal(picker.win.location.reloadCount,0,'file chooser return must not reload even if change fires before visibilitychange');
+            picker.advance(100); picker.visibility('hidden'); picker.advance(800); picker.visibility('visible');
+            assert.equal(picker.win.location.reloadCount,1,'the next ordinary return must reload a clean WebView');
+            console.log('PASS V140: 7 orientation modules are byte-identical to V127.');
+            console.log('PASS V140: latest all-project DWG bridge and WASM helper are preserved.');
+            console.log('PASS V140: stale drawing cache/session values are cleared while app settings and device/access keys remain.');
+            console.log('PASS V140: visibilitychange and blur/focus background re-entry reset in-memory drawings; file chooser return is protected.')
+          })().catch(e=>{console.error(e);process.exitCode=1;});
+          JS
+          python3 -m py_compile "$PATCHER"
+          node --check "$TESTER"
+          echo "V140_PATCHER=$PATCHER" >> "$GITHUB_ENV"
+          echo "V140_TESTER=$TESTER" >> "$GITHUB_ENV"
+
+      - name: Download the successful V136 base and exact V127 reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_RUN_ID" && test -n "$REFERENCE_RUN_ID"
+          BASE_DIR="$RUNNER_TEMP/v136-base"
+          REF_DIR="$RUNNER_TEMP/v127-reference"
+          mkdir -p "$BASE_DIR" "$REF_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.136-UNIVERSAL-DWG-ALL-PROJECTS" --dir "$BASE_DIR"
+          gh run download "$REFERENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.127-TEXT-SHRINKS-AS-ZOOM-DWG-ALL-PROJECTS" --dir "$REF_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip' -print -quit)"
+          REF_PATCH="$(find "$REF_DIR" -type f -name 'SurveyQuant_v1.0.127_DWG_TEXT_SHRINKS_AS_ZOOM_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V136 APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V136 source ZIP missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$REF_PATCH" || { echo "ERROR: V127 source ZIP missing from run $REFERENCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH"
+          unzip -t "$REF_PATCH"
+          mkdir -p "$RUNNER_TEMP/v140-source" "$RUNNER_TEMP/v127-source"
+          unzip -q "$BASE_PATCH" -d "$RUNNER_TEMP/v140-source"
+          unzip -q "$REF_PATCH" -d "$RUNNER_TEMP/v127-source"
+          test -s "$RUNNER_TEMP/v140-source/index.html"
+          test -s "$RUNNER_TEMP/v127-source/index.html"
+          echo "V140_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V140_SOURCE_DIR=$RUNNER_TEMP/v140-source" >> "$GITHUB_ENV"
+          echo "V127_SOURCE_DIR=$RUNNER_TEMP/v127-source" >> "$GITHUB_ENV"
+          echo "V140_RELEASE_DIR=$RUNNER_TEMP/sq-release" >> "$GITHUB_ENV"
+
+      - name: Restore V127 orientation byte-for-byte and clear prior board session
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$V140_RELEASE_DIR"
+          python3 "$V140_PATCHER" \
+            --source-html "$V140_SOURCE_DIR/index.html" \
+            --reference-html "$V127_SOURCE_DIR/index.html" \
+            --output-html "$V140_SOURCE_DIR/index_v140.html" \
+            --report "$V140_RELEASE_DIR/V140_RESTORE_REPORT.md"
+          node "$V140_TESTER" "$V140_SOURCE_DIR/index_v140.html" "$V127_SOURCE_DIR/index.html"
+          if [ -s "$V127_SOURCE_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js" ]; then
+            node "$V127_SOURCE_DIR/SurveyQuant_v1.0.127_TEXT_ZOOM_REGRESSION_TEST.js" "$V140_SOURCE_DIR/index_v140.html"
+          fi
+          node --check "$V140_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          cp "$V140_SOURCE_DIR/index_v140.html" "$V140_SOURCE_DIR/index.html"
+          rm -f "$V140_SOURCE_DIR/index_v140.html"
+          cp "$V140_PATCHER" "$V140_SOURCE_DIR/SurveyQuant_v1.0.140_RESTORE_V127_ORIENTATION.py"
+          cp "$V140_TESTER" "$V140_SOURCE_DIR/SurveyQuant_v1.0.140_V127_SESSION_REGRESSION_TEST.js"
+          cat > "$V140_SOURCE_DIR/README_V140_V127_ORIENTATION_AR.txt" <<'TXT'
+          SurveyQuant V140: استعادة مشروع توجيه اللوح من V127
+
+          - تمت استعادة أجسام 7 وحدات JavaScript الخاصة بمشروع التوجيه من مصدر V127 حرفيًا مع اختبار تطابقها.
+          - تم الإبقاء على جسر DWG العام الحالي من V136 ومسار WASM وملفات المحرك.
+          - تتم إزالة بيانات جلسة الرسم المؤقتة عند البدء والإخفاء، وعند الرجوع من خلفية أندرويد يعاد تحميل WebView لإسقاط اللوحات الموجودة في الذاكرة.
+          - العودة من منتقي الملفات مستثناة مرة واحدة حتى لا يفقد التطبيق الملف المختار قبل استهلاكه.
+          - تحفظ إعدادات الإخراج ومعرّف الجهاز وحالة الوصول/الدفع؛ لا تُحفظ اللوحات في التخزين المحلي. يتم مسح sessionStorage وقواعد IndexedDB.
+          - الإصدار 1.0.140 / versionCode 140.
+
+          الاختبارات لا تغني عن فحص ملفات DWG/DXF فعلية ونقاط تحقق مستقلة قبل استخدام المخرجات في التنفيذ المساحي.
+          TXT
+          test -s "$V140_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          (cd "$V140_SOURCE_DIR" && zip -qr "$V140_RELEASE_DIR/SurveyQuant_v1.0.140_V127_ORIENTATION_SOURCE_PATCH.zip" .)
+          unzip -t "$V140_RELEASE_DIR/SurveyQuant_v1.0.140_V127_ORIENTATION_SOURCE_PATCH.zip" | tail -2
+
+      - name: Inject the exact tested HTML into APK and bump Android manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="$V140_RELEASE_DIR/SurveyQuant_v1.0.140_ORIENTATION_FRESH_SESSION_UNSIGNED.apk"
+          ALIGNED="$V140_RELEASE_DIR/SurveyQuant_v1.0.140_ORIENTATION_FRESH_SESSION_ALIGNED.apk"
+          FINAL="$V140_RELEASE_DIR/SurveyQuant_v1.0.140_V127_ORIENTATION_FRESH_SESSION.apk"
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          python3 "$V140_PATCHER" --apk-input "$V140_BASE_APK" --apk-output "$RAW" --html-to-inject "$V140_SOURCE_DIR/index.html"
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='140'.*versionName='1.0.140'"
+          sha256sum "$FINAL" "$V140_RELEASE_DIR/SurveyQuant_v1.0.140_V127_ORIENTATION_SOURCE_PATCH.zip" > "$V140_RELEASE_DIR/SHA256SUMS.txt"
+          printf '%s\n' 'PASS V140: exact V127 orientation modules, V136 universal DWG runtime preserved, session reload on app re-entry, manifest 1.0.140/140, tests and APK signature verification passed.' > "$V140_RELEASE_DIR/V140_BUILD_RESULT.txt"
+          cat "$V140_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed APK, source patch, and verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.140-V127-ORIENTATION-FRESH-SESSION
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.140_V127_ORIENTATION_FRESH_SESSION.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.140_V127_ORIENTATION_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/V140_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V140_RESTORE_REPORT.md
+          if-no-files-found: error
+          retention-days: 14
