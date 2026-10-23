@@ -1,6 +1,9 @@
-name: Build SurveyQuant v1.0.135 - Universal DWG for Every Drawing Project
+name: Build SurveyQuant v1.0.136 - Universal DWG for Every Drawing Project
 
 on:
+  push:
+    paths:
+      - ".github/workflows/build-v136-android-dwg-wasm-fetch-fix.yml"
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -22,7 +25,8 @@ jobs:
   patch_and_sign:
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && inputs.source_run_id != '')
+      (github.event_name == 'workflow_dispatch' && inputs.source_run_id != '') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -87,15 +91,15 @@ jobs:
           test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
           echo "PASS: Android SDK configured; build-tools 35.0.0 has zipalign, apksigner, and aapt."
 
-      - name: Write audited V135 patcher and regression test
+      - name: Write audited V136 patcher and regression test
         shell: bash
         run: |
           set -euo pipefail
-          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_PATCH.py"
-          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js"
+          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.136_UNIVERSAL_CAD_PICKER_PATCH.py"
+          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.136_UNIVERSAL_CAD_PICKER_TEST.js"
           cat > "$PATCHER" <<'PY'
           #!/usr/bin/env python3
-          """V135: detect CAD-board inputs across existing and dynamically-created projects.
+          """V136: detect CAD-board inputs across existing and dynamically-created projects.
           
           Patches only the shared V117/V126 DWG picker gate in HTML, or the same asset in an APK.
           The gate expands accepted file types and leaves selected DWG files to the app's existing
@@ -113,13 +117,13 @@ jobs:
           from pathlib import Path
           
           BRIDGE_ID = "sq-v117-universal-dwg-bridge"
-          MARKER = "SQ_V135_UNIVERSAL_CAD_INPUT_GATE"
-          TARGET_APP_VERSION_CODE = 135
-          TARGET_APP_VERSION_NAME = "1.0.135"
+          MARKER = "SQ_V136_UNIVERSAL_CAD_INPUT_GATE"
+          TARGET_APP_VERSION_CODE = 136
+          TARGET_APP_VERSION_NAME = "1.0.136"
           OLD_APP_VERSION_NAME = "1.0.126"
           
           NEW_FUNCTION = r'''  function isCadInput(input) {
-              /* SQ_V135_UNIVERSAL_CAD_INPUT_GATE
+              /* SQ_V136_UNIVERSAL_CAD_INPUT_GATE
                  Detect CAD-board inputs from file type, control identity, and nearby project labels.
                  This includes file controls created after startup by separate project screens. */
               if (!input || String(input.tagName || '').toLowerCase() !== 'input' ||
@@ -187,7 +191,7 @@ jobs:
               )
               matches = list(tag.finditer(html))
               if len(matches) != 1:
-                  raise SystemExit(f"ERROR V135: expected one embedded {BRIDGE_ID} script; found {len(matches)}.")
+                  raise SystemExit(f"ERROR V136: expected one embedded {BRIDGE_ID} script; found {len(matches)}.")
               match = matches[0]
               bridge = match.group(2)
               function_re = re.compile(
@@ -196,29 +200,52 @@ jobs:
               )
               found = list(function_re.finditer(bridge))
               if len(found) != 1:
-                  raise SystemExit(f"ERROR V135: expected one isCadInput function; found {len(found)}. Apply V126 first.")
+                  raise SystemExit(f"ERROR V136: expected one isCadInput function; found {len(found)}. Apply V126 first.")
               replacement = NEW_FUNCTION + "\n\n  function addAcceptedTypes"
               patched_bridge = function_re.sub(lambda _m: replacement, bridge, count=1)
               if patched_bridge.count(MARKER) != 1:
-                  raise SystemExit("ERROR V135: universal CAD input marker was not inserted exactly once.")
+                  raise SystemExit("ERROR V136: universal CAD input marker was not inserted exactly once.")
               if "var CAD_INPUT_IDS = new Set([" not in patched_bridge or \
                  "var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);" not in patched_bridge:
-                  raise SystemExit("ERROR V135: V126 file input allow/deny lists changed unexpectedly.")
+                  raise SystemExit("ERROR V136: V126 file input allow/deny lists changed unexpectedly.")
               if "if (!isCadInput(input)) return;" not in patched_bridge:
-                  raise SystemExit("ERROR V135: shared accepted-types handler no longer uses isCadInput.")
+                  raise SystemExit("ERROR V136: shared accepted-types handler no longer uses isCadInput.")
               result = html[:match.start(2)] + "\n" + patched_bridge.rstrip() + "\n" + html[match.end(2):]
               if result.count(MARKER) != 1 or result.count('id="' + BRIDGE_ID + '"') != 1:
-                  raise SystemExit("ERROR V135: final HTML has missing or duplicate bridge code.")
+                  raise SystemExit("ERROR V136: final HTML has missing or duplicate bridge code.")
           
+              # Android file-origin WebView can fail when Emscripten fetches a relative WASM URL.
+              # Resolve from document.baseURI so file:///android_asset/... reaches Emscripten's XHR branch.
+              wasm_helper = r'''function sqDwgWasmRuntimePath() {
+          try {
+            return new URL('./libredwg-writer/wasm/', document.baseURI).href.replace(/\/$/, '');
+          } catch (_) {
+            return './libredwg-writer/wasm';
+          }
+          }'''
+              if "function sqDwgWasmRuntimePath()" not in result:
+                  wasm_anchor = "const SQ_WRITER_WASM_URL='./libredwg-writer/wasm/libredwg-web.js';"
+                  if result.count(wasm_anchor) != 1:
+                      raise SystemExit("ERROR V136: could not locate unique local DWG WASM loader anchor.")
+                  result = result.replace(wasm_anchor, wasm_anchor + "\n" + wasm_helper, 1)
+              relative_create = "LibreDwg.create('./libredwg-writer/wasm')"
+              if result.count(relative_create) != 2:
+                  raise SystemExit(f"ERROR V136: expected two DWG conversion entry points using relative WASM path; found {result.count(relative_create)}.")
+              result = result.replace(relative_create, "LibreDwg.create(sqDwgWasmRuntimePath())")
+              if result.count("LibreDwg.create(sqDwgWasmRuntimePath())") != 2:
+                  raise SystemExit("ERROR V136: both DWG conversion entry points did not switch to corrected WASM path.")
+              if "new URL('./libredwg-writer/wasm/', document.baseURI)" not in result:
+                  raise SystemExit("ERROR V136: absolute WASM runtime URL is missing.")
+
               # Keep app-side update checks aligned with the APK's Android package version.
-              version_re = re.compile(r"(?m)(const\s+SQ_APP_VERSION_CODE\s*=\s*)(126|135)(\s*;)")
+              version_re = re.compile(r"(?m)(const\s+SQ_APP_VERSION_CODE\s*=\s*)(126|135|136)(\s*;)")
               version_matches = list(version_re.finditer(result))
               if len(version_matches) != 1:
-                  raise SystemExit(f"ERROR V135: expected one SQ_APP_VERSION_CODE value (126/135); found {len(version_matches)}.")
+                  raise SystemExit(f"ERROR V136: expected one SQ_APP_VERSION_CODE value (126/135); found {len(version_matches)}.")
               version_match = version_matches[0]
-              result = result[:version_match.start()] + version_match.group(1) + "135" + version_match.group(3) + result[version_match.end():]
+              result = result[:version_match.start()] + version_match.group(1) + "136" + version_match.group(3) + result[version_match.end():]
               if "function universalTransformBytes(input,t)" not in result or "dwg_write_dxf(bytes.buffer)" not in result:
-                  raise SystemExit("ERROR V135: byte-preserving CAD transform or existing DWG writer is missing.")
+                  raise SystemExit("ERROR V136: byte-preserving CAD transform or existing DWG writer is missing.")
               return result
           
           
@@ -226,9 +253,9 @@ jobs:
               original = path.read_text(encoding="utf-8")
               updated = replace_bridge_function(original)
               path.write_text(updated, encoding="utf-8")
-              print("PASS V135: all CAD-board pickers are detected by input type or board/project context.")
-              print("PASS V135: point-list-only and photo/PDF-only controls remain excluded.")
-              print("PASS V135: V117 converter and original orientation/geometry code outside the bridge are unchanged.")
+              print("PASS V136: all CAD-board pickers are detected by input type or board/project context.")
+              print("PASS V136: point-list-only and photo/PDF-only controls remain excluded.")
+              print("PASS V136: V117 converter and original orientation/geometry code outside the bridge are unchanged.")
           
           
           def _read_len8(data: bytes, pos: int) -> tuple[int, int]:
@@ -303,7 +330,7 @@ jobs:
               if strings is None or pool_info is None:
                   raise ValueError("Android XML string pool not found")
           
-              # versionName string is same length (1.0.126 -> 1.0.135), so pool offsets stay valid.
+              # versionName string is same length (1.0.126 -> 1.0.136), so pool offsets stay valid.
               old_names = [i for i, value in enumerate(strings) if value == OLD_APP_VERSION_NAME]
               if not old_names and version_name not in strings:
                   raise ValueError(f"Android manifest string pool has neither {OLD_APP_VERSION_NAME!r} nor {version_name!r}")
@@ -347,22 +374,22 @@ jobs:
           
           def patch_apk(input_apk: Path, output_apk: Path) -> None:
               if not input_apk.is_file() or input_apk.stat().st_size == 0:
-                  raise SystemExit("ERROR V135: input APK is missing or empty.")
+                  raise SystemExit("ERROR V136: input APK is missing or empty.")
               if input_apk.resolve() == output_apk.resolve():
-                  raise SystemExit("ERROR V135: output APK must differ from input APK.")
+                  raise SystemExit("ERROR V136: output APK must differ from input APK.")
               output_apk.parent.mkdir(parents=True, exist_ok=True)
               with zipfile.ZipFile(input_apk, "r") as zin:
                   names = [info.filename for info in zin.infolist()]
                   if names.count("assets/index.html") != 1:
-                      raise SystemExit("ERROR V135: input APK must contain exactly one assets/index.html.")
+                      raise SystemExit("ERROR V136: input APK must contain exactly one assets/index.html.")
                   if names.count("AndroidManifest.xml") != 1:
-                      raise SystemExit("ERROR V135: input APK must contain exactly one AndroidManifest.xml.")
+                      raise SystemExit("ERROR V136: input APK must contain exactly one AndroidManifest.xml.")
                   seen = set()
                   with zipfile.ZipFile(output_apk, "w", allowZip64=True) as zout:
                       for info in zin.infolist():
                           name = info.filename
                           if name in seen:
-                              raise SystemExit("ERROR V135: duplicate APK ZIP entry: " + name)
+                              raise SystemExit("ERROR V136: duplicate APK ZIP entry: " + name)
                           seen.add(name)
                           upper = name.upper()
                           if upper.startswith("META-INF/") and (
@@ -383,12 +410,12 @@ jobs:
                   html = check.read("assets/index.html").decode("utf-8")
                   manifest = check.read("AndroidManifest.xml")
                   if html.count(MARKER) != 1:
-                      raise SystemExit("ERROR V135: APK output is missing the V135 HTML gate.")
+                      raise SystemExit("ERROR V136: APK output is missing the V136 HTML gate.")
                   patch_binary_manifest(manifest)  # validates the resulting manifest can be safely updated again
                   if "assets/libredwg-writer/wasm/libredwg-web.wasm" not in check.namelist():
-                      raise SystemExit("ERROR V135: APK output lost the local DWG WebAssembly engine.")
-              print("PASS V135: shared DWG picker gate patched in APK assets; package version raised to 1.0.135/135.")
-              print("PASS V135: source DWG is not written over; app's local DWG/DXF engine and all unrelated assets are retained.")
+                      raise SystemExit("ERROR V136: APK output lost the local DWG WebAssembly engine.")
+              print("PASS V136: shared DWG picker gate patched in APK assets; package version raised to 1.0.136/136.")
+              print("PASS V136: source DWG is not written over; app's local DWG/DXF engine and all unrelated assets are retained.")
           
           
           def _make_axml_test_fixture() -> bytes:
@@ -428,7 +455,7 @@ jobs:
               result = patch_binary_manifest(fixture)
               again = patch_binary_manifest(result)
               if len(fixture) != len(result) or len(result) != len(again):
-                  raise SystemExit("FAIL V135 self-test: manifest patch changed binary XML length")
+                  raise SystemExit("FAIL V136 self-test: manifest patch changed binary XML length")
               # Root versionCode is the final typed data word in the first attribute.
               chunks = []
               pos = 8
@@ -439,14 +466,14 @@ jobs:
               strings_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0001)
               strings, _spans = _string_pool(result, strings_chunk, struct.unpack_from("<I", result, strings_chunk + 4)[0], 28)
               if TARGET_APP_VERSION_NAME not in strings:
-                  raise SystemExit("FAIL V135 self-test: versionName was not updated")
+                  raise SystemExit("FAIL V136 self-test: versionName was not updated")
               code_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0102)
               attr_start = struct.unpack_from("<H", result, code_chunk + 24)[0]
               attr0 = code_chunk + 16 + attr_start
               actual = struct.unpack_from("<I", result, attr0 + 16)[0]
               if actual != TARGET_APP_VERSION_CODE:
-                  raise SystemExit(f"FAIL V135 self-test: versionCode={actual}, expected {TARGET_APP_VERSION_CODE}")
-              print("PASS V135 self-test: binary Android manifest is version-bumped in place with offsets preserved.")
+                  raise SystemExit(f"FAIL V136 self-test: versionCode={actual}, expected {TARGET_APP_VERSION_CODE}")
+              print("PASS V136 self-test: binary Android manifest is version-bumped in place with offsets preserved.")
           
           
           def main() -> int:
@@ -477,15 +504,15 @@ jobs:
           const assert = require('node:assert/strict');
           const vm = require('node:vm');
           const [htmlPath] = process.argv.slice(2);
-          assert(htmlPath, 'usage: node SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js INDEX_OR_EXTRACTED_APK_HTML');
+          assert(htmlPath, 'usage: node SurveyQuant_v1.0.136_UNIVERSAL_CAD_PICKER_TEST.js INDEX_OR_EXTRACTED_APK_HTML');
           const html = fs.readFileSync(htmlPath, 'utf8');
           const bridgeTag = html.match(/<script\s+id=["']sq-v117-universal-dwg-bridge["']\s*>([\s\S]*?)<\/script\s*>/i);
           assert(bridgeTag, 'the shared V117/V126 DWG bridge script is missing');
           const bridge = bridgeTag[1];
-          assert.equal((html.match(/SQ_V135_UNIVERSAL_CAD_INPUT_GATE/g) || []).length, 1,
-            'V135 shared CAD picker gate must be embedded exactly once');
-          assert.match(html, /const\s+SQ_APP_VERSION_CODE\s*=\s*135\s*;/,
-            'the embedded app version check must advance to 135');
+          assert.equal((html.match(/SQ_V136_UNIVERSAL_CAD_INPUT_GATE/g) || []).length, 1,
+            'V136 shared CAD picker gate must be embedded exactly once');
+          assert.match(html, /const\s+SQ_APP_VERSION_CODE\s*=\s*136\s*;/,
+            'the embedded app version check must advance to 136');
           assert(bridge.includes('strongCadHint'), 'CAD context detector missing');
           assert(bridge.includes('MutationObserver'), 'dynamically-created project pickers must be monitored');
           assert(bridge.includes('window.__sqV117DwgBridgeAPI'), 'original V117 bridge API is missing');
@@ -494,6 +521,12 @@ jobs:
             'universalTransformBytes belongs to the app drawing engine, not the bridge itself');
           assert(html.includes('function universalTransformBytes(input,t)'), 'byte-preserving CAD transform was removed');
           assert(html.includes('dwg_write_dxf(bytes.buffer)'), 'local DWG-to-DXF writer was removed');
+          assert(html.includes("function sqDwgWasmRuntimePath()"), 'absolute Android WebView WASM path helper is missing');
+          assert(html.includes("new URL('./libredwg-writer/wasm/', document.baseURI)"), 'WASM URL must resolve from packaged app page');
+          assert.equal((html.match(/LibreDwg\.create\(sqDwgWasmRuntimePath\(\)\)/g) || []).length, 2,
+            'main board import and orientation must both use the corrected WASM path');
+          assert.equal((html.match(/LibreDwg\.create\('\.\/libredwg-writer\/wasm'\)/g) || []).length, 0,
+            'relative WASM path that triggers Failed to fetch must be removed');
           assert(html.includes('safeDownloadFile'), 'existing safe download path was removed');
           assert(bridge.includes("var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);"),
             'dedicated point-list utilities must remain excluded');
@@ -613,9 +646,9 @@ jobs:
             assert.equal(source.name, 'Unknown-Project-Board.DwG', 'original DWG object must remain unchanged');
             assert.equal(calls.length, 0, 'the generic picker bridge must not run orientation-only conversion');
             assert.deepEqual(Array.from(source.parts[0]), Array.from(testBytes), 'source DWG bytes must remain unchanged');
-            console.log('PASS V135: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
-            console.log('PASS V135: dynamically created board inputs are recognized; native file-change handling is preserved.');
-            console.log('PASS V135: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; original DWG is untouched.');
+            console.log('PASS V136: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
+            console.log('PASS V136: dynamically created board inputs are recognized; native file-change handling is preserved.');
+            console.log('PASS V136: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; original DWG is untouched.');
           })().catch(error => { console.error(error); process.exitCode = 1; });
           JS
           python3 -m py_compile "$PATCHER"
@@ -627,7 +660,7 @@ jobs:
       - name: Download the successful V134 R4 APK and reproducible source patch
         shell: bash
         env:
-          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.source_run_id || '39763063697' }}
         run: |
           set -euo pipefail
           test -n "$SOURCE_RUN_ID" || { echo "ERROR: no source R4 run ID was selected."; exit 1; }
@@ -644,16 +677,16 @@ jobs:
           echo "V134_ARTIFACT_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "Downloaded signed base APK and source patch from R4 run $SOURCE_RUN_ID."
 
-      - name: Apply universal board-DWG gate, test, align, and re-sign as V135
+      - name: Apply universal board-DWG gate, test, align, and re-sign as V136
         shell: bash
         run: |
           set -euo pipefail
           RELEASE="$RUNNER_TEMP/sq-release"
           SOURCE_DIR="$RUNNER_TEMP/v135-source-patch"
-          RAW_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_UNSIGNED.apk"
-          ALIGNED_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_ALIGNED.apk"
-          FINAL_APK="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk"
-          FINAL_SOURCE="$RELEASE/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip"
+          RAW_APK="$RELEASE/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_UNSIGNED.apk"
+          ALIGNED_APK="$RELEASE/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_ALIGNED.apk"
+          FINAL_APK="$RELEASE/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk"
+          FINAL_SOURCE="$RELEASE/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
           rm -rf "$SOURCE_DIR" "$RAW_APK" "$ALIGNED_APK" "$FINAL_APK" "$FINAL_SOURCE"
           mkdir -p "$SOURCE_DIR"
@@ -663,17 +696,17 @@ jobs:
           test -s "$SOURCE_DIR/index.html" || { echo "ERROR: V134 source patch has no index.html at its root."; exit 1; }
           python3 "$PATCHER" --html "$SOURCE_DIR/index.html"
           node "$TESTER" "$SOURCE_DIR/index.html"
-          cp "$PATCHER" "$SOURCE_DIR/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_PATCH.py"
-          cp "$TESTER" "$SOURCE_DIR/SurveyQuant_v1.0.135_UNIVERSAL_CAD_PICKER_TEST.js"
-          cat > "$SOURCE_DIR/README_V135_UNIVERSAL_CAD_DWG_AR.txt" <<'TXT'
-          SurveyQuant V135: دعم DWG تلقائيًا في كل مشروع يستقبل لوحات CAD
+          cp "$PATCHER" "$SOURCE_DIR/SurveyQuant_v1.0.136_UNIVERSAL_CAD_PICKER_PATCH.py"
+          cp "$TESTER" "$SOURCE_DIR/SurveyQuant_v1.0.136_UNIVERSAL_CAD_PICKER_TEST.js"
+          cat > "$SOURCE_DIR/README_V136_UNIVERSAL_CAD_DWG_AR.txt" <<'TXT'
+          SurveyQuant V136: دعم DWG تلقائيًا في كل مشروع يستقبل لوحات CAD
           
           - يوسّع جسر استيراد DWG المشترك بحيث يكتشف خانات اختيار اللوحات من نوع الملف أو اسم/عنوان الخانة أو سياق المشروع، حتى لو لم تكن ضمن قائمة IDs القديمة.
           - يشمل مشروع إسقاط الملفات ومشروعات الدمج والتوجيه والحصر والخرسانة وأي خانة ديناميكية يضيفها المشروع بعنوان يدل على لوحة CAD.
           - يوسّع امتدادات خانات اختيار لوحات CAD لتشمل DWG ويُبقي معالجة الملف لدى قارئ DWG الأصلي للمشروع؛ لا يستبدل ملف DWG بـ DXF معاد رسمه ولا يكتب فوق الملف المحدد. التحويل المؤقت الخاص بمشروع التوجيه يظل كما هو في النسخة الأساسية.
           - يستثني خانات ملفات النقاط النصية TXT/CSV/SDR/PNT والصور وPDF حتى لا تتحول أداة نقاط أو صور إلى مستورد لوحات.
           - لا يعدّل هندسة الإسقاط أو التوجيه خارج كتلة الجسر المشتركة.
-          - يرفع إصدار Android إلى 1.0.135/135 لإتاحة التحديث فوق النسخة السابقة.
+          - يرفع إصدار Android إلى 1.0.136/136 لإتاحة التحديث فوق النسخة السابقة.
           - الاختبارات تشمل الخانات الـ12 القديمة وخانة إسقاط عربية عامة وخانة دمج إنجليزية وخانة تضاف ديناميكيًا، واستثناء نقاط المساحة والصور/PDF.
           
           تنبيه: دعم كل كائن DWG يظل معتمدًا على الكائنات التي يستطيع محوّل LibreDWG قراءتها؛ قد تبقى كائنات Proxy/مملوكة غير مدعومة بحاجة إلى محوّل يدعمها.
@@ -685,8 +718,8 @@ jobs:
           unzip -p "$RAW_APK" assets/index.html > "$RUNNER_TEMP/v135-apk-index.html"
           node "$TESTER" "$RUNNER_TEMP/v135-apk-index.html"
           unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/wasm/libredwg-web.wasm'
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$RAW_APK" | grep -E "package: name=.*versionCode='135'.*versionName='1.0.135'" || {
-            echo "ERROR: APK manifest version was not raised to 1.0.135 (135)."; exit 1;
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$RAW_APK" | grep -E "package: name=.*versionCode='136'.*versionName='1.0.136'" || {
+            echo "ERROR: APK manifest version was not raised to 1.0.136 (136)."; exit 1;
           }
 
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
@@ -698,25 +731,25 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW_APK" "$ALIGNED_APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL_APK" "$ALIGNED_APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL_APK"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL_APK" | grep -E "package: name=.*versionCode='135'.*versionName='1.0.135'"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL_APK" | grep -E "package: name=.*versionCode='136'.*versionName='1.0.136'"
 
           STORM_REPORT="$(find "$V134_ARTIFACT_ROOT" -type f -name 'SurveyQuant_v1.0.134_STORM_CONVERSION_REPORT.md' -print -quit)"
           STORM_DXF="$(find "$V134_ARTIFACT_ROOT" -type f -name 'SurveyQuant_v1.0.134_STORM_CONVERTED_DXF.zip' -print -quit)"
           if [ -n "$STORM_DXF" ]; then sha256sum "$FINAL_APK" "$FINAL_SOURCE" "$STORM_DXF" > "$RELEASE/SHA256SUMS.txt"; else sha256sum "$FINAL_APK" "$FINAL_SOURCE" > "$RELEASE/SHA256SUMS.txt"; fi
           printf '%s\n' \
-            'V135 PASS: CAD board picker auto-detection is installed; APK reports versionCode 135/versionName 1.0.135; local DWG WASM engine is retained; JS regression tests and apksigner verification passed.' \
-            > "$RELEASE/V135_BUILD_RESULT.txt"
+            'V136 PASS: CAD board picker auto-detection is installed; APK reports versionCode 136/versionName 1.0.136; local DWG WASM engine is retained; JS regression tests and apksigner verification passed.' \
+            > "$RELEASE/V136_BUILD_RESULT.txt"
           cat "$RELEASE/SHA256SUMS.txt"
 
-      - name: Upload V135 signed APK, source patch, checksums, and STORM proof
+      - name: Upload V136 signed APK, source patch, checksums, and STORM proof
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.135-UNIVERSAL-DWG-ALL-PROJECTS
+          name: SurveyQuant-v1.0.136-UNIVERSAL-DWG-ALL-PROJECTS
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.135_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.136_UNIVERSAL_DWG_ALL_PROJECTS_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V135_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V136_BUILD_RESULT.txt
             ${{ runner.temp }}/v134-r4-artifact/SurveyQuant_v1.0.134_STORM_CONVERTED_DXF.zip
             ${{ runner.temp }}/v134-r4-artifact/SurveyQuant_v1.0.134_STORM_CONVERSION_REPORT.md
           if-no-files-found: warn
