@@ -1,9 +1,9 @@
-name: Build SurveyQuant v1.0.137 - Fix DWG WASM file-origin loading
+name: Build SurveyQuant v1.0.138 - Restore Orientation Axes, Scale and Fit
 
 on:
   push:
     paths:
-      - ".github/workflows/build-v137-dwg-wasm-file-uri-fix.yml"
+      - ".github/workflows/build-v138-restore-orientation-axes-scale.yml"
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -91,15 +91,15 @@ jobs:
           test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
           echo "PASS: Android SDK configured; build-tools 35.0.0 has zipalign, apksigner, and aapt."
 
-      - name: Write V137 file-origin WASM repair patcher and regression tests
+      - name: Write V138 orientation restoration, automatic axes, scale and WASM regression tests
         shell: bash
         run: |
           set -euo pipefail
-          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.137_WASM_FILE_URI_FIX.py"
-          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.137_DWG_WASM_REGRESSION_TEST.js"
+          PATCHER="$RUNNER_TEMP/SurveyQuant_v1.0.138_ORIENTATION_RESTORE_PATCH.py"
+          TESTER="$RUNNER_TEMP/SurveyQuant_v1.0.138_ORIENTATION_REGRESSION_TEST.js"
           cat > "$PATCHER" <<'PY'
           #!/usr/bin/env python3
-          """V137: detect CAD-board inputs across existing and dynamically-created projects.
+          """V138: detect CAD-board inputs across existing and dynamically-created projects.
           
           Patches only the shared V117/V126 DWG picker gate in HTML, or the same asset in an APK.
           The gate expands accepted file types and leaves selected DWG files to the app's existing
@@ -117,13 +117,13 @@ jobs:
           from pathlib import Path
           
           BRIDGE_ID = "sq-v117-universal-dwg-bridge"
-          MARKER = "SQ_V137_UNIVERSAL_CAD_INPUT_GATE"
-          TARGET_APP_VERSION_CODE = 137
-          TARGET_APP_VERSION_NAME = "1.0.137"
+          MARKER = "SQ_V138_UNIVERSAL_CAD_INPUT_GATE"
+          TARGET_APP_VERSION_CODE = 138
+          TARGET_APP_VERSION_NAME = "1.0.138"
           OLD_APP_VERSION_NAME = "1.0.136"
           
           NEW_FUNCTION = r'''  function isCadInput(input) {
-              /* SQ_V137_UNIVERSAL_CAD_INPUT_GATE
+              /* SQ_V138_UNIVERSAL_CAD_INPUT_GATE
                  Detect CAD-board inputs from file type, control identity, and nearby project labels.
                  This includes file controls created after startup by separate project screens. */
               if (!input || String(input.tagName || '').toLowerCase() !== 'input' ||
@@ -184,6 +184,166 @@ jobs:
             }'''
           
           
+          def restore_orientation_features(html: str) -> str:
+              result = html
+              def one(old: str, new: str, label: str, allow_existing: bool = False) -> None:
+                  nonlocal result
+                  if allow_existing and result.count(new) == 1 and old not in result:
+                      return
+                  count = result.count(old)
+                  if count != 1:
+                      raise SystemExit(f"ERROR V138 orientation: {label}: expected one source match, got {count}.")
+                  result = result.replace(old, new, 1)
+
+              # Export the original raw DXF parser from the app's private IIFE for the axis-reader module.
+              parser_api = 'window.sqExtractDxfAxisEntities = sqExtractDxfAxisEntities;'
+              if parser_api not in result:
+                  one('window.__sqOrientTest = {solve:sqOriSolve, transformBytes:sqOriTransformBytes};',
+                      parser_api + '\nwindow.__sqOrientTest = {solve:sqOriSolve, transformBytes:sqOriTransformBytes};',
+                      'expose original DXF raw parser')
+
+              # Restore mathematically valid scale range without arbitrary 1e-9..1e9 cutoffs.
+              one("if (dRef < 1e-9 || dSrc < 1e-9) throw new Error('النقطتان في كل لوحة يجب أن تكونا مختلفتين.');",
+                  "if (!(dRef > 0) || !(dSrc > 0) || !Number.isFinite(dRef) || !Number.isFinite(dSrc)) throw new Error('النقطتان في كل لوحة يجب أن تكونا مختلفتين وصالحتين حسابيًا.');",
+                  'legacy distance guard')
+              one("  if (!Number.isFinite(scale) || scale < 1e-9 || scale > 1e9) {\n    throw new Error('معامل المقياس غير منطقي. راجع وحدات وإحداثيات النقطتين.');\n  }",
+                  "  if (!Number.isFinite(scale) || scale <= 0) {\n    throw new Error('تعذر حساب معامل مقياس موجب وصالح من النقطتين.');\n  }",
+                  'legacy scale guard')
+              one("if(dS<1e-8||dR<1e-8)throw new Error('النقطتان 1 و2 في كل لوحة يجب أن تكونا مختلفتين.');",
+                  "if(!(dS>0)||!(dR>0)||!Number.isFinite(dS)||!Number.isFinite(dR))throw new Error('النقطتان 1 و2 في كل لوحة يجب أن تكونا مختلفتين وصالحتين حسابيًا.');",
+                  'active board-pair distance guard')
+              one("if(!Number.isFinite(scale)||scale<1e-9||scale>1e9)throw new Error('المقياس المحسوب غير منطقي. تحقق من ترتيب النقاط ووحدات اللوحتين.');",
+                  "if(!Number.isFinite(scale)||scale<=0)throw new Error('تعذر حساب مقياس موجب وصالح من النقطتين المتناظرتين.');",
+                  'active board-pair scale guard')
+
+              # Text renders at actual drawing height times current viewport scale and zoom.
+              one("const fitTextSize=Math.min(10,Math.max(6,Math.abs(Number(t.height)||2.5)*(m.scale/Math.max(0.001,zoom))*0.8));ctx.font=(Math.max(1.15,fitTextSize/Math.sqrt(Math.max(1,zoom))))+'px sans-serif';",
+                  "const textScreenHeight=Math.abs(Number(t.height)||2.5)*m.scale*0.8;ctx.font=(Math.max(0.75,Math.min(96,textScreenHeight)))+'px sans-serif';",
+                  'legacy text screen scale')
+              one("const st=styleOf(v,t),fitTextSize=Math.min(10,Math.max(6,Math.abs(Number(t.height)||2.5)*m.base*0.8)),size=Math.max(1.15,fitTextSize/Math.sqrt(Math.max(1,Number(v.zoom)||1)));",
+                  "const st=styleOf(v,t),size=Math.max(0.75,Math.min(96,Math.abs(Number(t.height)||2.5)*m.scale*0.8));",
+                  'active orientation text screen scale')
+              old_canvas='height:230px;min-height:230px;max-height:230px'
+              if result.count(old_canvas) != 2:
+                  raise SystemExit(f"ERROR V138 orientation: expected two fixed 230px canvases, got {result.count(old_canvas)}.")
+              result=result.replace(old_canvas,'height:430px;min-height:320px;max-height:520px')
+
+              # Keep XLINE/RAY from inflating geometry bounds to a fixed 100000-unit extent; include them in axis detection.
+              one('const segments=[],labels=[],seenSeg=new Set();',
+                  'const segments=[],labels=[],infiniteLines=[],seenSeg=new Set();',
+                  'collect infinite-axis geometry')
+              old_entity = "else if(type==='XLINE'||type==='RAY'){\n      const a=e.basePoint||e.position, v=e.directionVector;\n      if(a&&v){const k=type==='RAY'?100000:100000;pushSeg({x:a.x-v.x*k,y:a.y-v.y*k},{x:a.x+v.x*k,y:a.y+v.y*k},layer,type);}\n    }"
+              new_entity = "else if(type==='XLINE'||type==='RAY'){\n      const a=e.basePoint||e.position, v=e.directionVector;\n      if(a&&v&&[a.x,a.y,v.x,v.y].every(q=>Number.isFinite(Number(q)))&&Math.hypot(Number(v.x),Number(v.y))>1e-12)infiniteLines.push({basePoint:{x:Number(a.x),y:Number(a.y)},directionVector:{x:Number(v.x),y:Number(v.y)},layer,type});\n    }"
+              one(old_entity,new_entity,'capture XLINE/RAY from parsed entities')
+              old_raw = "else if(type==='XLINE'||type==='RAY'){\n          const a=e.basePoint,v=e.directionVector;\n          if(a&&v)pushSeg({x:a.x-v.x*100000,y:a.y-v.y*100000},{x:a.x+v.x*100000,y:a.y+v.y*100000},layer,type);\n        }"
+              new_raw = "else if(type==='XLINE'||type==='RAY'){\n          const a=e.basePoint,v=e.directionVector;\n          if(a&&v&&[a.x,a.y,v.x,v.y].every(q=>Number.isFinite(Number(q)))&&Math.hypot(Number(v.x),Number(v.y))>1e-12)infiniteLines.push({basePoint:{x:Number(a.x),y:Number(a.y)},directionVector:{x:Number(v.x),y:Number(v.y)},layer,type});\n        }"
+              one(old_raw,new_raw,'capture raw XLINE/RAY from CAD records')
+              infinite_block = """  // Extend infinite axes to this board's geometry bounds, not a hard-coded 100000-unit extent.\n  if(infiniteLines.length){\n    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,maxTextHeight=0;\n    const see=p=>{if(!p)return;const x=Number(p.x),y=Number(p.y);if(!Number.isFinite(x)||!Number.isFinite(y))return;minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);};\n    for(const seg of segments){see(seg.a);see(seg.b);}\n    for(const label of labels){see(label);maxTextHeight=Math.max(maxTextHeight,Number(label.height)||0);}\n    const boundsDiag=Math.hypot(maxX-minX,maxY-minY);\n    const extent=Math.max(Number.isFinite(boundsDiag)&&boundsDiag>0?boundsDiag*2:1000,maxTextHeight*20,1);\n    for(const item of infiniteLines){const p=item.basePoint,v=item.directionVector,mag=Math.hypot(v.x,v.y);if(!(mag>1e-12))continue;const dx=v.x/mag*extent,dy=v.y/mag*extent;if(item.type==='RAY')pushSeg(p,{x:p.x+dx,y:p.y+dy},item.layer,'RAY');else pushSeg({x:p.x-dx,y:p.y-dy},{x:p.x+dx,y:p.y+dy},item.layer,'XLINE');}\n  }\n"""
+              one('  // Remove duplicate text anchors (normal parser + raw record fallback).',
+                  infinite_block+'  // Remove duplicate text anchors (normal parser + raw record fallback).',
+                  'extend infinite axes using board-relative length')
+
+              # Common grid bubble labels (AS, Z1, AXIS12, Arabic-Indic digits) are valid axis names.
+              label_re = re.compile(r"function sqOriLabelText\(entity\) \{[\s\S]*?\n\}")
+              labels=list(label_re.finditer(result))
+              if len(labels)!=1:
+                  raise SystemExit(f"ERROR V138 orientation: expected one axis label normalizer, got {len(labels)}.")
+              label_function = r'''function sqOriLabelText(entity) {
+            let t=String(entity && (entity.text??entity.string??entity.value??entity.content??entity.textString??'')||'');
+            try { t=t.normalize('NFKC'); } catch (_) {}
+            t=t.replace(/\\P/gi,' ').replace(/\{[^;]*;/g,' ').replace(/[{}]/g,' ').replace(/%%[dpc]/gi,' ').trim();
+            t=t.replace(/[٠-٩]/g,ch=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(ch)));
+            if(!t || t.length>16) return '';
+            t=t.replace(/[\s._-]+/g,'').toUpperCase();
+            // Permit engineering grid names such as AS, Z1, AXIS12, 1A; exclude notes and dimensions.
+            if(t.length>12) return '';
+            return /^[A-Z\u0600-\u06FF]{1,8}\d{0,4}$/.test(t) || /^\d{1,4}[A-Z\u0600-\u06FF]{1,6}$/.test(t) ? t : '';
+          }'''
+              m=labels[0]
+              result=result[:m.start()]+label_function+result[m.end():]
+              one('const minLength=Math.max(diag*0.075,medianHeight*4,1e-7);',
+                  'const minLength=Math.max(diag*0.02,medianHeight*3,1e-7);',
+                  'axis candidate line threshold')
+              one(".filter(l=>l.len>=minLength&&l.type!=='RAY'&&l.type!=='XLINE');",
+                  ".filter(l=>l.len>=minLength);",
+                  'include XLINE/RAY as intersection candidates')
+              old_label_assignment = """      const endDistance=Math.min(Math.hypot(t.x-line.a.x,t.y-line.a.y),Math.hypot(t.x-line.b.x,t.y-line.b.y));\n      if(perp>tol||endDistance>Math.max(tol,line.len*0.16))continue;\n      const beyond=(u < -1e-4 || u > 1.0001);\n      const nearEnd=Math.min(Math.abs(u),Math.abs(1-u));\n      const score=perp/tol+endDistance/tol+(beyond?0:1.5+nearEnd*3);\n"""
+              new_label_assignment = """      const endDistance=Math.min(Math.hypot(t.x-line.a.x,t.y-line.a.y),Math.hypot(t.x-line.b.x,t.y-line.b.y));\n      const infinite=line.type==='XLINE'||line.type==='RAY';\n      if(perp>tol||(!infinite&&endDistance>Math.max(tol,line.len*0.16)))continue;\n      if(line.type==='RAY'&&u<0)continue;\n      const beyond=(u < -1e-4 || u > 1.0001);\n      const nearEnd=Math.min(Math.abs(u),Math.abs(1-u));\n      const score=perp/tol+(infinite?Math.min(0.9,Math.abs(u-(line.type==='RAY'?0.75:0.5))*0.25):endDistance/tol+(beyond?0:1.5+nearEnd*3));\n"""
+              one(old_label_assignment,new_label_assignment,'attach grid bubble labels to infinite axes')
+              one('if(d<Math.PI*70/180||d>Math.PI*110/180)continue;',
+                  'if(d<Math.PI*20/180||d>Math.PI*160/180)continue;',
+                  'axis-family skew angle allowance')
+
+              # The previous installer attached to a legacy dialog whose HTML is replaced by the live two-board UI.
+              step2='id="sq110Step2" class="sqori-preview" type="button">2) اللوحة المرجعية</button></div><div id="sq110TargetScreen">'
+              step2new='id="sq110Step2" class="sqori-preview" type="button">2) اللوحة المرجعية</button><button id="sq110ReadAxesBtn" class="sqori-preview" type="button">🧭 قراءة المحاور تلقائيًا</button></div><div id="sq110TargetScreen">'
+              one(step2,step2new,'active orientation auto-axis button')
+
+              axis_function = r'''function readAxesForOrientation(){
+           try{
+            if(!state.target||!state.reference)throw new Error('اختر وافتح اللوحة غير الموجّهة واللوحة المرجعية أولًا.');
+            const axisAPI=window.__sqOriAxisAutoTest;
+            if(!axisAPI||typeof axisAPI.matchIntersections!=='function')throw new Error('قارئ المحاور غير متصل بواجهة التوجيه. أغلق المشروع وافتحه مرة أخرى بعد التحديث.');
+            if(typeof window.sqExtractDxfAxisEntities!=='function')throw new Error('قارئ سجلات DXF الخام غير متصل، لذلك لا يمكن فحص محاور اللوحتين.');
+            const decode=bytes=>new TextDecoder('windows-1252',{fatal:false}).decode(bytes);
+            const sourceModel={source:'DXF',entities:[],rawDXF:decode(state.target.bytes)};
+            const referenceModel={source:'DXF',entities:[],rawDXF:decode(state.reference.bytes)};
+            const matched=axisAPI.matchIntersections(referenceModel,sourceModel);
+            if(!matched.best||!matched.matches||matched.matches.length<2){
+             const rs=matched.ref||{},ss=matched.src||{};
+             throw new Error('لم أجد تقاطعين مشتركين مسمّيين بين اللوحتين. التقاطعات المرجعية: '+(rs.intersections?.size||0)+'، غير الموجهة: '+(ss.intersections?.size||0)+'، التطابقات: '+(matched.matches?.length||0)+'. راجع أسماء المحاور قرب نهايات الشبكة، أو اختر نقطتين يدويًا باستخدام OSNAP/ID Point.');
+            }
+            const a=matched.best.first,b=matched.best.second;
+            state.targetPoints=[a.source,b.source].map((p,i)=>({x:p.x,y:p.y,kind:'تقاطع محور آلي '+(i+1)+' '+(i===0?a.key:b.key)}));
+            state.referencePoints=[a.reference,b.reference].map((p,i)=>({x:p.x,y:p.y,kind:'تقاطع محور مرجعي '+(i+1)+' '+(i===0?a.key:b.key)}));
+            state.axisMatches=matched.matches.map(m=>({key:m.key,source:{x:m.source.x,y:m.source.y},reference:{x:m.reference.x,y:m.reference.y}}));
+            state.active.target=0;state.active.reference=0;state.idPoint={target:null,reference:null};
+            fillReadouts();if(state.views.target)draw(state.views.target);if(state.views.reference)draw(state.views.reference);
+            const t=calculation();
+            const errors=state.axisMatches.map(m=>{const q=t.point(m.source.x,m.source.y);return {key:m.key,value:Math.hypot(q.x-m.reference.x,q.y-m.reference.y)};});
+            const rms=Math.sqrt(errors.reduce((sum,e)=>sum+e.value*e.value,0)/Math.max(1,errors.length));
+            const max=errors.reduce((best,e)=>Math.max(best,e.value),0);
+            showScreen('target');
+            status('تمت قراءة المحاور آليًا: '+matched.matches.length+' تقاطعًا مشتركًا. أفضل نقطتين: '+a.key+' و'+b.key+'. معامل المقياس ×'+t.scale.toPrecision(10)+' | الدوران '+t.angleDeg.toFixed(8)+'° | الإزاحة X '+t.tx.toPrecision(12)+' ، Y '+t.ty.toPrecision(12)+' | انحراف تقاطعات الفحص RMS '+rms.toPrecision(8)+'، وأقصى انحراف '+max.toPrecision(8)+' بوحدات الرسم. راجع القيم ثم اضغط «توجيه وإخراج».',false);
+            return {matched,t,rms,max};
+           }catch(e){status((e&&e.message)?e.message:String(e),true);return null;}
+          }'''
+              calc_anchor="function calculation(){if(!state.target||!state.reference)throw new Error('افتح اللوحة غير الموجّهة واللوحة المرجعية أولًا.');"
+              one(calc_anchor,axis_function+'\n'+calc_anchor,'inject active axis-intersection reader')
+
+              one("const state={target:null,reference:null,targetPoints:[null,null],referencePoints:[null,null],active:{target:0,reference:0},tool:{target:'pick',reference:'pick'},snapMode:{target:'auto',reference:'auto'},views:{},selectedEntity:null,selectedEntities:[],undoStack:[],redoStack:[],idPoint:{target:null,reference:null},bound:false};",
+                  "const state={target:null,reference:null,targetPoints:[null,null],referencePoints:[null,null],axisMatches:[],active:{target:0,reference:0},tool:{target:'pick',reference:'pick'},snapMode:{target:'auto',reference:'auto'},views:{},selectedEntity:null,selectedEntities:[],undoStack:[],redoStack:[],idPoint:{target:null,reference:null},bound:false};",
+                  'store axis residual observations')
+              one("if(side==='target'){state.target={bytes:data.bytes,name:data.name};state.targetPoints=[null,null];state.selectedEntity=null;state.selectedEntities=[];state.undoStack=[];state.redoStack=[];updateDeleteHistoryButtons();draw(view);}else{state.reference={bytes:data.bytes,name:data.name};state.referencePoints=[null,null];}",
+                  "if(side==='target'){state.target={bytes:data.bytes,name:data.name};state.targetPoints=[null,null];state.axisMatches=[];state.selectedEntity=null;state.selectedEntities=[];state.undoStack=[];state.redoStack=[];updateDeleteHistoryButtons();draw(view);}else{state.reference={bytes:data.bytes,name:data.name};state.referencePoints=[null,null];state.axisMatches=[];}",
+                  'clear axis diagnostics when replacing boards')
+              one("const i=state.active[v.side],list=v.side==='target'?state.targetPoints:state.referencePoints;list[i]={x:snap.p.x,y:snap.p.y,kind:snap.kind};",
+                  "const i=state.active[v.side],list=v.side==='target'?state.targetPoints:state.referencePoints;state.axisMatches=[];list[i]={x:snap.p.x,y:snap.p.y,kind:snap.kind};",
+                  'clear stale diagnostics on manual snap')
+              one("pts[i]={...(pts[i]||{}),x,y,kind:'إحداثيات معدلة يدويًا'};const v=state.views[side];",
+                  "state.axisMatches=[];pts[i]={...(pts[i]||{}),x,y,kind:'إحداثيات معدلة يدويًا'};const v=state.views[side];",
+                  'clear stale diagnostics on manual coordinate edits')
+              old_review="function review(){try{const t=calculation();status('المعاينة جاهزة: النقطة 1 تطابق النقطة 1، والنقطة 2 تطابق النقطة 2. معامل المقياس ×'+t.scale.toFixed(10)+' | الدوران '+t.angleDeg.toFixed(6)+'° | X وY دون تبديل.');return t;}catch(e){status(e.message,true);return null;}}"
+              new_review="function review(){try{const t=calculation();let diagnostic='';if(Array.isArray(state.axisMatches)&&state.axisMatches.length>=2){const errs=state.axisMatches.map(m=>{const q=t.point(m.source.x,m.source.y);return Math.hypot(q.x-m.reference.x,q.y-m.reference.y);});const rms=Math.sqrt(errs.reduce((s,e)=>s+e*e,0)/errs.length),mx=Math.max(...errs);diagnostic=' | تقاطعات الفحص '+errs.length+' | RMS '+rms.toPrecision(8)+' | أقصى انحراف '+mx.toPrecision(8);}status('المعاينة جاهزة: النقطة 1 تطابق النقطة 1، والنقطة 2 تطابق النقطة 2. معامل المقياس ×'+t.scale.toPrecision(12)+' | الدوران '+t.angleDeg.toFixed(8)+'° | الإزاحة X '+t.tx.toPrecision(12)+' ، Y '+t.ty.toPrecision(12)+' | X=Easting وY=Northing دون تبديل.'+diagnostic);return t;}catch(e){status(e.message,true);return null;}}"
+              one(old_review,new_review,'report shift, rotation, scale and residuals')
+              one("el('sq110Preview').addEventListener('click',review);el('sq110Export').addEventListener('click',exportTarget);showScreen('target');",
+                  "el('sq110ReadAxesBtn').addEventListener('click',readAxesForOrientation);el('sq110Preview').addEventListener('click',review);el('sq110Export').addEventListener('click',exportTarget);showScreen('target');",
+                  'bind auto-axis button to active project')
+
+              checks={
+                'global raw DXF extraction API':'window.sqExtractDxfAxisEntities = sqExtractDxfAxisEntities;' in result,
+                'active axis control':'id="sq110ReadAxesBtn"' in result,
+                'active axis handler':'el(\'sq110ReadAxesBtn\').addEventListener(\'click\',readAxesForOrientation)' in result,
+                'auto axis finder':'function readAxesForOrientation()' in result,
+                'arbitrary scale caps removed':'scale<1e-9||scale>1e9' not in result and 'scale < 1e-9 || scale > 1e9' not in result,
+                'text scaling follows canvas':'Math.abs(Number(t.height)||2.5)*m.scale*0.8' in result,
+                'two larger viewports':result.count('height:430px;min-height:320px;max-height:520px')==2,
+                'translation/rotation/scale report':"الإزاحة X" in result and "t.tx.toPrecision(12)" in result and "t.ty.toPrecision(12)" in result,
+              }
+              failed=[k for k,v in checks.items() if not v]
+              if failed: raise SystemExit('ERROR V138 orientation postconditions failed: '+', '.join(failed))
+              return result
+
           def replace_bridge_function(html: str) -> str:
               tag = re.compile(
                   r'(<script\s+id=["\']' + re.escape(BRIDGE_ID) + r'["\']\s*>)([\s\S]*?)(</script\s*>)',
@@ -191,7 +351,7 @@ jobs:
               )
               matches = list(tag.finditer(html))
               if len(matches) != 1:
-                  raise SystemExit(f"ERROR V137: expected one embedded {BRIDGE_ID} script; found {len(matches)}.")
+                  raise SystemExit(f"ERROR V138: expected one embedded {BRIDGE_ID} script; found {len(matches)}.")
               match = matches[0]
               bridge = match.group(2)
               function_re = re.compile(
@@ -200,19 +360,19 @@ jobs:
               )
               found = list(function_re.finditer(bridge))
               if len(found) != 1:
-                  raise SystemExit(f"ERROR V137: expected one isCadInput function; found {len(found)}. Apply V126 first.")
+                  raise SystemExit(f"ERROR V138: expected one isCadInput function; found {len(found)}. Apply V126 first.")
               replacement = NEW_FUNCTION + "\n\n  function addAcceptedTypes"
               patched_bridge = function_re.sub(lambda _m: replacement, bridge, count=1)
               if patched_bridge.count(MARKER) != 1:
-                  raise SystemExit("ERROR V137: universal CAD input marker was not inserted exactly once.")
+                  raise SystemExit("ERROR V138: universal CAD input marker was not inserted exactly once.")
               if "var CAD_INPUT_IDS = new Set([" not in patched_bridge or \
                  "var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);" not in patched_bridge:
-                  raise SystemExit("ERROR V137: V126 file input allow/deny lists changed unexpectedly.")
+                  raise SystemExit("ERROR V138: V126 file input allow/deny lists changed unexpectedly.")
               if "if (!isCadInput(input)) return;" not in patched_bridge:
-                  raise SystemExit("ERROR V137: shared accepted-types handler no longer uses isCadInput.")
+                  raise SystemExit("ERROR V138: shared accepted-types handler no longer uses isCadInput.")
               result = html[:match.start(2)] + "\n" + patched_bridge.rstrip() + "\n" + html[match.end(2):]
               if result.count(MARKER) != 1 or result.count('id="' + BRIDGE_ID + '"') != 1:
-                  raise SystemExit("ERROR V137: final HTML has missing or duplicate bridge code.")
+                  raise SystemExit("ERROR V138: final HTML has missing or duplicate bridge code.")
           
               # Android file-origin WebView can fail when Emscripten fetches a relative WASM URL.
               # Resolve from document.baseURI so file:///android_asset/... reaches Emscripten's XHR branch.
@@ -226,30 +386,31 @@ jobs:
               if "function sqDwgWasmRuntimePath()" not in result:
                   wasm_anchor = "const SQ_WRITER_WASM_URL='./libredwg-writer/wasm/libredwg-web.js';"
                   if result.count(wasm_anchor) != 1:
-                      raise SystemExit("ERROR V137: could not locate unique local DWG WASM loader anchor.")
+                      raise SystemExit("ERROR V138: could not locate unique local DWG WASM loader anchor.")
                   result = result.replace(wasm_anchor, wasm_anchor + "\n" + wasm_helper, 1)
               relative_create = "LibreDwg.create('./libredwg-writer/wasm')"
               fixed_create = "LibreDwg.create(sqDwgWasmRuntimePath())"
               relative_count = result.count(relative_create)
               fixed_count = result.count(fixed_create)
               if relative_count + fixed_count != 2 or relative_count not in (0, 2):
-                  raise SystemExit(f"ERROR V137: expected two DWG entry points using old or fixed WASM path; old={relative_count}, fixed={fixed_count}.")
+                  raise SystemExit(f"ERROR V138: expected two DWG entry points using old or fixed WASM path; old={relative_count}, fixed={fixed_count}.")
               if relative_count:
                   result = result.replace(relative_create, fixed_create)
               if result.count(fixed_create) != 2:
-                  raise SystemExit("ERROR V137: both DWG entry points must use corrected WASM path.")
+                  raise SystemExit("ERROR V138: both DWG entry points must use corrected WASM path.")
               if "new URL('./libredwg-writer/wasm/', document.baseURI)" not in result:
-                  raise SystemExit("ERROR V137: absolute WASM runtime URL is missing.")
+                  raise SystemExit("ERROR V138: absolute WASM runtime URL is missing.")
           
               # Keep app-side update checks aligned with the APK's Android package version.
-              version_re = re.compile(r"(?m)(const\s+SQ_APP_VERSION_CODE\s*=\s*)(126|135|136|137)(\s*;)")
+              version_re = re.compile(r"(?m)(const\s+SQ_APP_VERSION_CODE\s*=\s*)(126|135|136|137|138)(\s*;)")
               version_matches = list(version_re.finditer(result))
               if len(version_matches) != 1:
-                  raise SystemExit(f"ERROR V137: expected one SQ_APP_VERSION_CODE value (126/135/136/137); found {len(version_matches)}.")
+                  raise SystemExit(f"ERROR V138: expected one SQ_APP_VERSION_CODE value (126/135/136/137/138); found {len(version_matches)}.")
               version_match = version_matches[0]
-              result = result[:version_match.start()] + version_match.group(1) + "137" + version_match.group(3) + result[version_match.end():]
+              result = result[:version_match.start()] + version_match.group(1) + "138" + version_match.group(3) + result[version_match.end():]
+              result = restore_orientation_features(result)
               if "function universalTransformBytes(input,t)" not in result or "dwg_write_dxf(bytes.buffer)" not in result:
-                  raise SystemExit("ERROR V137: byte-preserving CAD transform or existing DWG writer is missing.")
+                  raise SystemExit("ERROR V138: byte-preserving CAD transform or existing DWG writer is missing.")
               return result
           
           
@@ -265,11 +426,11 @@ jobs:
               elif old_count == 0 and fixed_count == 1:
                   pass
               else:
-                  raise SystemExit(f"ERROR V137: expected exactly one reversed file:// WASM Promise callback; old={old_count}, fixed={fixed_count}.")
+                  raise SystemExit(f"ERROR V138: expected exactly one reversed file:// WASM Promise callback; old={old_count}, fixed={fixed_count}.")
               if WASM_PROMISE_OLD in data or data.count(WASM_PROMISE_FIXED) != 1:
-                  raise SystemExit("ERROR V137: incorrect file:// WASM Promise argument order remains.")
+                  raise SystemExit("ERROR V138: incorrect file:// WASM Promise argument order remains.")
               if b"xhr.onload=()=>{if(xhr.status==200||xhr.status==0&&xhr.response){resolve(xhr.response)}reject(xhr.status)};xhr.onerror=reject" not in data:
-                  raise SystemExit("ERROR V137: Emscripten file:// XHR response handler changed unexpectedly.")
+                  raise SystemExit("ERROR V138: Emscripten file:// XHR response handler changed unexpectedly.")
               return data
           
           
@@ -279,10 +440,10 @@ jobs:
               path.write_text(updated, encoding="utf-8")
               wasm_path = path.parent / "libredwg-writer" / "wasm" / "libredwg-web.js"
               if not wasm_path.is_file():
-                  raise SystemExit("ERROR V137: source patch is missing libredwg-writer/wasm/libredwg-web.js.")
+                  raise SystemExit("ERROR V138: source patch is missing libredwg-writer/wasm/libredwg-web.js.")
               wasm_path.write_bytes(patch_wasm_loader(wasm_path.read_bytes()))
-              print("PASS V137: universal CAD picker and existing orientation/project behavior preserved.")
-              print("PASS V137: Emscripten file:// WASM XHR Promise arguments corrected to resolve,reject.")
+              print("PASS V138: universal CAD picker and existing orientation/project behavior preserved.")
+              print("PASS V138: Emscripten file:// WASM XHR Promise arguments corrected to resolve,reject.")
           
           
           def _read_len8(data: bytes, pos: int) -> tuple[int, int]:
@@ -401,22 +562,22 @@ jobs:
           
           def patch_apk(input_apk: Path, output_apk: Path) -> None:
               if not input_apk.is_file() or input_apk.stat().st_size == 0:
-                  raise SystemExit("ERROR V137: input APK is missing or empty.")
+                  raise SystemExit("ERROR V138: input APK is missing or empty.")
               if input_apk.resolve() == output_apk.resolve():
-                  raise SystemExit("ERROR V137: output APK must differ from input APK.")
+                  raise SystemExit("ERROR V138: output APK must differ from input APK.")
               output_apk.parent.mkdir(parents=True, exist_ok=True)
               with zipfile.ZipFile(input_apk, "r") as zin:
                   names = [info.filename for info in zin.infolist()]
                   if names.count("assets/index.html") != 1:
-                      raise SystemExit("ERROR V137: input APK must contain exactly one assets/index.html.")
+                      raise SystemExit("ERROR V138: input APK must contain exactly one assets/index.html.")
                   if names.count("AndroidManifest.xml") != 1:
-                      raise SystemExit("ERROR V137: input APK must contain exactly one AndroidManifest.xml.")
+                      raise SystemExit("ERROR V138: input APK must contain exactly one AndroidManifest.xml.")
                   seen = set()
                   with zipfile.ZipFile(output_apk, "w", allowZip64=True) as zout:
                       for info in zin.infolist():
                           name = info.filename
                           if name in seen:
-                              raise SystemExit("ERROR V137: duplicate APK ZIP entry: " + name)
+                              raise SystemExit("ERROR V138: duplicate APK ZIP entry: " + name)
                           seen.add(name)
                           upper = name.upper()
                           if upper.startswith("META-INF/") and (
@@ -439,15 +600,15 @@ jobs:
                   html = check.read("assets/index.html").decode("utf-8")
                   manifest = check.read("AndroidManifest.xml")
                   if html.count(MARKER) != 1:
-                      raise SystemExit("ERROR V137: APK output is missing the V137 HTML gate.")
+                      raise SystemExit("ERROR V138: APK output is missing the V138 HTML gate.")
                   patch_binary_manifest(manifest)  # validates the resulting manifest can be safely updated again
                   if "assets/libredwg-writer/wasm/libredwg-web.wasm" not in check.namelist():
-                      raise SystemExit("ERROR V137: APK output lost the local DWG WebAssembly engine.")
+                      raise SystemExit("ERROR V138: APK output lost the local DWG WebAssembly engine.")
                   wasm_js = check.read("assets/libredwg-writer/wasm/libredwg-web.js")
                   if WASM_PROMISE_OLD in wasm_js or wasm_js.count(WASM_PROMISE_FIXED) != 1:
-                      raise SystemExit("ERROR V137: APK output lacks the corrected file:// WASM loader.")
-              print("PASS V137: shared DWG picker gate patched in APK assets; package version raised to 1.0.137/137.")
-              print("PASS V137: source DWG is not written over; app's local DWG/DXF engine and all unrelated assets are retained.")
+                      raise SystemExit("ERROR V138: APK output lacks the corrected file:// WASM loader.")
+              print("PASS V138: shared DWG picker gate patched in APK assets; package version raised to 1.0.138/138.")
+              print("PASS V138: source DWG is not written over; app's local DWG/DXF engine and all unrelated assets are retained.")
           
           
           def _make_axml_test_fixture() -> bytes:
@@ -486,14 +647,14 @@ jobs:
               wasm_fixture = b"prefix " + WASM_PROMISE_OLD + b'xhr.onload=()=>{if(xhr.status==200||xhr.status==0&&xhr.response){resolve(xhr.response)}reject(xhr.status)};xhr.onerror=reject;xhr.send(null)}) tail'
               wasm_fixed = patch_wasm_loader(wasm_fixture)
               if WASM_PROMISE_OLD in wasm_fixed or WASM_PROMISE_FIXED not in wasm_fixed:
-                  raise SystemExit("FAIL V137 self-test: WASM file:// Promise argument order was not corrected.")
+                  raise SystemExit("FAIL V138 self-test: WASM file:// Promise argument order was not corrected.")
               if patch_wasm_loader(wasm_fixed) != wasm_fixed:
-                  raise SystemExit("FAIL V137 self-test: WASM patch is not idempotent.")
+                  raise SystemExit("FAIL V138 self-test: WASM patch is not idempotent.")
               fixture = _make_axml_test_fixture()
               result = patch_binary_manifest(fixture)
               again = patch_binary_manifest(result)
               if len(fixture) != len(result) or len(result) != len(again):
-                  raise SystemExit("FAIL V137 self-test: manifest patch changed binary XML length")
+                  raise SystemExit("FAIL V138 self-test: manifest patch changed binary XML length")
               # Root versionCode is the final typed data word in the first attribute.
               chunks = []
               pos = 8
@@ -504,14 +665,14 @@ jobs:
               strings_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0001)
               strings, _spans = _string_pool(result, strings_chunk, struct.unpack_from("<I", result, strings_chunk + 4)[0], 28)
               if TARGET_APP_VERSION_NAME not in strings:
-                  raise SystemExit("FAIL V137 self-test: versionName was not updated")
+                  raise SystemExit("FAIL V138 self-test: versionName was not updated")
               code_chunk = next(p for p, typ, _, _ in chunks if typ == 0x0102)
               attr_start = struct.unpack_from("<H", result, code_chunk + 24)[0]
               attr0 = code_chunk + 16 + attr_start
               actual = struct.unpack_from("<I", result, attr0 + 16)[0]
               if actual != TARGET_APP_VERSION_CODE:
-                  raise SystemExit(f"FAIL V137 self-test: versionCode={actual}, expected {TARGET_APP_VERSION_CODE}")
-              print("PASS V137 self-test: file:// WASM Promise and binary Android manifest version updates passed.")
+                  raise SystemExit(f"FAIL V138 self-test: versionCode={actual}, expected {TARGET_APP_VERSION_CODE}")
+              print("PASS V138 self-test: file:// WASM Promise and binary Android manifest version updates passed.")
           
           
           def main() -> int:
@@ -542,14 +703,14 @@ jobs:
                     const assert = require('node:assert/strict');
                     const vm = require('node:vm');
                     const [htmlPath] = process.argv.slice(2);
-                    assert(htmlPath, 'usage: node SurveyQuant_v1.0.137_UNIVERSAL_CAD_PICKER_TEST.js INDEX_OR_EXTRACTED_APK_HTML');
+                    assert(htmlPath, 'usage: node SurveyQuant_v1.0.138_ORIENTATION_REGRESSION_TEST.js INDEX_OR_EXTRACTED_APK_HTML');
                     const html = fs.readFileSync(htmlPath, 'utf8');
                     const bridgeTag = html.match(/<script\s+id=["']sq-v117-universal-dwg-bridge["']\s*>([\s\S]*?)<\/script\s*>/i);
                     assert(bridgeTag, 'the shared V117/V126 DWG bridge script is missing');
                     const bridge = bridgeTag[1];
-                    assert.equal((html.match(/SQ_V137_UNIVERSAL_CAD_INPUT_GATE/g) || []).length, 1,
-                      'V137 shared CAD picker gate must be embedded exactly once');
-                    assert.match(html, /const\s+SQ_APP_VERSION_CODE\s*=\s*137\s*;/,
+                    assert.equal((html.match(/SQ_V138_UNIVERSAL_CAD_INPUT_GATE/g) || []).length, 1,
+                      'V138 shared CAD picker gate must be embedded exactly once');
+                    assert.match(html, /const\s+SQ_APP_VERSION_CODE\s*=\s*138\s*;/,
                       'the embedded app version check must advance to 137');
                     assert(bridge.includes('strongCadHint'), 'CAD context detector missing');
                     assert(bridge.includes('MutationObserver'), 'dynamically-created project pickers must be monitored');
@@ -569,6 +730,83 @@ jobs:
                     assert(bridge.includes("var NON_CAD_DATA_IDS = new Set(['fileToDxfInput', 'cleanFilesInput']);"),
                       'dedicated point-list utilities must remain excluded');
                     
+                    // V138 orientation restoration: make sure the real, active two-board dialog is connected.
+                    assert(html.includes('window.sqExtractDxfAxisEntities = sqExtractDxfAxisEntities;'),
+                      'raw DXF extraction function must be exposed to the axis detection module');
+                    assert(html.includes('id="sq110ReadAxesBtn"'), 'active two-board orientation must show Read Axes control');
+                    assert(html.includes("el('sq110ReadAxesBtn').addEventListener('click',readAxesForOrientation)"),
+                      'Read Axes must invoke the reader belonging to the visible two-board project');
+                    assert(html.includes('function readAxesForOrientation()'), 'active board pair must have an automatic axes reader');
+                    assert(html.includes("الإزاحة X '+t.tx.toPrecision(12)"), 'preview must report X/Y translation as well as angle and scale');
+                    assert(!html.includes('scale<1e-9||scale>1e9') && !html.includes('scale < 1e-9 || scale > 1e9'),
+                      'legacy arbitrary scale limits must not block valid board sizes');
+                    assert.equal((html.match(/height:430px;min-height:320px;max-height:520px/g) || []).length, 2,
+                      'both orientation board canvases must use the larger flexible viewport');
+                    assert(html.includes('Math.abs(Number(t.height)||2.5)*m.scale*0.8'),
+                      'CAD texts must scale with the actual board view and zoom');
+
+                    const orientationSolverMatch = html.match(/function solve\(src1,src2,ref1,ref2\)\{[\s\S]*?\n\}/);
+                    assert(orientationSolverMatch, 'two-board similarity transform solver is missing');
+                    const orientationSolverContext = { Math, Number, Error };
+                    vm.createContext(orientationSolverContext);
+                    vm.runInContext(orientationSolverMatch[0] + ';this.__solve=solve;', orientationSolverContext);
+                    const orientationSolve = orientationSolverContext.__solve;
+                    let orientationT = orientationSolve({x:0,y:0},{x:10,y:0},{x:100,y:200},{x:100,y:220});
+                    assert(Math.abs(orientationT.scale-2)<1e-10, 'two-board solver must calculate scale factor 2');
+                    assert(Math.abs(orientationT.angleDeg-90)<1e-8, 'two-board solver must calculate 90 degree rotation');
+                    let mappedSecond = orientationT.point(10,0);
+                    assert(Math.hypot(mappedSecond.x-100,mappedSecond.y-220)<1e-8,
+                      'source point 2 must land on its corresponding reference point');
+                    orientationT = orientationSolve({x:0,y:0},{x:1,y:0},{x:0,y:0},{x:1e-12,y:0});
+                    assert(Math.abs(orientationT.scale-1e-12)<1e-24, 'tiny valid scale must remain supported');
+                    orientationT = orientationSolve({x:0,y:0},{x:1,y:0},{x:0,y:0},{x:1e12,y:0});
+                    assert.equal(orientationT.scale,1e12, 'large valid scale must remain supported');
+
+                    const orientationModuleMatch = html.match(/<script id="sq-orientation-axis-reader-module">([\s\S]*?)<\/script>/);
+                    assert(orientationModuleMatch, 'axis-reader module must remain bundled');
+                    const orientationWindow = { addEventListener() {} };
+                    const orientationDocument = { readyState:'loading', addEventListener() {} };
+                    const orientationContext = { window:orientationWindow, document:orientationDocument, Math, Number, String,
+                      Map, Set, Array, Object, RegExp, Error, console, TextDecoder };
+                    vm.createContext(orientationContext);
+                    vm.runInContext(orientationModuleMatch[1], orientationContext, {filename:'orientation-axis-reader.js'});
+                    assert(orientationWindow.__sqOriAxisAutoTest && orientationWindow.__sqOriAxisAutoTest.matchIntersections,
+                      'axis reader must expose its intersection matcher');
+                    function orientationModel(transform) {
+                      const point=(x,y)=>transform?transform(x,y):({x,y}); const entities=[];
+                      for(const x of [0,10]) entities.push({type:'LINE',layer:'GRID',a:point(x,0),b:point(x,10)});
+                      for(const y of [0,10]) entities.push({type:'LINE',layer:'GRID',a:point(0,y),b:point(10,y)});
+                      for(const [label,x] of [['AS',0],['BS',10]]) entities.push({type:'TEXT',layer:'BUBBLES',position:point(x,-0.5),text:label,height:0.5});
+                      for(const [label,y] of [['Z1',0],['Z2',10]]) entities.push({type:'TEXT',layer:'BUBBLES',position:point(-0.5,y),text:label,height:0.5});
+                      return {source:'DXF',entities};
+                    }
+                    const referenceGrid=orientationModel((x,y)=>({x:-100-2*y,y:300+2*x}));
+                    const sourceGrid=orientationModel();
+                    const axisMatches=orientationWindow.__sqOriAxisAutoTest.matchIntersections(referenceGrid,sourceGrid);
+                    assert(axisMatches.best && axisMatches.matches.length>=4,
+                      'auto axis reader must find and pair multiple labelled grid intersections');
+                    assert(axisMatches.matches.some(m=>m.key.includes('AS')&&m.key.includes('Z1')),
+                      'axis reader must recognize common axis labels AS/Z1');
+
+                    // XLINE/RAY axes must be extended using drawing bounds, not excluded or expanded by a fixed 100000 units.
+                    function orientationXlineModel(transform) {
+                      const point=(x,y)=>transform?transform(x,y):({x,y});
+                      const vector=(x,y)=>{if(!transform)return {x,y};const p0=transform(0,0),p1=transform(x,y);return {x:p1.x-p0.x,y:p1.y-p0.y};};
+                      const entities=[];
+                      for(const x of [0,10]) entities.push({type:'XLINE',layer:'GRID',basePoint:point(x,0),directionVector:vector(0,1)});
+                      for(const yy of [0,10]) entities.push({type:'XLINE',layer:'GRID',basePoint:point(0,yy),directionVector:vector(1,0)});
+                      for(const [label,x] of [['AS',0],['BS',10]]) entities.push({type:'TEXT',layer:'BUBBLES',position:point(x,-0.5),text:label,height:0.5});
+                      for(const [label,yy] of [['Z1',0],['Z2',10]]) entities.push({type:'TEXT',layer:'BUBBLES',position:point(-0.5,yy),text:label,height:0.5});
+                      return {source:'DXF',entities};
+                    }
+                    const xlineMatches=orientationWindow.__sqOriAxisAutoTest.matchIntersections(
+                      orientationXlineModel((x,y)=>({x:-100-2*y,y:300+2*x})),orientationXlineModel());
+                    assert(xlineMatches.best && xlineMatches.matches.length>=4,
+                      'XLINE axis families must also detect and match common grid intersections');
+                    console.log('PASS V138: automatic axis UI is connected to the original raw-DXF axis parser.');
+                    console.log('PASS V138: two-point solver calculates translation, rotation and valid unconstrained scale.');
+                    console.log('PASS V138: labelled LINE and XLINE grid intersections are detected; viewport/text scale is no longer fixed.');
+
                     class TestBlob {
                       constructor(parts = [], options = {}) {
                         this.parts = parts;
@@ -684,9 +922,9 @@ jobs:
                       assert.equal(source.name, 'Unknown-Project-Board.DwG', 'original DWG object must remain unchanged');
                       assert.equal(calls.length, 0, 'the generic picker bridge must not run orientation-only conversion');
                       assert.deepEqual(Array.from(source.parts[0]), Array.from(testBytes), 'source DWG bytes must remain unchanged');
-                      console.log('PASS V137: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
-                      console.log('PASS V137: dynamically created board inputs are recognized; native file-change handling is preserved.');
-                      console.log('PASS V137: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; original DWG is untouched.');
+                      console.log('PASS V138: all known CAD projects plus generic Arabic projection and English merge inputs accept DWG.');
+                      console.log('PASS V138: dynamically created board inputs are recognized; native file-change handling is preserved.');
+                      console.log('PASS V138: point-list TXT/CSV/SDR/PNT and image/PDF controls remain excluded; original DWG is untouched.');
                     })().catch(error => { console.error(error); process.exitCode = 1; });
           JS
           python3 -m py_compile "$PATCHER"
@@ -714,16 +952,16 @@ jobs:
           echo "V136_ARTIFACT_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "Downloaded V136 APK and source archive from run $SOURCE_RUN_ID."
 
-      - name: Correct WASM file-URL Promise, test, align, and re-sign APK as V137
+      - name: Restore two-board orientation axes/scale, test, align, and re-sign APK as V138
         shell: bash
         run: |
           set -euo pipefail
           RELEASE="$RUNNER_TEMP/sq-release"
-          SOURCE_DIR="$RUNNER_TEMP/v137-source-patch"
-          RAW_APK="$RELEASE/SurveyQuant_v1.0.137_UNIVERSAL_DWG_ALL_PROJECTS_UNSIGNED.apk"
-          ALIGNED_APK="$RELEASE/SurveyQuant_v1.0.137_UNIVERSAL_DWG_ALL_PROJECTS_ALIGNED.apk"
-          FINAL_APK="$RELEASE/SurveyQuant_v1.0.137_DWG_WASM_FILE_URI_FIX.apk"
-          FINAL_SOURCE="$RELEASE/SurveyQuant_v1.0.137_DWG_WASM_FILE_URI_SOURCE_PATCH.zip"
+          SOURCE_DIR="$RUNNER_TEMP/v138-source-patch"
+          RAW_APK="$RELEASE/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_UNSIGNED.apk"
+          ALIGNED_APK="$RELEASE/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_ALIGNED.apk"
+          FINAL_APK="$RELEASE/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_AXES_SCALE.apk"
+          FINAL_SOURCE="$RELEASE/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_SOURCE_PATCH.zip"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
           rm -rf "$SOURCE_DIR" "$RAW_APK" "$ALIGNED_APK" "$FINAL_APK" "$FINAL_SOURCE"
           mkdir -p "$SOURCE_DIR" "$RELEASE"
@@ -743,26 +981,31 @@ jobs:
           assert old not in b and b.count(fixed) == 1, "Incorrect file:// WASM Promise order remains"
           print("PASS: source patch has the corrected file:// XHR Promise order")
           PY
-          cp "$PATCHER" "$SOURCE_DIR/SurveyQuant_v1.0.137_WASM_FILE_URI_FIX.py"
-          cp "$TESTER" "$SOURCE_DIR/SurveyQuant_v1.0.137_DWG_WASM_REGRESSION_TEST.js"
-          cat > "$SOURCE_DIR/README_V137_WASM_FILE_URI_FIX_AR.txt" <<'TXT'
-          SurveyQuant V137: إصلاح تحميل محرك DWG داخل Android WebView
+          cp "$PATCHER" "$SOURCE_DIR/SurveyQuant_v1.0.138_ORIENTATION_RESTORE_PATCH.py"
+          cp "$TESTER" "$SOURCE_DIR/SurveyQuant_v1.0.138_ORIENTATION_REGRESSION_TEST.js"
+          cat > "$SOURCE_DIR/README_V138_ORIENTATION_RESTORATION_AR.txt" <<'TXT'
+          SurveyQuant V138: استعادة مشروع توجيه اللوحتين وقراءة المحاور
 
-          السبب الجذري: ملف libredwg-writer/wasm/libredwg-web.js كان ينشئ Promise لمسار file:// بترتيب (reject, resolve) بدل (resolve, reject). لذلك حتى رد XHR الناجح للـ WebAssembly كان يرفض الوعد ثم يفشل التحميل برسالة both async and sync fetching of the wasm failed.
+          - يعيد زر «قراءة المحاور تلقائيًا» إلى واجهة توجيه اللوحة غير الموجهة على اللوحة المرجعية الفعلية، ويربطه بالمحرك الصحيح بدل الزر الذي كانت واجهته القديمة تُستبدل عند فتح المشروع.
+          - يكشف دالة قراءة سجلات DXF الخام داخل التطبيق للوصول إلى LINE وLWPOLYLINE وPOLYLINE وXLINE وRAY وINSERT والأسماء النصية للمحاور، ثم يطابق التقاطعات المسماة بين اللوحتين.
+          - يقبل أسماء محاور هندسية مثل AS وZ1 وAXIS12 والأرقام العربية، ويسمح بالشبكات المائلة، ويحسب الإزاحة X/Y والدوران ومعامل المقياس من النقطتين المتناظرتين.
+          - يعرض عدد تقاطعات الفحص وRMS وأقصى انحراف للمحاور الإضافية. يبقى اختيار نقطتين يدويًا وOSNAP وID Point متاحًا عند تعذر التعرف التلقائي.
+          - يزيل الحدود الحسابية الاعتباطية على معامل المقياس ويكبر لوحتي المعاينة، ويجعل حجم النص يتغير مع مقياس اللوحة والتكبير بدل فرض 6 إلى 10 بكسل.
+          - يظل التحويل حفظًا لملف DXF الأصلي قدر الإمكان: لا يكتب على ملف المصدر، ولا يعيد رسم اللوحة، ولا يغيّر اللوحة المرجعية. ملف الإخراج نسخة جديدة.
+          - يعيد تضمين إصلاح DWG WebView من V137، بما في ذلك مسار WASM الصحيح وتصحيح Promise في XHR الخاص بـ file://.
+          - اختبار آلي لمحول النقطتين، والدوران 90 درجة، والمقياس 1e-12 و1e12، وتطابق تقاطعات AS/Z1 وBS/Z2، وواجهة المحاور النشطة وحجم العرض. الإصدار 1.0.138 / versionCode 138.
 
-          الإصلاح: عكس ترتيب معاملات Promise إلى (resolve, reject) في نسخة APK وفي مصدر HTML/WASM. تم إبقاء ملف WASM وبيانات DWG الأصلية وتدفق التعامل مع ملف اللوحة كما هي. لم تتم إعادة رسم اللوحة. إصدار التطبيق 1.0.137، versionCode 137.
-
-          اختبارات: فحص ترتيب Promise، فحص JavaScript، اختبار بوابة DWG العامة والمشروعات، اختبار الإصدار، والتحقق من توقيع APK.
+          ملاحظة: التعرف التلقائي يعتمد على وجود خطوط شبكة قابلة للقراءة وتسميات قريبة من نهاياتها ومشتركة بين اللوحتين. عند عدم توافر ذلك، لا يفرض البرنامج نقاطًا تخمينية؛ استخدم OSNAP/ID Point وحدد نقطتين متناظرتين يدويًا.
           TXT
           (cd "$SOURCE_DIR" && zip -qr "$FINAL_SOURCE" .)
           unzip -t "$FINAL_SOURCE"
 
           python3 "$PATCHER" --apk "$V136_APK" --output "$RAW_APK"
-          unzip -p "$RAW_APK" assets/index.html > "$RUNNER_TEMP/v137-apk-index.html"
-          node "$TESTER" "$RUNNER_TEMP/v137-apk-index.html"
-          unzip -p "$RAW_APK" assets/libredwg-writer/wasm/libredwg-web.js > "$RUNNER_TEMP/v137-apk-wasm.js"
-          node --check "$RUNNER_TEMP/v137-apk-wasm.js"
-          python3 - "$RUNNER_TEMP/v137-apk-wasm.js" <<'PY'
+          unzip -p "$RAW_APK" assets/index.html > "$RUNNER_TEMP/v138-apk-index.html"
+          node "$TESTER" "$RUNNER_TEMP/v138-apk-index.html"
+          unzip -p "$RAW_APK" assets/libredwg-writer/wasm/libredwg-web.js > "$RUNNER_TEMP/v138-apk-wasm.js"
+          node --check "$RUNNER_TEMP/v138-apk-wasm.js"
+          python3 - "$RUNNER_TEMP/v138-apk-wasm.js" <<'PY'
           import sys
           from pathlib import Path
           b = Path(sys.argv[1]).read_bytes()
@@ -772,8 +1015,8 @@ jobs:
           print("PASS: APK has corrected file:// WASM Promise order")
           PY
           unzip -l "$RAW_APK" | grep -F 'assets/libredwg-writer/wasm/libredwg-web.wasm'
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$RAW_APK" | grep -E "package: name=.*versionCode='137'.*versionName='1.0.137'" || {
-            echo "ERROR: APK manifest was not raised to 1.0.137 (137)."; exit 1;
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$RAW_APK" | grep -E "package: name=.*versionCode='138'.*versionName='1.0.138'" || {
+            echo "ERROR: APK manifest was not raised to 1.0.138 (138)."; exit 1;
           }
 
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: SURVEYQUANT_KEYSTORE_BASE64 secret is empty."; exit 1; }
@@ -785,19 +1028,19 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW_APK" "$ALIGNED_APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL_APK" "$ALIGNED_APK"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL_APK"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL_APK" | grep -E "package: name=.*versionCode='137'.*versionName='1.0.137'"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL_APK" | grep -E "package: name=.*versionCode='138'.*versionName='1.0.138'"
           sha256sum "$FINAL_APK" "$FINAL_SOURCE" > "$RELEASE/SHA256SUMS.txt"
-          printf '%s\n' 'V137 PASS: reversed Emscripten file:// Promise callback corrected in APK and source patch; versionCode 137/versionName 1.0.137; regression checks and apksigner passed.' > "$RELEASE/V137_BUILD_RESULT.txt"
+          printf '%s\n' 'V138 PASS: restored active two-board orientation auto-axis wiring, exposed raw DXF parser, unconstrained positive scale solver, shift/rotation/scale and grid residual report, larger canvases and model-scaled text. Reapplied DWG WebView WASM fix. versionCode 138/versionName 1.0.138; orientation tests and apksigner passed.' > "$RELEASE/V138_BUILD_RESULT.txt"
           cat "$RELEASE/SHA256SUMS.txt"
 
-      - name: Upload V137 signed APK and source patch
+      - name: Upload V138 signed APK and source patch
         uses: actions/upload-artifact@v4
         with:
-          name: SurveyQuant-v1.0.137-DWG-WASM-FILE-URI-FIX
+          name: SurveyQuant-v1.0.138-ORIENTATION-RESTORED-AXES-SCALE
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.137_DWG_WASM_FILE_URI_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.137_DWG_WASM_FILE_URI_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_AXES_SCALE.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.138_ORIENTATION_RESTORED_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V137_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V138_BUILD_RESULT.txt
           if-no-files-found: error
           retention-days: 14
