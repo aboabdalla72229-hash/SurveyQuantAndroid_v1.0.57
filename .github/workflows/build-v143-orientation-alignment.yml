@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.142 - Two Point Orientation + Clean Preview
+name: Build SurveyQuant v1.0.143 - Full Board Alignment Safety
 
 on:
   workflow_dispatch:
@@ -15,15 +15,15 @@ on:
         default: "39560732493"
   push:
     paths:
-      - ".github/workflows/build-v142-orientation-precision.yml"
-      - "SurveyQuant_v1.0.142_ORIENTATION_PRECISION_PATCH_KIT.zip"
+      - ".github/workflows/build-v143-orientation-alignment.yml"
+      - "SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_PATCH_KIT.zip"
 
 permissions:
   actions: read
   contents: read
 
 jobs:
-  build_v142:
+  build_v143:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -73,19 +73,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_PATCH_KIT.zip"
-          test -s "$KIT" || { echo "ERROR: Upload the V142 patch-kit ZIP to the repository root first."; exit 1; }
+          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_PATCH_KIT.zip"
+          test -s "$KIT" || { echo "ERROR: Upload the V143 patch-kit ZIP to the repository root first."; exit 1; }
           unzip -t "$KIT"
-          KIT_DIR="$RUNNER_TEMP/v142-kit"
+          KIT_DIR="$RUNNER_TEMP/v143-kit"
           BASE_DIR="$RUNNER_TEMP/v140-base"
           REF_DIR="$RUNNER_TEMP/v130-reference"
           rm -rf "$KIT_DIR" "$BASE_DIR" "$REF_DIR"
           mkdir -p "$KIT_DIR" "$BASE_DIR" "$REF_DIR"
           unzip -q "$KIT" -d "$KIT_DIR"
-          PATCHER="$KIT_DIR/SurveyQuant_v1.0.142_APPLY_ORIENTATION_PRECISION_PATCH.py"
-          TESTER="$KIT_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_TEST.js"
-          test -s "$PATCHER" || { echo "ERROR: V142 patcher missing from kit."; exit 1; }
-          test -s "$TESTER" || { echo "ERROR: V142 test missing from kit."; exit 1; }
+          PATCHER="$KIT_DIR/SurveyQuant_v1.0.143_APPLY_ORIENTATION_PRECISION_PATCH.py"
+          TESTER="$KIT_DIR/SurveyQuant_v1.0.143_ORIENTATION_PRECISION_TEST.js"
+          ALIGNER="$KIT_DIR/SurveyQuant_v1.0.143_APPLY_ORIENTATION_ALIGNMENT_PATCH.py"
+          SAFETY_TEST="$KIT_DIR/SurveyQuant_v1.0.143_ALIGNMENT_SAFETY_TEST.js"
+          test -s "$PATCHER" || { echo "ERROR: V143 patcher missing from kit."; exit 1; }
+          test -s "$TESTER" || { echo "ERROR: V143 precision test missing from kit."; exit 1; }
+          test -s "$ALIGNER" || { echo "ERROR: V143 alignment patcher missing from kit."; exit 1; }
+          test -s "$SAFETY_TEST" || { echo "ERROR: V143 alignment safety test missing from kit."; exit 1; }
           test -s "$KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" || { echo "ERROR: V130 DWG regression test missing from kit."; exit 1; }
           gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.140-V127-ORIENTATION-FRESH-SESSION" --dir "$BASE_DIR"
           gh run download "$REFERENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.130-DWG-AXIS-MULTISELECT" --dir "$REF_DIR"
@@ -97,35 +101,42 @@ jobs:
           test -s "$REF_PATCH" || { echo "ERROR: V130 source patch not found in run $REFERENCE_RUN_ID."; exit 1; }
           unzip -t "$BASE_PATCH"
           unzip -t "$REF_PATCH"
-          mkdir -p "$RUNNER_TEMP/v142-source" "$RUNNER_TEMP/v130-source" "$RUNNER_TEMP/sq-release"
-          unzip -q "$BASE_PATCH" -d "$RUNNER_TEMP/v142-source"
+          mkdir -p "$RUNNER_TEMP/v143-source" "$RUNNER_TEMP/v130-source" "$RUNNER_TEMP/sq-release"
+          unzip -q "$BASE_PATCH" -d "$RUNNER_TEMP/v143-source"
           unzip -q "$REF_PATCH" -d "$RUNNER_TEMP/v130-source"
-          test -s "$RUNNER_TEMP/v142-source/index.html"
+          test -s "$RUNNER_TEMP/v143-source/index.html"
           test -s "$RUNNER_TEMP/v130-source/index.html"
-          echo "V142_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
-          echo "V142_PATCHER=$PATCHER" >> "$GITHUB_ENV"
-          echo "V142_TESTER=$TESTER" >> "$GITHUB_ENV"
-          echo "V142_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
-          echo "V142_SOURCE_DIR=$RUNNER_TEMP/v142-source" >> "$GITHUB_ENV"
+          echo "V143_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+          echo "V143_PATCHER=$PATCHER" >> "$GITHUB_ENV"
+          echo "V143_TESTER=$TESTER" >> "$GITHUB_ENV"
+          echo "V143_ALIGNER=$ALIGNER" >> "$GITHUB_ENV"
+          echo "V143_SAFETY_TEST=$SAFETY_TEST" >> "$GITHUB_ENV"
+          echo "V143_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V143_SOURCE_DIR=$RUNNER_TEMP/v143-source" >> "$GITHUB_ENV"
           echo "V130_SOURCE_DIR=$RUNNER_TEMP/v130-source" >> "$GITHUB_ENV"
-          echo "V142_RELEASE_DIR=$RUNNER_TEMP/sq-release" >> "$GITHUB_ENV"
+          echo "V143_RELEASE_DIR=$RUNNER_TEMP/sq-release" >> "$GITHUB_ENV"
 
-      - name: Transplant V130 orientation, repair preview geometry, and run regression tests
+      - name: Apply V130 orientation, add V143 full-board safety, and test all inline JS
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile "$V142_PATCHER"
-          node --check "$V142_TESTER"
-          python3 "$V142_PATCHER" --source-html "$V142_SOURCE_DIR/index.html" --reference-html "$V130_SOURCE_DIR/index.html" --output-html "$V142_SOURCE_DIR/index_v142.html" --report "$V142_RELEASE_DIR/V142_PATCH_REPORT.md"
-          node "$V142_TESTER" "$V142_SOURCE_DIR/index_v142.html" "$V130_SOURCE_DIR/index.html"
-          node "$V142_KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" "$V142_SOURCE_DIR/index_v142.html"
-          node --check "$V142_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
-          python3 - "$V142_SOURCE_DIR/index_v142.html" "$RUNNER_TEMP/v142-js-check" <<'PY'
+          python3 -m py_compile "$V143_PATCHER" "$V143_ALIGNER"
+          node --check "$V143_TESTER"
+          node --check "$V143_SAFETY_TEST"
+          BASE_HTML="$V143_SOURCE_DIR/index_base_v143.html"
+          FINAL_HTML="$V143_SOURCE_DIR/index_v143.html"
+          python3 "$V143_PATCHER" --source-html "$V143_SOURCE_DIR/index.html" --reference-html "$V130_SOURCE_DIR/index.html" --output-html "$BASE_HTML" --report "$V143_RELEASE_DIR/V143_PRECISION_REPORT.md"
+          python3 "$V143_ALIGNER" --input-html "$BASE_HTML" --output-html "$FINAL_HTML" --report "$V143_RELEASE_DIR/V143_ALIGNMENT_REPORT.md"
+          node "$V143_TESTER" "$FINAL_HTML" "$V130_SOURCE_DIR/index.html"
+          node "$V143_KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" "$FINAL_HTML"
+          node "$V143_SAFETY_TEST" "$FINAL_HTML"
+          node --check "$V143_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$FINAL_HTML" "$RUNNER_TEMP/v143-js-check" <<'PY'
           import pathlib, re, subprocess, sys
           html_path, out_dir = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
           out_dir.mkdir(parents=True, exist_ok=True)
-          text = html_path.read_text(encoding='utf-8')
-          found = re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>', text, re.I)
+          source = html_path.read_text(encoding='utf-8')
+          found = re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>', source, re.I)
           checked = 0
           for i, (attrs, body) in enumerate(found):
               if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/ld\+json|importmap)["\']', attrs, re.I):
@@ -138,23 +149,28 @@ jobs:
               raise SystemExit(f'Expected at least 8 inline JS blocks, found {checked}')
           print(f'PASS: {checked} inline JavaScript blocks parsed successfully.')
           PY
-          cp "$V142_SOURCE_DIR/index_v142.html" "$V142_SOURCE_DIR/index.html"
-          rm -f "$V142_SOURCE_DIR/index_v142.html"
-          cp "$V142_PATCHER" "$V142_SOURCE_DIR/SurveyQuant_v1.0.142_APPLY_ORIENTATION_PRECISION_PATCH.py"
-          cp "$V142_TESTER" "$V142_SOURCE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_TEST.js"
-          cp "$V142_KIT_DIR/README_V142_AR.txt" "$V142_SOURCE_DIR/README_V142_AR.txt"
-          (cd "$V142_SOURCE_DIR" && zip -qr "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" .)
-          unzip -t "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" | tail -2
+          cp "$FINAL_HTML" "$V143_SOURCE_DIR/index.html"
+          rm -f "$BASE_HTML" "$FINAL_HTML"
+          rm -f "$V143_SOURCE_DIR/SurveyQuant_v1.0.140_RESTORE_V127_ORIENTATION.py" "$V143_SOURCE_DIR/SurveyQuant_v1.0.140_V127_SESSION_REGRESSION_TEST.js" "$V143_SOURCE_DIR/README_V140_V127_ORIENTATION_AR.txt"
+          cp "$V143_PATCHER" "$V143_SOURCE_DIR/SurveyQuant_v1.0.143_APPLY_ORIENTATION_PRECISION_PATCH.py"
+          cp "$V143_TESTER" "$V143_SOURCE_DIR/SurveyQuant_v1.0.143_ORIENTATION_PRECISION_TEST.js"
+          cp "$V143_ALIGNER" "$V143_SOURCE_DIR/SurveyQuant_v1.0.143_APPLY_ORIENTATION_ALIGNMENT_PATCH.py"
+          cp "$V143_SAFETY_TEST" "$V143_SOURCE_DIR/SurveyQuant_v1.0.143_ALIGNMENT_SAFETY_TEST.js"
+          cp "$V143_KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" "$V143_SOURCE_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"
+          cp "$V143_KIT_DIR/README_V143_AR.txt" "$V143_SOURCE_DIR/README_V143_AR.txt"
+          rm -f "$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_SOURCE_PATCH.zip"
+          (cd "$V143_SOURCE_DIR" && zip -qr "$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_SOURCE_PATCH.zip" .)
+          unzip -t "$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_SOURCE_PATCH.zip" | tail -2
 
       - name: Inject tested HTML into APK, align, sign, and verify
         shell: bash
         run: |
           set -euo pipefail
-          RAW="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_UNSIGNED.apk"
-          ALIGNED="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_ALIGNED.apk"
-          FINAL="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_FIX.apk"
+          RAW="$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_UNSIGNED.apk"
+          ALIGNED="$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_ALIGNED.apk"
+          FINAL="$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_FIX.apk"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
-          python3 "$V142_PATCHER" --apk-input "$V142_BASE_APK" --apk-output "$RAW" --html-to-inject "$V142_SOURCE_DIR/index.html"
+          python3 "$V143_PATCHER" --apk-input "$V143_BASE_APK" --apk-output "$RAW" --html-to-inject "$V143_SOURCE_DIR/index.html"
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
           test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
           test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
@@ -164,21 +180,21 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='142'.*versionName='1.0.142'"
-          sha256sum "$FINAL" "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" > "$V142_RELEASE_DIR/SHA256SUMS.txt"
-          printf '%s\n' 'PASS V142: V130 orientation transform, no-spurious-line preview checks, reference-board delete/undo/redo, V140 DWG/WASM support, manifest and APK signature verified.' > "$V142_RELEASE_DIR/V142_BUILD_RESULT.txt"
-          cat "$V142_RELEASE_DIR/SHA256SUMS.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='143'.*versionName='1.0.143'"
+          sha256sum "$FINAL" "$V143_RELEASE_DIR/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_SOURCE_PATCH.zip" > "$V143_RELEASE_DIR/SHA256SUMS.txt"
+          printf '%s\n' 'PASS V143: two-point fit, Model/Paper layout consistency (67/410), full-board overlay preview, far-offset/negative-coordinate safety, fail-closed proxy/OCS validation, V140 DWG/WASM support, manifest and APK signature verified.' > "$V143_RELEASE_DIR/V143_BUILD_RESULT.txt"
+          cat "$V143_RELEASE_DIR/SHA256SUMS.txt"
 
-      - name: Upload V142 APK, source patch, and validation report
+      - name: Upload V143 APK, source patch, and validation report
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.142-ORIENTATION-PRECISION
+          name: SurveyQuant-v1.0.143-ORIENTATION-ALIGNMENT
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_FIX.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.143_ORIENTATION_ALIGNMENT_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V142_BUILD_RESULT.txt
-            ${{ runner.temp }}/sq-release/V142_PATCH_REPORT.md
+            ${{ runner.temp }}/sq-release/V143_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V143_ALIGNMENT_REPORT.md
           if-no-files-found: error
           retention-days: 14
