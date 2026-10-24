@@ -150,7 +150,16 @@ jobs:
           V147_HTML="$S/index_v147.html"
           FINAL_HTML="$S/index_v148.html"
           python -m py_compile "$K/SurveyQuant_v1.0.147_APPLY_ROOT_CAUSE_FIX.py" "$K/SurveyQuant_v1.0.148_APPLY_ALIGNMENT_DWG_FIX.py" "$K/SurveyQuant_v1.0.148_PACKAGE_APK.py" "$K/SurveyQuant_v1.0.148_REAL_MLEADER_ORACLE_TEST.py"
-          for f in "$K"/SurveyQuant_v1.0.148_*.js "$K/SurveyQuant_v1.0.147_*.js" "$K/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"; do node --check "$f"; done
+          shopt -s nullglob
+          JS_FILES=( "$K"/SurveyQuant_v1.0.148_*.js "$K"/SurveyQuant_v1.0.147_*.js "$K"/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js )
+          if ((${#JS_FILES[@]} == 0)); then
+            echo "ERROR: no JavaScript test files found in patch kit: $K"
+            exit 1
+          fi
+          for f in "${JS_FILES[@]}"; do
+            test -f "$f"
+            node --check "$f"
+          done
           python3 "$K/SurveyQuant_v1.0.147_APPLY_ROOT_CAUSE_FIX.py" --input-html "$S/index.html" --output-html "$V147_HTML" --report "$R/V147_ROOT_CAUSE_REPORT.md"
           node "$K/SurveyQuant_v1.0.147_REGRESSION_TEST.js" "$V147_HTML"
           node "$K/SurveyQuant_v1.0.147_STABILITY_TEST.js" "$V147_HTML"
