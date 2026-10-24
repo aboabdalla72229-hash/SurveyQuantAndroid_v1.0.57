@@ -1,0 +1,184 @@
+name: Build SurveyQuant v1.0.142 - Two Point Orientation + Clean Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V140 base artifact run ID"
+        required: true
+        type: string
+        default: "39964262110"
+      reference_run_id:
+        description: "Successful V130 orientation reference artifact run ID"
+        required: true
+        type: string
+        default: "39560732493"
+  push:
+    paths:
+      - ".github/workflows/build-v142-orientation-precision.yml"
+      - "SurveyQuant_v1.0.142_ORIENTATION_PRECISION_PATCH_KIT.zip"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build_v142:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '39964262110' }}
+      REFERENCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.reference_run_id || '39560732493' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Check out workflow and patch kit
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT" || { echo "ERROR: Android SDK directory not found: $SDK_ROOT"; exit 1; }
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager not found"; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
+          echo "PASS: Android build tools configured."
+
+      - name: Validate patch kit and download the successful V140 base and V130 reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_PATCH_KIT.zip"
+          test -s "$KIT" || { echo "ERROR: Upload the V142 patch-kit ZIP to the repository root first."; exit 1; }
+          unzip -t "$KIT"
+          KIT_DIR="$RUNNER_TEMP/v142-kit"
+          BASE_DIR="$RUNNER_TEMP/v140-base"
+          REF_DIR="$RUNNER_TEMP/v130-reference"
+          rm -rf "$KIT_DIR" "$BASE_DIR" "$REF_DIR"
+          mkdir -p "$KIT_DIR" "$BASE_DIR" "$REF_DIR"
+          unzip -q "$KIT" -d "$KIT_DIR"
+          PATCHER="$KIT_DIR/SurveyQuant_v1.0.142_APPLY_ORIENTATION_PRECISION_PATCH.py"
+          TESTER="$KIT_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_TEST.js"
+          test -s "$PATCHER" || { echo "ERROR: V142 patcher missing from kit."; exit 1; }
+          test -s "$TESTER" || { echo "ERROR: V142 test missing from kit."; exit 1; }
+          test -s "$KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" || { echo "ERROR: V130 DWG regression test missing from kit."; exit 1; }
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.140-V127-ORIENTATION-FRESH-SESSION" --dir "$BASE_DIR"
+          gh run download "$REFERENCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.130-DWG-AXIS-MULTISELECT" --dir "$REF_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.140_V127_ORIENTATION_FRESH_SESSION.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.140_V127_ORIENTATION_SOURCE_PATCH.zip' -print -quit)"
+          REF_PATCH="$(find "$REF_DIR" -type f -name 'SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: Successful V140 base APK not found in run $SOURCE_RUN_ID."; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V140 source patch not found in run $SOURCE_RUN_ID."; exit 1; }
+          test -s "$REF_PATCH" || { echo "ERROR: V130 source patch not found in run $REFERENCE_RUN_ID."; exit 1; }
+          unzip -t "$BASE_PATCH"
+          unzip -t "$REF_PATCH"
+          mkdir -p "$RUNNER_TEMP/v142-source" "$RUNNER_TEMP/v130-source" "$RUNNER_TEMP/sq-release"
+          unzip -q "$BASE_PATCH" -d "$RUNNER_TEMP/v142-source"
+          unzip -q "$REF_PATCH" -d "$RUNNER_TEMP/v130-source"
+          test -s "$RUNNER_TEMP/v142-source/index.html"
+          test -s "$RUNNER_TEMP/v130-source/index.html"
+          echo "V142_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+          echo "V142_PATCHER=$PATCHER" >> "$GITHUB_ENV"
+          echo "V142_TESTER=$TESTER" >> "$GITHUB_ENV"
+          echo "V142_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V142_SOURCE_DIR=$RUNNER_TEMP/v142-source" >> "$GITHUB_ENV"
+          echo "V130_SOURCE_DIR=$RUNNER_TEMP/v130-source" >> "$GITHUB_ENV"
+          echo "V142_RELEASE_DIR=$RUNNER_TEMP/sq-release" >> "$GITHUB_ENV"
+
+      - name: Transplant V130 orientation, repair preview geometry, and run regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile "$V142_PATCHER"
+          node --check "$V142_TESTER"
+          python3 "$V142_PATCHER" --source-html "$V142_SOURCE_DIR/index.html" --reference-html "$V130_SOURCE_DIR/index.html" --output-html "$V142_SOURCE_DIR/index_v142.html" --report "$V142_RELEASE_DIR/V142_PATCH_REPORT.md"
+          node "$V142_TESTER" "$V142_SOURCE_DIR/index_v142.html" "$V130_SOURCE_DIR/index.html"
+          node "$V142_KIT_DIR/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" "$V142_SOURCE_DIR/index_v142.html"
+          node --check "$V142_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V142_SOURCE_DIR/index_v142.html" "$RUNNER_TEMP/v142-js-check" <<'PY'
+          import pathlib, re, subprocess, sys
+          html_path, out_dir = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+          out_dir.mkdir(parents=True, exist_ok=True)
+          text = html_path.read_text(encoding='utf-8')
+          found = re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>', text, re.I)
+          checked = 0
+          for i, (attrs, body) in enumerate(found):
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/ld\+json|importmap)["\']', attrs, re.I):
+                  continue
+              path = out_dir / f'script_{i}.js'
+              path.write_text(body, encoding='utf-8')
+              subprocess.run(['node', '--check', str(path)], check=True)
+              checked += 1
+          if checked < 8:
+              raise SystemExit(f'Expected at least 8 inline JS blocks, found {checked}')
+          print(f'PASS: {checked} inline JavaScript blocks parsed successfully.')
+          PY
+          cp "$V142_SOURCE_DIR/index_v142.html" "$V142_SOURCE_DIR/index.html"
+          rm -f "$V142_SOURCE_DIR/index_v142.html"
+          cp "$V142_PATCHER" "$V142_SOURCE_DIR/SurveyQuant_v1.0.142_APPLY_ORIENTATION_PRECISION_PATCH.py"
+          cp "$V142_TESTER" "$V142_SOURCE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_TEST.js"
+          cp "$V142_KIT_DIR/README_V142_AR.txt" "$V142_SOURCE_DIR/README_V142_AR.txt"
+          (cd "$V142_SOURCE_DIR" && zip -qr "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" .)
+          unzip -t "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" | tail -2
+
+      - name: Inject tested HTML into APK, align, sign, and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_UNSIGNED.apk"
+          ALIGNED="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_ALIGNED.apk"
+          FINAL="$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_FIX.apk"
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          python3 "$V142_PATCHER" --apk-input "$V142_BASE_APK" --apk-output "$RAW" --html-to-inject "$V142_SOURCE_DIR/index.html"
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='142'.*versionName='1.0.142'"
+          sha256sum "$FINAL" "$V142_RELEASE_DIR/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip" > "$V142_RELEASE_DIR/SHA256SUMS.txt"
+          printf '%s\n' 'PASS V142: V130 orientation transform, no-spurious-line preview checks, reference-board delete/undo/redo, V140 DWG/WASM support, manifest and APK signature verified.' > "$V142_RELEASE_DIR/V142_BUILD_RESULT.txt"
+          cat "$V142_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload V142 APK, source patch, and validation report
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.142-ORIENTATION-PRECISION
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.142_ORIENTATION_PRECISION_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/V142_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V142_PATCH_REPORT.md
+          if-no-files-found: error
+          retention-days: 14
