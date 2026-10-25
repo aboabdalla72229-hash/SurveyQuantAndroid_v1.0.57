@@ -1,0 +1,210 @@
+name: Build SurveyQuant v1.0.154 - DWG Reader Fix + Remove Concrete Project
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful signed V150 APK and source artifact run ID"
+        required: true
+        type: string
+        default: "40189448694"
+  push:
+    paths:
+      - ".github/workflows/build-v154-alignment-zoom-osnap-preserve.yml"
+      - "SurveyQuant_v1.0.154_ALIGNMENT_PATCH_KIT.zip"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build_v154:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40189448694' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Check out the build workflow and uploaded kit
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install LibreDWG build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config zlib1g-dev libpcre2-dev libreadline-dev flex bison gettext perl git python3
+
+      - name: Activate Emscripten for the writer-enabled DWG runtime
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT" || { echo "ERROR: Android SDK directory not found: $SDK_ROOT"; exit 1; }
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager not found"; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
+          echo "PASS: Android build tools configured."
+
+      - name: Unpack the V154 patch kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.154_ALIGNMENT_PATCH_KIT.zip"
+          test -s "$KIT" || { echo "ERROR: Upload SurveyQuant_v1.0.154_ALIGNMENT_PATCH_KIT.zip to repository root."; exit 1; }
+          unzip -t "$KIT"
+          KIT_DIR="$RUNNER_TEMP/v154-kit"
+          rm -rf "$KIT_DIR"; mkdir -p "$KIT_DIR"
+          unzip -q "$KIT" -d "$KIT_DIR"
+          for f in SurveyQuant_v1.0.154_ALIGNMENT_CORE.js SurveyQuant_v1.0.154_ALIGNMENT_COMMAND.js SurveyQuant_v1.0.154_ALIGNMENT_TEST.js SurveyQuant_v1.0.154_REBUILD_ALIGNMENT_REMOVE_CONCRETE.py SurveyQuant_v1.0.154_PACKAGE_APK.py SurveyQuant_v1.0.154_BUILD_LIBREDWG.sh; do
+            test -s "$KIT_DIR/$f" || { echo "ERROR: missing kit file $f"; exit 1; }
+          done
+          echo "V154_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+
+      - name: Download the signed V150 Android shell and source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v150-base"
+          SOURCE_DIR="$RUNNER_TEMP/v154-source"
+          RELEASE_DIR="$RUNNER_TEMP/sq-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.150-SESSION-SPLINE-DWG-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.150_SESSION_SPLINE_DWG_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.150_SESSION_SPLINE_DWG_FIX_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: signed V150 APK missing from run $SOURCE_RUN_ID."; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V150 full source patch missing from run $SOURCE_RUN_ID."; exit 1; }
+          unzip -t "$BASE_PATCH"
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          {
+            echo "V154_BASE_APK=$BASE_APK"
+            echo "V154_SOURCE_DIR=$SOURCE_DIR"
+            echo "V154_RELEASE_DIR=$RELEASE_DIR"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the updated LibreDWG-Web v0.7.17 reader and DXF writer
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n "$V154_KIT_DIR/SurveyQuant_v1.0.154_BUILD_LIBREDWG.sh"
+          "$V154_KIT_DIR/SurveyQuant_v1.0.154_BUILD_LIBREDWG.sh" "$RUNNER_TEMP" "$V154_SOURCE_DIR"
+          test -s "$V154_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$V154_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          test -s "$V154_SOURCE_DIR/libredwg-writer/BUILD_CONFIGURATION_V154.txt"
+
+      - name: Replace all old Alignment modules and delete the concrete quantity project
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "$V154_KIT_DIR/SurveyQuant_v1.0.154_REBUILD_ALIGNMENT_REMOVE_CONCRETE.py" "$V154_KIT_DIR/SurveyQuant_v1.0.154_PACKAGE_APK.py"
+          node --check "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_CORE.js"
+          node --check "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_COMMAND.js"
+          node --check "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_TEST.js"
+          node "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_TEST.js"
+          python3 "$V154_KIT_DIR/SurveyQuant_v1.0.154_REBUILD_ALIGNMENT_REMOVE_CONCRETE.py" \
+            --input-html "$V154_SOURCE_DIR/index.html" \
+            --core-js "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_CORE.js" \
+            --command-js "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_COMMAND.js" \
+            --output-html "$V154_SOURCE_DIR/index_v154.html" \
+            --report "$V154_RELEASE_DIR/V154_ALIGNMENT_REBUILD_REPORT.md"
+          mv "$V154_SOURCE_DIR/index_v154.html" "$V154_SOURCE_DIR/index.html"
+          SQ_V154_HTML="$V154_SOURCE_DIR/index.html" node "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_TEST.js"
+          grep -q 'const SQ_APP_VERSION_CODE = 154;' "$V154_SOURCE_DIR/index.html"
+          grep -q 'id="sq154-alignment-core"' "$V154_SOURCE_DIR/index.html"
+          grep -q 'id="sq154-alignment-command"' "$V154_SOURCE_DIR/index.html"
+          ! grep -qiE 'concreteCard|concreteDxfInput|concreteModel|concreteDXF|calculateConcreteDxf|calculateConcreteManual|sqConcrete|خرسانة|حساب كمية الخرسانة' "$V154_SOURCE_DIR/index.html"
+          ! grep -q 'id="sq-orientation-module"' "$V154_SOURCE_DIR/index.html"
+          python3 - "$V154_SOURCE_DIR/index.html" "$RUNNER_TEMP/v154-inline-check" <<'PY'
+          import pathlib,re,subprocess,sys
+          html_path,out_dir=pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2]);out_dir.mkdir(parents=True,exist_ok=True)
+          html=html_path.read_text(encoding='utf-8'); blocks=re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I); checked=0
+          for i,(attrs,body) in enumerate(blocks):
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/ld\+json|importmap)["\']',attrs,re.I): continue
+              f=out_dir/f'script_{i}.js';f.write_text(body,encoding='utf-8');subprocess.run(['node','--check',str(f)],check=True);checked+=1
+          if checked < 3: raise SystemExit(f'Expected at least 3 executable inline JS blocks, got {checked}')
+          print(f'PASS: {checked} inline JavaScript blocks parse.')
+          PY
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_CORE.js" "$V154_SOURCE_DIR/"
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_COMMAND.js" "$V154_SOURCE_DIR/"
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_ALIGNMENT_TEST.js" "$V154_SOURCE_DIR/"
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_REBUILD_ALIGNMENT_REMOVE_CONCRETE.py" "$V154_SOURCE_DIR/"
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_PACKAGE_APK.py" "$V154_SOURCE_DIR/"
+          cp "$V154_KIT_DIR/SurveyQuant_v1.0.154_BUILD_LIBREDWG.sh" "$V154_SOURCE_DIR/"
+          cp "$V154_RELEASE_DIR/V154_ALIGNMENT_REBUILD_REPORT.md" "$V154_SOURCE_DIR/"
+          cat > "$V154_RELEASE_DIR/V154_BUILD_RESULT.txt" <<'TXT'
+          V154 replaces the old Alignment modules with a standalone two-point alignment command, retains the extended zoom and intersection OSNAP features, removes the concrete quantity project UI/state/calculation/export code, and rebuilds LibreDWG-Web v0.7.17 with DXF writing enabled. The rebuilt WASM loader and binary are injected into both source patch and APK. Automated alignment math and entity-record preservation tests pass. A real customer DWG file must still be used for acceptance testing; no DWG sample was attached to this request.
+          TXT
+          (cd "$V154_SOURCE_DIR" && zip -qr "$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_SOURCE_PATCH.zip" .)
+          unzip -t "$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_SOURCE_PATCH.zip" | tail -2
+
+      - name: Inject tested HTML and upgraded DWG engine into APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_UNSIGNED.apk"
+          ALIGNED="$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_ALIGNED.apk"
+          FINAL="$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX.apk"
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          python3 "$V154_KIT_DIR/SurveyQuant_v1.0.154_PACKAGE_APK.py" \
+            --apk-input "$V154_BASE_APK" \
+            --apk-output "$RAW" \
+            --html-to-inject "$V154_SOURCE_DIR/index.html" \
+            --dwg-wasm-dir "$V154_SOURCE_DIR/libredwg-writer/wasm"
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='154'.*versionName='1.0.154'"
+          sha256sum "$FINAL" "$V154_RELEASE_DIR/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_SOURCE_PATCH.zip" > "$V154_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V154_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed V154 APK, full source patch and reports
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.154-ALIGNMENT-DWG-FIX-REMOVE-CONCRETE
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.154_ALIGNMENT_DWG_FIX_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/V154_ALIGNMENT_REBUILD_REPORT.md
+            ${{ runner.temp }}/sq-release/V154_BUILD_RESULT.txt
+          if-no-files-found: error
+          retention-days: 14
