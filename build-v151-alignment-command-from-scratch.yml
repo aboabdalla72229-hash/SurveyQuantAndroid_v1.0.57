@@ -1,0 +1,176 @@
+name: Build SurveyQuant v1.0.151 - Fresh ALIGNMENT Command
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V150 signed APK and source artifact run ID"
+        required: true
+        type: string
+        default: "40189448694"
+  push:
+    paths:
+      - ".github/workflows/build-v151-alignment-command-from-scratch.yml"
+      - "SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_PATCH_KIT.zip"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build_v151:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40189448694' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Check out workflow and patch kit
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Configure Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT" || { echo "ERROR: Android SDK directory not found: $SDK_ROOT"; exit 1; }
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || { echo "ERROR: sdkmanager not found"; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt"
+          echo "PASS: Android build tools configured."
+
+      - name: Download V150 signed base and unpack source/patch kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_PATCH_KIT.zip"
+          test -s "$KIT" || { echo "ERROR: Upload SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_PATCH_KIT.zip to repository root."; exit 1; }
+          unzip -t "$KIT"
+          KIT_DIR="$RUNNER_TEMP/v151-kit"
+          BASE_DIR="$RUNNER_TEMP/v150-base"
+          SRC_DIR="$RUNNER_TEMP/v151-source"
+          RELEASE_DIR="$RUNNER_TEMP/sq-release"
+          rm -rf "$KIT_DIR" "$BASE_DIR" "$SRC_DIR" "$RELEASE_DIR"
+          mkdir -p "$KIT_DIR" "$BASE_DIR" "$SRC_DIR" "$RELEASE_DIR"
+          unzip -q "$KIT" -d "$KIT_DIR"
+          for f in \
+            SurveyQuant_v1.0.151_APPLY_ALIGNMENT_COMMAND.py \
+            SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_MODULE.js \
+            SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_TEST.js \
+            SurveyQuant_v1.0.151_SESSION_SPLINE_DWG_TEST.js \
+            SurveyQuant_v1.0.151_WCS_PREVIEW_AXIS_TEST.js \
+            SurveyQuant_v1.0.151_PACKAGE_APK.py \
+            SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js; do
+            test -s "$KIT_DIR/$f" || { echo "ERROR: required patch/test missing: $f"; exit 1; }
+          done
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.150-SESSION-SPLINE-DWG-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.150_SESSION_SPLINE_DWG_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.150_SESSION_SPLINE_DWG_FIX_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: signed V150 base APK missing from run $SOURCE_RUN_ID."; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V150 source patch missing from run $SOURCE_RUN_ID."; exit 1; }
+          unzip -t "$BASE_PATCH"
+          unzip -q "$BASE_PATCH" -d "$SRC_DIR"
+          test -s "$SRC_DIR/index.html"
+          {
+            echo "V151_KIT_DIR=$KIT_DIR"
+            echo "V151_BASE_APK=$BASE_APK"
+            echo "V151_SOURCE_DIR=$SRC_DIR"
+            echo "V151_RELEASE_DIR=$RELEASE_DIR"
+          } >> "$GITHUB_ENV"
+
+      - name: Install new ALIGNMENT command and run geometric/regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          K="$V151_KIT_DIR"; S="$V151_SOURCE_DIR"; R="$V151_RELEASE_DIR"
+          python -m py_compile "$K/SurveyQuant_v1.0.151_APPLY_ALIGNMENT_COMMAND.py" "$K/SurveyQuant_v1.0.151_PACKAGE_APK.py"
+          for f in "$K"/SurveyQuant_v1.0.151_*.js "$K/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"; do node --check "$f"; done
+          python3 "$K/SurveyQuant_v1.0.151_APPLY_ALIGNMENT_COMMAND.py" --input-html "$S/index.html" --module-js "$K/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_MODULE.js" --output-html "$S/index_v151.html" --report "$R/V151_PATCH_REPORT.md"
+          node "$K/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_TEST.js" "$S/index_v151.html"
+          node "$K/SurveyQuant_v1.0.151_SESSION_SPLINE_DWG_TEST.js" "$S/index_v151.html"
+          node "$K/SurveyQuant_v1.0.151_WCS_PREVIEW_AXIS_TEST.js" "$S/index_v151.html"
+          node "$K/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js" "$S/index_v151.html"
+          python3 - "$S/index_v151.html" "$RUNNER_TEMP/v151-inline-check" <<'PY'
+          import pathlib, re, subprocess, sys
+          html_path,out_dir=pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2]);out_dir.mkdir(parents=True,exist_ok=True)
+          html=html_path.read_text(encoding='utf-8'); blocks=re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I);checked=0
+          for i,(attrs,body) in enumerate(blocks):
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/ld\+json|importmap)["\']',attrs,re.I):continue
+              f=out_dir/f'script_{i}.js';f.write_text(body,encoding='utf-8');subprocess.run(['node','--check',str(f)],check=True);checked+=1
+          if checked<10:raise SystemExit(f'Expected at least 10 JavaScript blocks, got {checked}')
+          print(f'PASS: {checked} inline JavaScript blocks parse.')
+          PY
+          grep -q 'const SQ_APP_VERSION_CODE = 151;' "$S/index_v151.html"
+          grep -q 'id="sq-alignment-command-module"' "$S/index_v151.html"
+          grep -q 'await LibreDwg.create(sqDwgWasmRuntimePath())' "$S/index_v151.html"
+          grep -q 'engine.transformBytes(source.bytes,t)' "$S/index_v151.html"
+          cp "$S/index_v151.html" "$S/index.html"
+          rm -f "$S/index_v151.html"
+          for f in "$K"/SurveyQuant_v1.0.151_* "$K/SurveyQuant_v1.0.130_DWG_AXIS_MULTISELECT_TEST.js"; do [ -f "$f" ] && cp "$f" "$S/"; done
+          cp "$R/V151_PATCH_REPORT.md" "$S/V151_PATCH_REPORT.md"
+          cp "$K/SurveyQuant_v1.0.151_AUTOMATED_TEST_PLAN.md" "$S/SurveyQuant_v1.0.151_AUTOMATED_TEST_PLAN.md"
+          cat > "$R/V151_BUILD_RESULT.txt" <<'TXT'
+          PASS V151 automated suite: fresh Alignment command integration, production two-point residual tests, shared DXF/DWG reader, WCS/OCS preview, SPLINE/session regressions, V130 DWG/CAD preservation tests, inline JavaScript syntax checks. DWG inputs are converted to DXF in memory and exported as a new DXF file. Real user-board validation remains necessary.
+          TXT
+          rm -f "$R/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_SOURCE_PATCH.zip"
+          (cd "$S" && zip -qr "$R/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_SOURCE_PATCH.zip" .)
+          unzip -t "$R/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_SOURCE_PATCH.zip" | tail -2
+
+      - name: Inject V151 HTML into V150 APK, sign and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="$V151_RELEASE_DIR/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_UNSIGNED.apk"
+          ALIGNED="$V151_RELEASE_DIR/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_ALIGNED.apk"
+          FINAL="$V151_RELEASE_DIR/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND.apk"
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          python3 "$V151_KIT_DIR/SurveyQuant_v1.0.151_PACKAGE_APK.py" --apk-input "$V151_BASE_APK" --apk-output "$RAW" --html-to-inject "$V151_SOURCE_DIR/index.html"
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"; test -s "$STORE"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='151'.*versionName='1.0.151'"
+          sha256sum "$FINAL" "$V151_RELEASE_DIR/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_SOURCE_PATCH.zip" > "$V151_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V151_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed APK and complete source
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.151-ALIGNMENT-COMMAND-FRESH
+          path: |
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.151_ALIGNMENT_COMMAND_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SHA256SUMS.txt
+            ${{ runner.temp }}/sq-release/V151_PATCH_REPORT.md
+            ${{ runner.temp }}/sq-release/V151_BUILD_RESULT.txt
+          if-no-files-found: error
+          retention-days: 14
