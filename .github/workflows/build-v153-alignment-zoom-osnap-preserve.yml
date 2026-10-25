@@ -1,4 +1,4 @@
-name: Build SurveyQuant v1.0.152 - Alignment From Scratch
+name: Build SurveyQuant v1.0.153 - Alignment From Scratch
 
 on:
   workflow_dispatch:
@@ -10,8 +10,8 @@ on:
         default: "40189448694"
   push:
     paths:
-      - ".github/workflows/build-v152-alignment-from-scratch.yml"
-      - "SurveyQuant_v1.0.152_ALIGNMENT_PATCH_KIT.zip"
+      - ".github/workflows/build-v153-alignment-zoom-osnap-preserve.yml"
+      - "SurveyQuant_v1.0.153_ALIGNMENT_PATCH_KIT.zip"
 
 permissions:
   actions: read
@@ -40,12 +40,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          KIT_DIR="$RUNNER_TEMP/v152-kit"
-          test -s "$GITHUB_WORKSPACE/SurveyQuant_v1.0.152_ALIGNMENT_PATCH_KIT.zip" || { echo "ERROR: upload SurveyQuant_v1.0.152_ALIGNMENT_PATCH_KIT.zip to repository root."; exit 1; }
-          unzip -t "$GITHUB_WORKSPACE/SurveyQuant_v1.0.152_ALIGNMENT_PATCH_KIT.zip"
+          KIT_DIR="$RUNNER_TEMP/v153-kit"
+          test -s "$GITHUB_WORKSPACE/SurveyQuant_v1.0.153_ALIGNMENT_PATCH_KIT.zip" || { echo "ERROR: upload SurveyQuant_v1.0.153_ALIGNMENT_PATCH_KIT.zip to repository root."; exit 1; }
+          unzip -t "$GITHUB_WORKSPACE/SurveyQuant_v1.0.153_ALIGNMENT_PATCH_KIT.zip"
           rm -rf "$KIT_DIR"; mkdir -p "$KIT_DIR"
-          unzip -q "$GITHUB_WORKSPACE/SurveyQuant_v1.0.152_ALIGNMENT_PATCH_KIT.zip" -d "$KIT_DIR"
-          echo "V152_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
+          unzip -q "$GITHUB_WORKSPACE/SurveyQuant_v1.0.153_ALIGNMENT_PATCH_KIT.zip" -d "$KIT_DIR"
+          echo "V153_KIT_DIR=$KIT_DIR" >> "$GITHUB_ENV"
 
       - name: Set up Python and Node
         uses: actions/setup-python@v5
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_DIR="$RUNNER_TEMP/v150-base"
-          SOURCE_DIR="$RUNNER_TEMP/v152-source"
+          SOURCE_DIR="$RUNNER_TEMP/v153-source"
           RELEASE_DIR="$RUNNER_TEMP/sq-release"
           rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
           mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
@@ -92,35 +92,35 @@ jobs:
           unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
           test -s "$SOURCE_DIR/index.html"
           {
-            echo "V152_BASE_APK=$BASE_APK"
-            echo "V152_SOURCE_DIR=$SOURCE_DIR"
-            echo "V152_RELEASE_DIR=$RELEASE_DIR"
+            echo "V153_BASE_APK=$BASE_APK"
+            echo "V153_SOURCE_DIR=$SOURCE_DIR"
+            echo "V153_RELEASE_DIR=$RELEASE_DIR"
           } >> "$GITHUB_ENV"
 
       - name: Replace every legacy orientation module and install fresh Alignment
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile "$V152_KIT_DIR/SurveyQuant_v1.0.152_REBUILD_ALIGNMENT_FROM_SCRATCH.py" "$V152_KIT_DIR/SurveyQuant_v1.0.152_PACKAGE_APK.py"
-          node --check "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_CORE.js"
-          node --check "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_COMMAND.js"
-          node --check "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_TEST.js"
-          node "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_TEST.js"
-          python3 "$V152_KIT_DIR/SurveyQuant_v1.0.152_REBUILD_ALIGNMENT_FROM_SCRATCH.py" \
-            --input-html "$V152_SOURCE_DIR/index.html" \
-            --core-js "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_CORE.js" \
-            --command-js "$V152_KIT_DIR/SurveyQuant_v1.0.152_ALIGNMENT_COMMAND.js" \
-            --output-html "$V152_SOURCE_DIR/index_v152.html" \
-            --report "$V152_RELEASE_DIR/V152_ALIGNMENT_REBUILD_REPORT.md"
-          mv "$V152_SOURCE_DIR/index_v152.html" "$V152_SOURCE_DIR/index.html"
-          grep -q 'const SQ_APP_VERSION_CODE = 152;' "$V152_SOURCE_DIR/index.html"
-          grep -q 'id="sq152-alignment-core"' "$V152_SOURCE_DIR/index.html"
-          grep -q 'id="sq152-alignment-command"' "$V152_SOURCE_DIR/index.html"
-          ! grep -q 'id="sq-orientation-module"' "$V152_SOURCE_DIR/index.html"
-          ! grep -q 'id="sq-orientation-reference-board-module"' "$V152_SOURCE_DIR/index.html"
-          ! grep -q 'id="sq-orientation-cad-preserve-module"' "$V152_SOURCE_DIR/index.html"
-          ! grep -q 'id="sq-orientation-dxf-faithful-recovery-module"' "$V152_SOURCE_DIR/index.html"
-          python3 - "$V152_SOURCE_DIR/index.html" "$RUNNER_TEMP/v152-inline-check" <<'PY'
+          python -m py_compile "$V153_KIT_DIR/SurveyQuant_v1.0.153_REBUILD_ALIGNMENT_FROM_SCRATCH.py" "$V153_KIT_DIR/SurveyQuant_v1.0.153_PACKAGE_APK.py"
+          node --check "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_CORE.js"
+          node --check "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_COMMAND.js"
+          node --check "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_TEST.js"
+          node "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_TEST.js"
+          python3 "$V153_KIT_DIR/SurveyQuant_v1.0.153_REBUILD_ALIGNMENT_FROM_SCRATCH.py" \
+            --input-html "$V153_SOURCE_DIR/index.html" \
+            --core-js "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_CORE.js" \
+            --command-js "$V153_KIT_DIR/SurveyQuant_v1.0.153_ALIGNMENT_COMMAND.js" \
+            --output-html "$V153_SOURCE_DIR/index_v153.html" \
+            --report "$V153_RELEASE_DIR/V153_ALIGNMENT_REBUILD_REPORT.md"
+          mv "$V153_SOURCE_DIR/index_v153.html" "$V153_SOURCE_DIR/index.html"
+          grep -q 'const SQ_APP_VERSION_CODE = 153;' "$V153_SOURCE_DIR/index.html"
+          grep -q 'id="sq153-alignment-core"' "$V153_SOURCE_DIR/index.html"
+          grep -q 'id="sq153-alignment-command"' "$V153_SOURCE_DIR/index.html"
+          ! grep -q 'id="sq-orientation-module"' "$V153_SOURCE_DIR/index.html"
+          ! grep -q 'id="sq-orientation-reference-board-module"' "$V153_SOURCE_DIR/index.html"
+          ! grep -q 'id="sq-orientation-cad-preserve-module"' "$V153_SOURCE_DIR/index.html"
+          ! grep -q 'id="sq-orientation-dxf-faithful-recovery-module"' "$V153_SOURCE_DIR/index.html"
+          python3 - "$V153_SOURCE_DIR/index.html" "$RUNNER_TEMP/v153-inline-check" <<'PY'
           import pathlib,re,subprocess,sys
           html_path,out_dir=pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2]);out_dir.mkdir(parents=True,exist_ok=True)
           html=html_path.read_text(encoding='utf-8'); blocks=re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I); checked=0
@@ -130,27 +130,27 @@ jobs:
           if checked < 3: raise SystemExit(f'Expected at least 3 executable inline JS blocks, got {checked}')
           print(f'PASS: {checked} inline JavaScript blocks parse.')
           PY
-          cp "$V152_KIT_DIR"/SurveyQuant_v1.0.152_ALIGNMENT_CORE.js "$V152_SOURCE_DIR/"
-          cp "$V152_KIT_DIR"/SurveyQuant_v1.0.152_ALIGNMENT_COMMAND.js "$V152_SOURCE_DIR/"
-          cp "$V152_KIT_DIR"/SurveyQuant_v1.0.152_ALIGNMENT_TEST.js "$V152_SOURCE_DIR/"
-          cp "$V152_KIT_DIR"/SurveyQuant_v1.0.152_REBUILD_ALIGNMENT_FROM_SCRATCH.py "$V152_SOURCE_DIR/"
-          cp "$V152_KIT_DIR"/SurveyQuant_v1.0.152_PACKAGE_APK.py "$V152_SOURCE_DIR/"
-          cp "$V152_RELEASE_DIR/V152_ALIGNMENT_REBUILD_REPORT.md" "$V152_SOURCE_DIR/"
-          cat > "$V152_RELEASE_DIR/V152_BUILD_RESULT.txt" <<'TXT'
-          V152 REBUILT THE ALIGNMENT FEATURE: all seven legacy orientation modules removed and replaced by a standalone two-point Alignment command. Automated math/DXF record tests and JavaScript syntax checks passed. DXF remains record-preserving for supported standard entities. DWG is read through bundled LibreDWG and output as DXF. Opaque Civil 3D/proxy objects fail closed if their geometry cannot be transformed exactly. Real customer DWG/DXF validation is still required before production confidence can be claimed.
+          cp "$V153_KIT_DIR"/SurveyQuant_v1.0.153_ALIGNMENT_CORE.js "$V153_SOURCE_DIR/"
+          cp "$V153_KIT_DIR"/SurveyQuant_v1.0.153_ALIGNMENT_COMMAND.js "$V153_SOURCE_DIR/"
+          cp "$V153_KIT_DIR"/SurveyQuant_v1.0.153_ALIGNMENT_TEST.js "$V153_SOURCE_DIR/"
+          cp "$V153_KIT_DIR"/SurveyQuant_v1.0.153_REBUILD_ALIGNMENT_FROM_SCRATCH.py "$V153_SOURCE_DIR/"
+          cp "$V153_KIT_DIR"/SurveyQuant_v1.0.153_PACKAGE_APK.py "$V153_SOURCE_DIR/"
+          cp "$V153_RELEASE_DIR/V153_ALIGNMENT_REBUILD_REPORT.md" "$V153_SOURCE_DIR/"
+          cat > "$V153_RELEASE_DIR/V153_BUILD_RESULT.txt" <<'TXT'
+          V153 REBUILT THE ALIGNMENT FEATURE: V153 adds 100,000,000x max zoom, 2.5x/5x zoom controls, cursor-anchored mouse-wheel zoom, pinch zoom, and optional intersection OSNAP with priority snap. Alignment writes coordinate transforms into original DXF group-code records instead of rebuilding CAD entities. Automated geometry, intersection, retained-layer/handle/XData and JavaScript syntax tests passed. DWG is read through LibreDWG and output as DXF. Unsupported opaque entities fail closed. Real customer DWG/DXF validation is still required.
           TXT
-          (cd "$V152_SOURCE_DIR" && zip -qr "$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" .)
-          unzip -t "$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" | tail -2
+          (cd "$V153_SOURCE_DIR" && zip -qr "$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" .)
+          unzip -t "$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" | tail -2
 
-      - name: Inject rebuilt HTML into APK and set v152 manifest
+      - name: Inject rebuilt HTML into APK and set v153 manifest
         shell: bash
         run: |
           set -euo pipefail
-          RAW="$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_UNSIGNED.apk"
-          ALIGNED="$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_ALIGNED.apk"
-          FINAL="$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH.apk"
+          RAW="$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_UNSIGNED.apk"
+          ALIGNED="$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_ALIGNED.apk"
+          FINAL="$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH.apk"
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
-          python3 "$V152_KIT_DIR/SurveyQuant_v1.0.152_PACKAGE_APK.py" --apk-input "$V152_BASE_APK" --apk-output "$RAW" --html-to-inject "$V152_SOURCE_DIR/index.html"
+          python3 "$V153_KIT_DIR/SurveyQuant_v1.0.153_PACKAGE_APK.py" --apk-input "$V153_BASE_APK" --apk-output "$RAW" --html-to-inject "$V153_SOURCE_DIR/index.html"
           test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
           test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
           test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
@@ -160,20 +160,20 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$RAW" "$ALIGNED"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='152'.*versionName='1.0.152'"
-          sha256sum "$FINAL" "$V152_RELEASE_DIR/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" > "$V152_RELEASE_DIR/SHA256SUMS.txt"
-          cat "$V152_RELEASE_DIR/SHA256SUMS.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='153'.*versionName='1.0.153'"
+          sha256sum "$FINAL" "$V153_RELEASE_DIR/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip" > "$V153_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V153_RELEASE_DIR/SHA256SUMS.txt"
 
-      - name: Upload v152 APK and full source patch
+      - name: Upload v153 APK and full source patch
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: SurveyQuant-v1.0.152-ALIGNMENT-FROM-SCRATCH
+          name: SurveyQuant-v1.0.153-ALIGNMENT-FROM-SCRATCH
           path: |
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH.apk
-            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.152_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH.apk
+            ${{ runner.temp }}/sq-release/SurveyQuant_v1.0.153_ALIGNMENT_FROM_SCRATCH_SOURCE_PATCH.zip
             ${{ runner.temp }}/sq-release/SHA256SUMS.txt
-            ${{ runner.temp }}/sq-release/V152_ALIGNMENT_REBUILD_REPORT.md
-            ${{ runner.temp }}/sq-release/V152_BUILD_RESULT.txt
+            ${{ runner.temp }}/sq-release/V153_ALIGNMENT_REBUILD_REPORT.md
+            ${{ runner.temp }}/sq-release/V153_BUILD_RESULT.txt
           if-no-files-found: error
           retention-days: 14
