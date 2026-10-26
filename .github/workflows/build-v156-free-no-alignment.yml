@@ -1,0 +1,221 @@
+name: Build SurveyQuant v1.0.156 Free No Alignment
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V155 APK/source artifact run ID"
+        required: true
+        type: string
+        default: "40355052413"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-v156-free-no-alignment.yml"
+      - "SurveyQuant_v1.0.156_FREE_NO_ALIGNMENT_SOURCE_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v156-free-no-alignment
+  cancel-in-progress: false
+
+jobs:
+  build_v156:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40355052413' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check patch kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT="$GITHUB_WORKSPACE/SurveyQuant_v1.0.156_FREE_NO_ALIGNMENT_SOURCE_KIT.zip"
+          test -s "$KIT" || { echo "ERROR: missing SurveyQuant_v1.0.156_FREE_NO_ALIGNMENT_SOURCE_KIT.zip in repository root"; exit 1; }
+          unzip -t "$KIT" | tail -2
+          mkdir -p "$RUNNER_TEMP/v156-kit"
+          unzip -q "$KIT" -d "$RUNNER_TEMP/v156-kit"
+          python3 -m py_compile "$RUNNER_TEMP/v156-kit/SurveyQuant_v1.0.156_FREE_PATCH.py" "$RUNNER_TEMP/v156-kit/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py"
+          test -s "$RUNNER_TEMP/v156-kit/README_V156_FREE_AR.md"
+          echo "V156_KIT_DIR=$RUNNER_TEMP/v156-kit" >> "$GITHUB_ENV"
+
+      - name: Download the last successful V155 APK and source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v155-base-artifact"
+          SOURCE_DIR="$RUNNER_TEMP/v155-source"
+          RELEASE_DIR="$RUNNER_TEMP/v156-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.155-ALIGNMENT-NATIVE-DWG" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.155_ALIGNMENT_NATIVE_DWG.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.155_ALIGNMENT_NATIVE_DWG_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: base APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V155 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/dxf-parser.js"
+          test -s "$SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V156_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V156_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V156_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Remove Alignment and activation/payment code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V156_KIT_DIR/SurveyQuant_v1.0.156_FREE_PATCH.py" --html "$V156_SOURCE_DIR/index.html"
+          python3 "$V156_KIT_DIR/SurveyQuant_v1.0.156_FREE_PATCH.py" --html "$V156_SOURCE_DIR/index.html" --check-only
+          python3 - "$V156_SOURCE_DIR/index.html" "$RUNNER_TEMP/v156-inline-js" <<'PY'
+          import pathlib,re,subprocess,sys
+          html_path,out_dir=pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2])
+          out_dir.mkdir(parents=True,exist_ok=True)
+          html=html_path.read_text(encoding='utf-8')
+          blocks=re.findall(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)
+          checked=0
+          for i,(attrs,body) in enumerate(blocks):
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/ld\+json|importmap)["\']',attrs,re.I):
+                  continue
+              f=out_dir/f'script_{i}.js';f.write_text(body,encoding='utf-8')
+              subprocess.run(['node','--check',str(f)],check=True)
+              checked+=1
+          if checked < 2: raise SystemExit(f'Expected >=2 executable inline JS blocks; got {checked}')
+          required=["onclick=\"openProjectPage('project1Card')\"", "onclick=\"openProjectPage('dropFilesCard')\"", 'function parseDWGDatabase(db){', 'sq-v117-universal-dwg-bridge']
+          missing=[s for s in required if s not in html]
+          if missing: raise SystemExit('Required non-Alignment project/DWG code missing: '+', '.join(missing))
+          forbidden=['sq155-alignment-core','sq155-alignment-command','sqOpenOrientationProject','openOrientationProject','sqInitAccess','sqAccessGate','startKashierPayment','openPaymentPage','paymentPage','payment-shortcut','sqAlignmentPreviewFromBlocks']
+          found=[s for s in forbidden if s in html]
+          if found: raise SystemExit('Removed project/access code remains: '+', '.join(found))
+          print(f'PASS: {checked} executable inline JS blocks parse; Alignment UI, activation gate and payment page absent; shared DWG bridge remains')
+          PY
+          cp "$V156_KIT_DIR/SurveyQuant_v1.0.156_FREE_PATCH.py" "$V156_SOURCE_DIR/"
+          cp "$V156_KIT_DIR/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py" "$V156_SOURCE_DIR/"
+
+      - name: Package version 1.0.156 APK with existing DWG runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V156_KIT_DIR/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py" \
+            --apk-input "$V156_BASE_APK" \
+            --apk-output "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V156_SOURCE_DIR/index.html"
+          test -s "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_UNSIGNED.apk"
+
+      - name: Sign and validate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_ALIGNED.apk"
+          FINAL="$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='156'.*versionName='1.0.156'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_UNSIGNED.apk"
+
+      - name: Package clean source patch without historical orientation/alignment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH_DIR="$RUNNER_TEMP/v156-clean-source-patch"
+          PATCH_ZIP="$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_SOURCE_PATCH.zip"
+          rm -rf "$PATCH_DIR"; mkdir -p "$PATCH_DIR/libredwg-writer/dist" "$PATCH_DIR/libredwg-writer/wasm"
+          cp "$V156_SOURCE_DIR/index.html" "$PATCH_DIR/index.html"
+          cp "$V156_SOURCE_DIR/dxf-parser.js" "$PATCH_DIR/dxf-parser.js"
+          cp "$V156_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js" "$PATCH_DIR/libredwg-writer/dist/"
+          cp "$V156_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" "$PATCH_DIR/libredwg-writer/wasm/"
+          cp "$V156_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm" "$PATCH_DIR/libredwg-writer/wasm/"
+          unzip -p "$V156_BASE_APK" assets/surveyquant_logo.png > "$PATCH_DIR/surveyquant_logo.png"
+          unzip -p "$V156_BASE_APK" assets/surveyquant_background.png > "$PATCH_DIR/surveyquant_background.png"
+          cp "$V156_KIT_DIR/SurveyQuant_v1.0.156_FREE_PATCH.py" "$PATCH_DIR/"
+          cp "$V156_KIT_DIR/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py" "$PATCH_DIR/"
+          cp "$V156_KIT_DIR/README_V156_FREE_AR.md" "$PATCH_DIR/"
+          cat > "$PATCH_DIR/libredwg-writer/BUILD_CONFIGURATION_V156_FREE_DWG_RUNTIME.txt" <<'TXT'
+          SurveyQuant v1.0.156 reuses the verified LibreDWG-Web runtime from successful V155 run 40355052413.
+          No runtime rebuild is needed for this change. The runtime remains packaged because all-project DWG/DXF import is preserved.
+          The active HTML source has no two-board Alignment project, no orientation UI, no activation gate, no subscription polling, and no Kashier payment flow.
+          TXT
+          printf '%s\n' '# SurveyQuant v1.0.156 free build' '- Alignment and activation/payment source modules removed.' '- The shared DWG/DXF reader and other project tools remain.' '- APK versionName 1.0.156, versionCode 156.' > "$V156_RELEASE_DIR/V156_CHANGELOG_EN.txt"
+          cp "$V156_KIT_DIR/README_V156_FREE_AR.md" "$V156_RELEASE_DIR/V156_CHANGELOG_AR.md"
+          (cd "$PATCH_DIR" && zip -qr "$PATCH_ZIP" .)
+          unzip -t "$PATCH_ZIP" | tail -2
+          if unzip -Z1 "$PATCH_ZIP" | grep -iE 'alignment|orientation|sq155'; then echo 'ERROR: historical Alignment/orientation file leaked into source patch'; exit 1; fi
+          sha256sum "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE.apk" "$PATCH_ZIP" > "$V156_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V156_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified APK and clean source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.156-FREE-NO-ALIGNMENT
+          path: |
+            ${{ runner.temp }}/v156-release/SurveyQuant_v1.0.156_FREE.apk
+            ${{ runner.temp }}/v156-release/SurveyQuant_v1.0.156_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v156-release/V156_CHANGELOG_AR.md
+            ${{ runner.temp }}/v156-release/V156_CHANGELOG_EN.txt
+            ${{ runner.temp }}/v156-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release v1.0.156 for the free app download page
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="$V156_RELEASE_DIR/V156_CHANGELOG_AR.md"
+          if gh release view v1.0.156 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v1.0.156 \
+              "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE.apk" \
+              "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v1.0.156 \
+              "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE.apk" \
+              "$V156_RELEASE_DIR/SurveyQuant_v1.0.156_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.156 - مجاني بدون تفعيل أو توجيه" \
+              --notes-file "$NOTES"
+          fi
+          echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.156"
