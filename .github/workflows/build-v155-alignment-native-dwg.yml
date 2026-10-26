@@ -129,9 +129,6 @@ jobs:
             echo "V155_SOURCE_DIR=$SOURCE_DIR"
             echo "V155_RELEASE_DIR=$RELEASE_DIR"
           } >> "$GITHUB_ENV"
-
-      - name: .github/workflows/build-v155-alignment-native-dwg.yml
-
       - name: Build LibreDWG-Web v0.8.2 and test six actual DWG fixtures
         shell: bash
         run: |
@@ -218,10 +215,6 @@ jobs:
           grep -q "dwg_read_data" "$V155_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
           grep -q "dwg_write_dxf" "$V155_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
           test -s "$V155_SOURCE_DIR/libredwg-writer/BUILD_CONFIGURATION_V155.txt"
-
-ملاحظة: بعد الحفظ، افتح Actions وشغّل Build SurveyQuant v1.0.155 Native DWG Alignment. لا تعتبر الإصلاح ناجحًا حتى تنجح اختبارات ملفات DWG الستة ثم تعبئة APK وتوقيعه.
-
-
       - name: Recheck V155 Alignment and prepare honest validation report
         shell: bash
         run: |
