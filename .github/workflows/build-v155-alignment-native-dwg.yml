@@ -130,10 +130,87 @@ jobs:
             echo "V155_RELEASE_DIR=$RELEASE_DIR"
           } >> "$GITHUB_ENV"
 
+      - name: .github/workflows/build-v155-alignment-native-dwg.yml
+
       - name: Build LibreDWG-Web v0.8.2 and test six actual DWG fixtures
         shell: bash
         run: |
           set -euo pipefail
+
+          # Apply narrow TypeScript compatibility fixes to the exact upstream v0.8.2 sources.
+          cat > "$RUNNER_TEMP/v155-patch-libredwg-ts.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+
+          def patch(relative_path, old, new):
+              path = root / relative_path
+              text = path.read_text(encoding="utf-8")
+              if new and new in text:
+                  print(f"PATCH ALREADY PRESENT: {relative_path}")
+                  return
+              if old not in text:
+                  raise SystemExit(f"PATCH ERROR: expected source pattern missing in {relative_path}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print(f"PATCHED: {relative_path}")
+
+          patch(
+              "src/converter/converter.ts",
+              "      // @ts-expect-error header variable name\n",
+              ""
+          )
+          patch(
+              "src/converter/entityConverter.ts",
+              "    let rgbColor = undefined",
+              "    let rgbColor: number | undefined = undefined"
+          )
+          patch(
+              "src/libredwg.ts",
+              "    const entities = []",
+              "    const entities: Dwg_Object_Ptr[] = []"
+          )
+          patch(
+              "src/libredwg.ts",
+              "    const results = []\n    for (let i = 0; i < num_objects; i++) {\n      const obj = wasmInstance.dwg_get_object(data, i)\n      const tio = wasmInstance.dwg_object_to_object_tio(obj)",
+              "    const results: Dwg_Object_Object_TIO_Ptr[] = []\n    for (let i = 0; i < num_objects; i++) {\n      const obj = wasmInstance.dwg_get_object(data, i)\n      const tio = wasmInstance.dwg_object_to_object_tio(obj)"
+          )
+          patch(
+              "src/libredwg.ts",
+              "    const results = []\n    for (let i = 0; i < num_objects; i++) {\n      const obj = wasmInstance.dwg_get_object(data, i)\n      const tio = wasmInstance.dwg_object_to_entity_tio(obj)",
+              "    const results: Dwg_Object_Entity_TIO_Ptr[] = []\n    for (let i = 0; i < num_objects; i++) {\n      const obj = wasmInstance.dwg_get_object(data, i)\n      const tio = wasmInstance.dwg_object_to_entity_tio(obj)"
+          )
+          patch(
+              "src/svg/svgConverter.ts",
+              "    let result = null\n    switch (entity.type)",
+              "    let result: BBoxAndElement | null = null\n    switch (entity.type)"
+          )
+          patch(
+              "src/svg/svgConverter.ts",
+              "    let modelSpace = null",
+              "    let modelSpace: DwgBlockRecordTableEntry | null = null"
+          )
+          PY
+
+          # Intercept pnpm's final TypeScript build, patch its working tree, then delegate normally.
+          PATCH_BIN="$RUNNER_TEMP/v155-pnpm-wrapper"
+          mkdir -p "$PATCH_BIN"
+          cat > "$PATCH_BIN/pnpm" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "$PWD" == */bindings/javascript ]]; then
+            for arg in "$@"; do
+              if [[ "$arg" == "build" ]]; then
+                python3 "$RUNNER_TEMP/v155-patch-libredwg-ts.py" "$PWD"
+                break
+              fi
+            done
+          fi
+          exec corepack pnpm "$@"
+          SH
+          chmod +x "$PATCH_BIN/pnpm"
+          export PATH="$PATCH_BIN:$PATH"
+
           chmod +x "$V155_KIT_DIR/scripts/SurveyQuant_v1.0.155_BUILD_LIBREDWG.sh"
           bash "$V155_KIT_DIR/scripts/SurveyQuant_v1.0.155_BUILD_LIBREDWG.sh" "$RUNNER_TEMP" "$V155_SOURCE_DIR"
           test -s "$V155_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
@@ -141,6 +218,9 @@ jobs:
           grep -q "dwg_read_data" "$V155_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
           grep -q "dwg_write_dxf" "$V155_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
           test -s "$V155_SOURCE_DIR/libredwg-writer/BUILD_CONFIGURATION_V155.txt"
+
+ملاحظة: بعد الحفظ، افتح Actions وشغّل Build SurveyQuant v1.0.155 Native DWG Alignment. لا تعتبر الإصلاح ناجحًا حتى تنجح اختبارات ملفات DWG الستة ثم تعبئة APK وتوقيعه.
+
 
       - name: Recheck V155 Alignment and prepare honest validation report
         shell: bash
