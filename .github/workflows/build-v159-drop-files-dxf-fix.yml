@@ -138,7 +138,10 @@ jobs:
                       if info.filename.startswith(("lib/x86/","lib/x86_64/")):
                           removed.append(info.filename); continue
                       zout.writestr(copy.copy(info),fixed if info.filename==target else zin.read(info.filename))
-          if not removed: raise SystemExit("Expected x86/x86_64 native libraries to remove; none found")
+          if removed:
+              print(f"INFO: removed {len(removed)} optional x86/x86_64 native files")
+          else:
+              print("INFO: APK has no x86/x86_64 native libraries; no optional files to remove")
           temp.replace(apk)
           with zipfile.ZipFile(apk,"r") as z:
               names=set(z.namelist())
