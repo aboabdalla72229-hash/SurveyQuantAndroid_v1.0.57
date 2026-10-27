@@ -1,0 +1,194 @@
+name: Build SurveyQuant v1.0.157 Free Universal CAD
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V156 free APK/source artifact run ID"
+        required: true
+        type: string
+        default: "40381302174"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-v157-universal-cad.yml"
+      - "SurveyQuant_v1.0.157_UNIVERSAL_CAD_FIX.py"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v157-universal-cad
+  cancel-in-progress: false
+
+jobs:
+  build_v157:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40381302174' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download the successful V156 free APK and source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v156-base"
+          SOURCE_DIR="$RUNNER_TEMP/v157-source"
+          RELEASE_DIR="$RUNNER_TEMP/v157-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.156-FREE-NO-ALIGNMENT" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.156_FREE.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.156_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V156 free APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V156 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/dxf-parser.js"
+          test -s "$SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V157_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V157_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V157_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Repair shared DWG/DXF paths and run regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/SurveyQuant_v1.0.157_UNIVERSAL_CAD_FIX.py" --html "$V157_SOURCE_DIR/index.html"
+          python3 "$GITHUB_WORKSPACE/SurveyQuant_v1.0.157_UNIVERSAL_CAD_FIX.py" --html "$V157_SOURCE_DIR/index.html" --check-only
+          cp "$GITHUB_WORKSPACE/SurveyQuant_v1.0.157_UNIVERSAL_CAD_FIX.py" "$V157_SOURCE_DIR/"
+
+      - name: Prepare V157 APK packager from verified V156 packager
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V157_SOURCE_DIR/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py" "$V157_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" <<'PY'
+          from pathlib import Path
+          import sys
+          src=Path(sys.argv[1]).read_text(encoding='utf-8')
+          replacements=[("OLD_NAME = '1.0.155'","OLD_NAME = '1.0.156'"),("NEW_NAME = '1.0.156'","NEW_NAME = '1.0.157'"),("NEW_CODE = 156","NEW_CODE = 157")]
+          for old,new in replacements:
+              if src.count(old)!=1: raise SystemExit(f'Packager pattern missing or duplicated: {old}')
+              src=src.replace(old,new,1)
+          src=src.replace('V156','V157')
+          Path(sys.argv[2]).write_text(src,encoding='utf-8')
+          PY
+          python3 -m py_compile "$V157_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py"
+
+      - name: Package V157 free APK with preserved CAD runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V157_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" \
+            --apk-input "$V157_BASE_APK" \
+            --apk-output "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V157_SOURCE_DIR/index.html"
+          test -s "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNSIGNED.apk"
+
+      - name: Sign and verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_ALIGNED.apk"
+          FINAL="$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='157'.*versionName='1.0.157'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNSIGNED.apk"
+
+      - name: Package clean V157 source patch and reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$V157_SOURCE_DIR/SurveyQuant_v1.0.156_FREE_PATCH.py" "$V157_SOURCE_DIR/SurveyQuant_v1.0.156_PACKAGE_FREE_APK.py" "$V157_SOURCE_DIR/README_V156_FREE_AR.md" "$V157_SOURCE_DIR/libredwg-writer/BUILD_CONFIGURATION_V156_FREE_DWG_RUNTIME.txt"
+          rm -rf "$V157_SOURCE_DIR/__pycache__"
+          cat > "$V157_SOURCE_DIR/README_V157_UNIVERSAL_CAD_AR.md" <<'TXT'
+          # SurveyQuant v1.0.157: إصلاح CAD المشترك
+          - الإبقاء على قارئ DWG/DXF المشترك وملفات LibreDWG-Web المعتمدة في بناء V155.
+          - إصلاح تعطل استخراج نقاط السطح عند مرور عناصر LINE أو XLINE/RAY، حتى تعمل أدوات الحصر والمقارنة مع اللوحات المختلطة.
+          - إصلاح كتابة عناصر XLINE/RAY في مسار إضافة الكيانات لملفات DXF الحديثة.
+          - تقليل نسخ الذاكرة الكاملة لملفات DWG/DXF الكبيرة، مع الاحتفاظ ببايتات المصدر دون إعادة رسم هندسي.
+          - ملفات DXF المرجعية تظل محفوظة بايتًا ببايت باستثناء السجلات المطلوبة التي تُضاف في ميزات الإسقاط؛ لا يُعاد إنشاء اللوحة الأصلية من معاينة.
+          - DWG يُقرأ بقاعدة LibreDWG ثم يتحول إلى سجل DXF مؤقت للأدوات التي تحتاج DXF؛ هذا لا يضمن تطابق كل بيانات DWG الثنائية أو الكائنات الاحتكارية غير المدعومة.
+          - تم اختبار JavaScript المضمن واختبار تراجع اصطناعي مختلط لـ POINT/LINE/3DFACE/POLYLINE3D/XLINE. يلزم قبول ملف DWG الفعلي على الجهاز قبل الادعاء بتوافق كل ملف خاص.
+          TXT
+          (cd "$V157_SOURCE_DIR" && zip -qr "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip" | tail -2
+          printf '%s\n' '# SurveyQuant v1.0.157 Free Universal CAD' '- Shared DWG/DXF reader retained.' '- Fixes surface extraction and modern DXF XLINE/RAY writer crashes.' '- Reduces duplicate full-file memory copies.' '- Original DXF records are preserved; DWG uses LibreDWG conversion to temporary DXF where required.' > "$V157_RELEASE_DIR/V157_CHANGELOG_EN.txt"
+          cp "$V157_SOURCE_DIR/README_V157_UNIVERSAL_CAD_AR.md" "$V157_RELEASE_DIR/V157_CHANGELOG_AR.md"
+          sha256sum "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk" "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip" > "$V157_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V157_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V157 APK and source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.157-FREE-UNIVERSAL-CAD
+          path: |
+            ${{ runner.temp }}/v157-release/SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk
+            ${{ runner.temp }}/v157-release/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v157-release/V157_CHANGELOG_AR.md
+            ${{ runner.temp }}/v157-release/V157_CHANGELOG_EN.txt
+            ${{ runner.temp }}/v157-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V157 release for free download
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.157 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v1.0.157 \
+              "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk" \
+              "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v1.0.157 \
+              "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk" \
+              "$V157_RELEASE_DIR/SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.157 - إصلاح DWG/DXF المشترك" \
+              --notes-file "$V157_RELEASE_DIR/V157_CHANGELOG_AR.md"
+          fi
+          echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.157"
