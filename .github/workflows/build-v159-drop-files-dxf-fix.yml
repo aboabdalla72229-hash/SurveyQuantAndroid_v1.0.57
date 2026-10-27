@@ -26,6 +26,7 @@ jobs:
   build_v159:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40491123143' }}
@@ -44,28 +45,73 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Validate source patch script
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py
+          python3 -m py_compile SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py
+          echo "PASS: V159 repair script exists and compiles"
 
       - name: Download successful V158 APK and source patch
         shell: bash
         run: |
           set -euo pipefail
+
           BASE_DIR="$RUNNER_TEMP/v158-base"
           SOURCE_DIR="$RUNNER_TEMP/v159-source"
           RELEASE_DIR="$RUNNER_TEMP/v159-release"
+
           rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
           mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
-          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.158-FREE-ANDROID-WEBVIEW-WASM-FIX" --dir "$BASE_DIR"
-          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
-          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip' -print -quit)"
-          test -s "$BASE_APK" || { echo "ERROR: V158 APK missing from run $SOURCE_RUN_ID"; exit 1; }
-          test -s "$BASE_PATCH" || { echo "ERROR: V158 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
-          unzip -t "$BASE_PATCH" | tail -2
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.158-FREE-ANDROID-WEBVIEW-WASM-FIX" \
+            --dir "$BASE_DIR"
+
+          BASE_APK="$(find "$BASE_DIR" -type f \
+            -name 'SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' \
+            -print -quit)"
+
+          BASE_PATCH="$(find "$BASE_DIR" -type f \
+            -name 'SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip' \
+            -print -quit)"
+
+          test -n "$BASE_APK" && test -s "$BASE_APK" || {
+            echo "ERROR: V158 APK missing from run $SOURCE_RUN_ID"
+            exit 1
+          }
+
+          test -n "$BASE_PATCH" && test -s "$BASE_PATCH" || {
+            echo "ERROR: V158 source patch missing from run $SOURCE_RUN_ID"
+            exit 1
+          }
+
+          unzip -t "$BASE_PATCH"
           unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
-          test -s "$SOURCE_DIR/index.html"
-          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+
+          test -s "$SOURCE_DIR/index.html" || {
+            echo "ERROR: index.html missing from source patch"
+            find "$SOURCE_DIR" -maxdepth 3 -type f | head -100
+            exit 1
+          }
+
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" || {
+            echo "ERROR: LibreDWG WASM runtime missing"
+            exit 1
+          }
+
+          test -s "$SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" || {
+            echo "ERROR: V158 APK packager missing"
+            exit 1
+          }
+
           echo "V159_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
           echo "V159_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
           echo "V159_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
@@ -74,138 +120,370 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py --html "$V159_SOURCE_DIR/index.html"
-          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py --html "$V159_SOURCE_DIR/index.html" --check-only
-          python3 - "$V159_SOURCE_DIR/index.html" "$RUNNER_TEMP/v159-jscheck" <<'PY'
+
+          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
+            --html "$V159_SOURCE_DIR/index.html"
+
+          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
+            --html "$V159_SOURCE_DIR/index.html" \
+            --check-only
+
+          python3 - "$V159_SOURCE_DIR/index.html" \
+            "$RUNNER_TEMP/v159-jscheck" <<'PY'
           from html.parser import HTMLParser
           from pathlib import Path
-          import subprocess,sys
+          import subprocess
+          import sys
+
           class Scripts(HTMLParser):
-              def __init__(self): super().__init__(); self.inside=False; self.external=False; self.data=[]; self.items=[]
-              def handle_starttag(self,tag,attrs):
-                  if tag.lower()=='script': self.inside=True; self.external=any(k.lower()=='src' for k,v in attrs); self.data=[]
-              def handle_data(self,data):
-                  if self.inside and not self.external: self.data.append(data)
-              def handle_endtag(self,tag):
-                  if tag.lower()=='script' and self.inside:
-                      if not self.external: self.items.append(''.join(self.data))
-                      self.inside=False; self.external=False; self.data=[]
-          html=Path(sys.argv[1]); out=Path(sys.argv[2]); out.mkdir(parents=True,exist_ok=True)
-          p=Scripts(); p.feed(html.read_text(encoding='utf-8'))
-          if not p.items: raise SystemExit('ERROR: no inline JavaScript blocks were found')
-          for i,code in enumerate(p.items):
-              target=out/f'inline-{i}.js'; target.write_text(code,encoding='utf-8')
-              subprocess.run(['node','--check',str(target)],check=True)
-          print(f'PASS: node --check passed for {len(p.items)} inline JavaScript blocks')
+              def __init__(self):
+                  super().__init__()
+                  self.inside = False
+                  self.external = False
+                  self.data = []
+                  self.items = []
+
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() == "script":
+                      self.inside = True
+                      self.external = any(
+                          k.lower() == "src" for k, v in attrs
+                      )
+                      self.data = []
+
+              def handle_data(self, data):
+                  if self.inside and not self.external:
+                      self.data.append(data)
+
+              def handle_endtag(self, tag):
+                  if tag.lower() == "script" and self.inside:
+                      if not self.external:
+                          self.items.append("".join(self.data))
+                      self.inside = False
+                      self.external = False
+                      self.data = []
+
+          html = Path(sys.argv[1])
+          out = Path(sys.argv[2])
+          out.mkdir(parents=True, exist_ok=True)
+
+          parser = Scripts()
+          parser.feed(html.read_text(encoding="utf-8"))
+
+          if not parser.items:
+              raise SystemExit("ERROR: no inline JavaScript blocks found")
+
+          for i, code in enumerate(parser.items):
+              target = out / f"inline-{i}.js"
+              target.write_text(code, encoding="utf-8")
+              subprocess.run(["node", "--check", str(target)], check=True)
+
+          print(
+              f"PASS: node --check passed for "
+              f"{len(parser.items)} inline JavaScript blocks"
+          )
           PY
 
-      - name: Prepare V159 APK packager
+      - name: Prepare and validate V159 APK packager
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py" <<'PY'
+
+          python3 - \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py" <<'PY'
           from pathlib import Path
+          import re
           import sys
-          src=Path(sys.argv[1]).read_text(encoding='utf-8')
-          pairs=[("OLD_NAME = '1.0.157'","OLD_NAME = '1.0.158'"),("NEW_NAME = '1.0.158'","NEW_NAME = '1.0.159'"),("NEW_CODE = 158","NEW_CODE = 159")]
-          for old,new in pairs:
-              if src.count(old)!=1: raise SystemExit(f'Packager version marker absent/duplicated: {old}')
-              src=src.replace(old,new,1)
-          src=src.replace('V158','V159')
-          old_log='version bumped to 1.0.156/156'
-          if src.count(old_log)!=1: raise SystemExit('Packager diagnostic version marker absent/duplicated')
-          src=src.replace(old_log,'version bumped to 1.0.159/159',1)
-          Path(sys.argv[2]).write_text(src,encoding='utf-8')
+
+          source = Path(sys.argv[1]).read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  r"(?m)^OLD_NAME\s*=\s*['\"]1\.0\.157['\"]\s*$",
+                  "OLD_NAME = '1.0.158'",
+              ),
+              (
+                  r"(?m)^NEW_NAME\s*=\s*['\"]1\.0\.158['\"]\s*$",
+                  "NEW_NAME = '1.0.159'",
+              ),
+              (
+                  r"(?m)^NEW_CODE\s*=\s*158\s*$",
+                  "NEW_CODE = 159",
+              ),
+          ]
+
+          for pattern, replacement in replacements:
+              source, count = re.subn(pattern, replacement, source)
+              if count != 1:
+                  raise SystemExit(
+                      f"ERROR: expected one packager marker, "
+                      f"found {count}: {pattern}"
+                  )
+
+          # Update diagnostic text without depending on a historical
+          # message that may have changed between packager revisions.
+          source = source.replace("V158", "V159")
+
+          output = Path(sys.argv[2])
+          output.write_text(source, encoding="utf-8")
+
+          print(f"PASS: generated {output.name}")
           PY
-          python3 -m py_compile "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
+
+          python3 -m py_compile \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
+
+          grep -F "OLD_NAME = '1.0.158'" \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
+
+          grep -F "NEW_NAME = '1.0.159'" \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
+
+          grep -F "NEW_CODE = 159" \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
 
       - name: Package V159 APK with repaired HTML
         shell: bash
         run: |
           set -euo pipefail
+
+          UNSIGNED="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
+
           python3 "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py" \
             --apk-input "$V159_BASE_APK" \
-            --apk-output "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk" \
+            --apk-output "$UNSIGNED" \
             --html-to-inject "$V159_SOURCE_DIR/index.html"
-          python3 - "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk" "$V159_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
+
+          test -s "$UNSIGNED"
+
+          python3 - "$UNSIGNED" \
+            "$V159_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
           from pathlib import Path
-          import copy,sys,zipfile
-          apk=Path(sys.argv[1]); fixed=Path(sys.argv[2]).read_bytes(); temp=apk.with_suffix('.patched.apk')
-          target='assets/libredwg-writer/wasm/libredwg-web.js'; removed=[]
-          with zipfile.ZipFile(apk,'r') as zin:
-              names=[x.filename for x in zin.infolist()]
-              if names.count(target)!=1: raise SystemExit(f'Expected one {target} in base APK, found {names.count(target)}')
-              has_arm64=any(n.startswith('lib/arm64-v8a/') for n in names)
-              has_armv7=any(n.startswith('lib/armeabi-v7a/') for n in names)
-              if not has_arm64: raise SystemExit('Refusing ARM-phone build: arm64-v8a native libraries are missing')
-              with zipfile.ZipFile(temp,'w',allowZip64=True) as zout:
-                  for info in zin.infolist():
-                      if info.filename.startswith(('lib/x86/','lib/x86_64/')):
-                          removed.append(info.filename); continue
-                      data=fixed if info.filename==target else zin.read(info.filename)
-                      zout.writestr(copy.copy(info),data)
-          if not removed: print('INFO: base APK already contains no x86/x86_64 native libraries; continuing safely')
+          import copy
+          import sys
+          import zipfile
+
+          apk = Path(sys.argv[1])
+          fixed = Path(sys.argv[2]).read_bytes()
+          temp = apk.with_suffix(".patched.apk")
+          target = "assets/libredwg-writer/wasm/libredwg-web.js"
+          removed = []
+
+          with zipfile.ZipFile(apk, "r") as zin:
+              infos = zin.infolist()
+              names = [item.filename for item in infos]
+
+              if names.count(target) != 1:
+                  raise SystemExit(
+                      f"Expected one {target}; found {names.count(target)}"
+                  )
+
+              has_arm64 = any(
+                  n.startswith("lib/arm64-v8a/") for n in names
+              )
+              has_armv7 = any(
+                  n.startswith("lib/armeabi-v7a/") for n in names
+              )
+
+              if not has_arm64:
+                  raise SystemExit(
+                      "ERROR: ARM64 native libraries missing; refusing build"
+                  )
+
+              with zipfile.ZipFile(
+                  temp, "w", allowZip64=True
+              ) as zout:
+                  for info in infos:
+                      if info.filename.startswith(
+                          ("lib/x86/", "lib/x86_64/")
+                      ):
+                          removed.append(info.filename)
+                          continue
+
+                      data = (
+                          fixed
+                          if info.filename == target
+                          else zin.read(info.filename)
+                      )
+                      zout.writestr(copy.copy(info), data)
+
+          if not removed:
+              print(
+                  "INFO: no x86/x86_64 libraries were present; "
+                  "continuing without removing ARM libraries"
+              )
+          else:
+              print(f"INFO: removed {len(removed)} x86/x86_64 files")
+
           temp.replace(apk)
-          with zipfile.ZipFile(apk,'r') as z:
-              names=set(z.namelist())
-              if any(n.startswith(('lib/x86/','lib/x86_64/')) for n in names): raise SystemExit('x86 library directories remain in phone APK')
-              if not any(n.startswith('lib/arm64-v8a/') for n in names): raise SystemExit('ARM64 libraries missing after ABI trim')
-              if has_armv7 and not any(n.startswith('lib/armeabi-v7a/') for n in names): raise SystemExit('ARMv7 libraries were unexpectedly removed')
-              embedded=z.read(target)
-              if embedded!=fixed: raise SystemExit('APK runtime differs from patched source runtime')
-              if b'new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' in embedded: raise SystemExit('Inverted WASM Promise remains in APK')
-              if b'new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' not in embedded: raise SystemExit('Corrected WASM Promise missing in APK')
-          print(f'PASS: patched HTML and corrected WASM loader packaged; removed {len(removed)} x86/x86_64-only native files')
+
+          with zipfile.ZipFile(apk, "r") as z:
+              names = set(z.namelist())
+
+              if any(
+                  n.startswith(("lib/x86/", "lib/x86_64/"))
+                  for n in names
+              ):
+                  raise SystemExit("ERROR: x86 libraries remain")
+
+              if not any(
+                  n.startswith("lib/arm64-v8a/") for n in names
+              ):
+                  raise SystemExit("ERROR: ARM64 libraries missing")
+
+              if has_armv7 and not any(
+                  n.startswith("lib/armeabi-v7a/") for n in names
+              ):
+                  raise SystemExit("ERROR: ARMv7 libraries unexpectedly removed")
+
+              embedded = z.read(target)
+
+              if embedded != fixed:
+                  raise SystemExit(
+                      "ERROR: APK runtime differs from patched WASM runtime"
+                  )
+
+              if (
+                  b'new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)'
+                  in embedded
+              ):
+                  raise SystemExit("ERROR: inverted WASM Promise remains")
+
+              if (
+                  b'new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)'
+                  not in embedded
+              ):
+                  raise SystemExit("ERROR: corrected WASM Promise missing")
+
+          print("PASS: APK structure and embedded WASM runtime verified")
           PY
-          test -s "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
+
+          test -s "$UNSIGNED"
 
       - name: Sign and verify APK
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
-          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
-          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
-          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || {
+            echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"
+            exit 1
+          }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || {
+            echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"
+            exit 1
+          }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || {
+            echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"
+            exit 1
+          }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || {
+            echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"
+            exit 1
+          }
+
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
-          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
-          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+              -path '*/bin/sdkmanager' -print 2>/dev/null \
+              | sort -V | tail -n 1)"
+          fi
+
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || {
+            echo "ERROR: Android sdkmanager not found"
+            exit 1
+          }
+
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+          set -o pipefail
+
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
+            --install "build-tools;35.0.0" >/dev/null
+
           STORE="$RUNNER_TEMP/surveyquant-release.jks"
           ALIGNED="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_ALIGNED.apk"
           FINAL="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk"
-          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" \
+            | base64 --decode > "$STORE"
+
           test -s "$STORE"
-          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk" "$ALIGNED"
-          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 \
+            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk" \
+            "$ALIGNED"
+
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign \
+            --ks "$STORE" \
+            --key-alias "$SURVEYQUANT_KEY_ALIAS" \
+            --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD \
+            --key-pass env:SURVEYQUANT_KEY_PASSWORD \
+            --out "$FINAL" "$ALIGNED"
+
           "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
-          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='159'.*versionName='1.0.159'"
-          unzip -t "$FINAL" | tail -2
-          rm -f "$ALIGNED" "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
+
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" \
+            | grep -E "package: name=.*versionCode='159'.*versionName='1.0.159'"
+
+          unzip -t "$FINAL"
+          test -s "$FINAL"
+
+          rm -f "$ALIGNED" \
+            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
+
+          echo "PASS: V159 APK signed, aligned and verified"
 
       - name: Package source patch and reports
         shell: bash
         run: |
           set -euo pipefail
-          rm -f "$V159_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py"
+
+          rm -f \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" \
+            "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py"
+
           rm -rf "$V159_SOURCE_DIR/__pycache__"
-          cp SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py "$V159_SOURCE_DIR/"
+
+          cp SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
+            "$V159_SOURCE_DIR/"
+
           cat > "$V159_SOURCE_DIR/README_V159_DROP_FILES_DXF_FIX_AR.md" <<'TXT'
           # SurveyQuant v1.0.159: إصلاح إسقاط الملفات وتصدير DXF
-          - إبقاء زر «استخراج لوحة DXF الناتجة» ظاهرًا دائمًا داخل مشروع «إسقاط الملفات».
-          - يبقى الزر معطّلًا حتى يكتمل الإسقاط ويتم التحقق من ملف DXF.
-          - إضافة مهلة لقراءة كل ملف وعرض رسالة خطأ واضحة عند فشل/تعليق القراءة بدل بقاء الحالة معلّقة بلا نهاية.
-          - إظهار نجاح الإسقاط وتعليمات الحفظ، والحفاظ على الزر ظاهرًا عند إعادة فتح المشروع.
-          - تم فحص صياغة كتل JavaScript المضمنة وملف HTML قبل التعبئة.
-          - لم يتم اختبار ملفات DWG فعلية على جهاز المستخدم؛ يجب التحقق على الملف الذي سبب المشكلة.
+
+          - إبقاء زر استخراج لوحة DXF ظاهرًا داخل مشروع إسقاط الملفات.
+          - تعطيل الزر حتى تجهز نتيجة إسقاط صالحة.
+          - إظهار أخطاء القراءة بدل ترك الواجهة في حالة انتظار صامتة.
+          - فحص JavaScript وملف APK والتوقيع قبل نشر المخرجات.
+          - لا يُعد فحص الصياغة اختبارًا فعليًا لكل ملفات DWG.
+          - يجب اختبار ملف DWG المسبب للمشكلة على جهاز Android بعد التثبيت.
           TXT
-          (cd "$V159_SOURCE_DIR" && zip -qr "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" .)
-          unzip -t "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" | tail -2
-          printf '%s\n' '# SurveyQuant v1.0.159' '- Keep the merged DXF export control visible and enable it only after a validated export is ready.' '- Add bounded file parsing with a visible error state instead of indefinite loading feedback.' '- Validate inline JavaScript and preserve the corrected Android WebView WASM loader.' > "$V159_RELEASE_DIR/V159_CHANGELOG_EN.txt"
-          cp "$V159_SOURCE_DIR/README_V159_DROP_FILES_DXF_FIX_AR.md" "$V159_RELEASE_DIR/V159_CHANGELOG_AR.md"
-          sha256sum "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk" "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" > "$V159_RELEASE_DIR/SHA256SUMS.txt"
+
+          (
+            cd "$V159_SOURCE_DIR"
+            zip -qr "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" .
+          )
+
+          unzip -t "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip"
+
+          printf '%s\n' \
+            '# SurveyQuant v1.0.159' \
+            '- Keep the DXF export control visible.' \
+            '- Add visible errors and bounded waiting feedback.' \
+            '- Verify APK packaging and signing.' \
+            > "$V159_RELEASE_DIR/V159_CHANGELOG_EN.txt"
+
+          cp "$V159_SOURCE_DIR/README_V159_DROP_FILES_DXF_FIX_AR.md" \
+            "$V159_RELEASE_DIR/V159_CHANGELOG_AR.md"
+
+          sha256sum \
+            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk" \
+            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" \
+            > "$V159_RELEASE_DIR/SHA256SUMS.txt"
+
           cat "$V159_RELEASE_DIR/SHA256SUMS.txt"
 
       - name: Upload verified V159 APK and source patch
@@ -228,17 +506,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          APK="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk"
+          PATCH="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip"
+
           if gh release view v1.0.159 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v1.0.159 \
-              "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk" \
-              "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" \
+            gh release upload v1.0.159 "$APK" "$PATCH" \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v1.0.159 \
-              "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk" \
-              "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" \
+            gh release create v1.0.159 "$APK" "$PATCH" \
               --repo "$GITHUB_REPOSITORY" \
               --title "SurveyQuant v1.0.159 - Drop Files DXF Fix" \
               --notes-file "$V159_RELEASE_DIR/V159_CHANGELOG_AR.md"
           fi
+
           echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.159"
