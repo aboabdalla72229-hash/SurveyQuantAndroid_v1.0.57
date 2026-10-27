@@ -1,523 +1,202 @@
-name: Build SurveyQuant v1.0.159 Drop Files DXF Fix
-
-on:
-  workflow_dispatch:
-    inputs:
-      source_run_id:
-        description: "Successful V158 Android WebView WASM build run ID"
-        required: true
-        type: string
-        default: "40491123143"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/build-v159-drop-files-dxf-fix.yml"
-      - "SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py"
-
-permissions:
-  actions: read
-  contents: write
-
-concurrency:
-  group: surveyquant-v159-drop-files-dxf-fix
-  cancel-in-progress: false
-
-jobs:
-  build_v159:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    env:
-      GH_TOKEN: ${{ github.token }}
-      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40491123143' }}
-      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
-      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
-      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
-      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-
-      - name: Set up Python and Node
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Validate source patch script
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py
-          python3 -m py_compile SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py
-          echo "PASS: V159 repair script exists and compiles"
-
-      - name: Download successful V158 APK and source patch
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BASE_DIR="$RUNNER_TEMP/v158-base"
-          SOURCE_DIR="$RUNNER_TEMP/v159-source"
-          RELEASE_DIR="$RUNNER_TEMP/v159-release"
-
-          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
-          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
-
-          gh run download "$SOURCE_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name "SurveyQuant-v1.0.158-FREE-ANDROID-WEBVIEW-WASM-FIX" \
-            --dir "$BASE_DIR"
-
-          BASE_APK="$(find "$BASE_DIR" -type f \
-            -name 'SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' \
-            -print -quit)"
-
-          BASE_PATCH="$(find "$BASE_DIR" -type f \
-            -name 'SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip' \
-            -print -quit)"
-
-          test -n "$BASE_APK" && test -s "$BASE_APK" || {
-            echo "ERROR: V158 APK missing from run $SOURCE_RUN_ID"
-            exit 1
-          }
-
-          test -n "$BASE_PATCH" && test -s "$BASE_PATCH" || {
-            echo "ERROR: V158 source patch missing from run $SOURCE_RUN_ID"
-            exit 1
-          }
-
-          unzip -t "$BASE_PATCH"
-          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
-
-          test -s "$SOURCE_DIR/index.html" || {
-            echo "ERROR: index.html missing from source patch"
-            find "$SOURCE_DIR" -maxdepth 3 -type f | head -100
-            exit 1
-          }
-
-          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" || {
-            echo "ERROR: LibreDWG WASM runtime missing"
-            exit 1
-          }
-
-          test -s "$SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" || {
-            echo "ERROR: V158 APK packager missing"
-            exit 1
-          }
-
-          echo "V159_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
-          echo "V159_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
-          echo "V159_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
-
-      - name: Repair stuck projection state and DXF export control
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
-            --html "$V159_SOURCE_DIR/index.html"
-
-          python3 SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
-            --html "$V159_SOURCE_DIR/index.html" \
-            --check-only
-
-          python3 - "$V159_SOURCE_DIR/index.html" \
-            "$RUNNER_TEMP/v159-jscheck" <<'PY'
-          from html.parser import HTMLParser
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          class Scripts(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.inside = False
-                  self.external = False
-                  self.data = []
-                  self.items = []
-
-              def handle_starttag(self, tag, attrs):
-                  if tag.lower() == "script":
-                      self.inside = True
-                      self.external = any(
-                          k.lower() == "src" for k, v in attrs
-                      )
-                      self.data = []
-
-              def handle_data(self, data):
-                  if self.inside and not self.external:
-                      self.data.append(data)
-
-              def handle_endtag(self, tag):
-                  if tag.lower() == "script" and self.inside:
-                      if not self.external:
-                          self.items.append("".join(self.data))
-                      self.inside = False
-                      self.external = False
-                      self.data = []
-
-          html = Path(sys.argv[1])
-          out = Path(sys.argv[2])
-          out.mkdir(parents=True, exist_ok=True)
-
-          parser = Scripts()
-          parser.feed(html.read_text(encoding="utf-8"))
-
-          if not parser.items:
-              raise SystemExit("ERROR: no inline JavaScript blocks found")
-
-          for i, code in enumerate(parser.items):
-              target = out / f"inline-{i}.js"
-              target.write_text(code, encoding="utf-8")
-              subprocess.run(["node", "--check", str(target)], check=True)
-
-          print(
-              f"PASS: node --check passed for "
-              f"{len(parser.items)} inline JavaScript blocks"
-          )
-          PY
-
-      - name: Prepare and validate V159 APK packager
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          source = Path(sys.argv[1]).read_text(encoding="utf-8")
-
-          replacements = [
-              (
-                  r"(?m)^OLD_NAME\s*=\s*['\"]1\.0\.157['\"]\s*$",
-                  "OLD_NAME = '1.0.158'",
-              ),
-              (
-                  r"(?m)^NEW_NAME\s*=\s*['\"]1\.0\.158['\"]\s*$",
-                  "NEW_NAME = '1.0.159'",
-              ),
-              (
-                  r"(?m)^NEW_CODE\s*=\s*158\s*$",
-                  "NEW_CODE = 159",
-              ),
-          ]
-
-          for pattern, replacement in replacements:
-              source, count = re.subn(pattern, replacement, source)
-              if count != 1:
-                  raise SystemExit(
-                      f"ERROR: expected one packager marker, "
-                      f"found {count}: {pattern}"
-                  )
-
-          # Update diagnostic text without depending on a historical
-          # message that may have changed between packager revisions.
-          source = source.replace("V158", "V159")
-
-          output = Path(sys.argv[2])
-          output.write_text(source, encoding="utf-8")
-
-          print(f"PASS: generated {output.name}")
-          PY
-
-          python3 -m py_compile \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
-
-          grep -F "OLD_NAME = '1.0.158'" \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
-
-          grep -F "NEW_NAME = '1.0.159'" \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
-
-          grep -F "NEW_CODE = 159" \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py"
-
-      - name: Package V159 APK with repaired HTML
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          UNSIGNED="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
-
-          python3 "$V159_SOURCE_DIR/SurveyQuant_v1.0.159_PACKAGE_FREE_APK.py" \
-            --apk-input "$V159_BASE_APK" \
-            --apk-output "$UNSIGNED" \
-            --html-to-inject "$V159_SOURCE_DIR/index.html"
-
-          test -s "$UNSIGNED"
-
-          python3 - "$UNSIGNED" \
-            "$V159_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
-          from pathlib import Path
-          import copy
-          import sys
-          import zipfile
-
-          apk = Path(sys.argv[1])
-          fixed = Path(sys.argv[2]).read_bytes()
-          temp = apk.with_suffix(".patched.apk")
-          target = "assets/libredwg-writer/wasm/libredwg-web.js"
-          removed = []
-
-          with zipfile.ZipFile(apk, "r") as zin:
-              infos = zin.infolist()
-              names = [item.filename for item in infos]
-
-              if names.count(target) != 1:
-                  raise SystemExit(
-                      f"Expected one {target}; found {names.count(target)}"
-                  )
-
-              has_arm64 = any(
-                  n.startswith("lib/arm64-v8a/") for n in names
-              )
-              has_armv7 = any(
-                  n.startswith("lib/armeabi-v7a/") for n in names
-              )
-
-              if not has_arm64:
-                  raise SystemExit(
-                      "ERROR: ARM64 native libraries missing; refusing build"
-                  )
-
-              with zipfile.ZipFile(
-                  temp, "w", allowZip64=True
-              ) as zout:
-                  for info in infos:
-                      if info.filename.startswith(
-                          ("lib/x86/", "lib/x86_64/")
-                      ):
-                          removed.append(info.filename)
-                          continue
-
-                      data = (
-                          fixed
-                          if info.filename == target
-                          else zin.read(info.filename)
-                      )
-                      zout.writestr(copy.copy(info), data)
-
-          if not removed:
-              print(
-                  "INFO: no x86/x86_64 libraries were present; "
-                  "continuing without removing ARM libraries"
-              )
-          else:
-              print(f"INFO: removed {len(removed)} x86/x86_64 files")
-
-          temp.replace(apk)
-
-          with zipfile.ZipFile(apk, "r") as z:
-              names = set(z.namelist())
-
-              if any(
-                  n.startswith(("lib/x86/", "lib/x86_64/"))
-                  for n in names
-              ):
-                  raise SystemExit("ERROR: x86 libraries remain")
-
-              if not any(
-                  n.startswith("lib/arm64-v8a/") for n in names
-              ):
-                  raise SystemExit("ERROR: ARM64 libraries missing")
-
-              if has_armv7 and not any(
-                  n.startswith("lib/armeabi-v7a/") for n in names
-              ):
-                  raise SystemExit("ERROR: ARMv7 libraries unexpectedly removed")
-
-              embedded = z.read(target)
-
-              if embedded != fixed:
-                  raise SystemExit(
-                      "ERROR: APK runtime differs from patched WASM runtime"
-                  )
-
-              if (
-                  b'new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)'
-                  in embedded
-              ):
-                  raise SystemExit("ERROR: inverted WASM Promise remains")
-
-              if (
-                  b'new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)'
-                  not in embedded
-              ):
-                  raise SystemExit("ERROR: corrected WASM Promise missing")
-
-          print("PASS: APK structure and embedded WASM runtime verified")
-          PY
-
-          test -s "$UNSIGNED"
-
-      - name: Sign and verify APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || {
-            echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"
-            exit 1
-          }
-          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || {
-            echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"
-            exit 1
-          }
-          test -n "$SURVEYQUANT_KEY_ALIAS" || {
-            echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"
-            exit 1
-          }
-          test -n "$SURVEYQUANT_KEY_PASSWORD" || {
-            echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"
-            exit 1
-          }
-
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
-              -path '*/bin/sdkmanager' -print 2>/dev/null \
-              | sort -V | tail -n 1)"
-          fi
-
-          test -n "$SDKMANAGER" && test -x "$SDKMANAGER" || {
-            echo "ERROR: Android sdkmanager not found"
-            exit 1
-          }
-
-          set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
-          set -o pipefail
-
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
-            --install "build-tools;35.0.0" >/dev/null
-
-          STORE="$RUNNER_TEMP/surveyquant-release.jks"
-          ALIGNED="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_ALIGNED.apk"
-          FINAL="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk"
-
-          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" \
-            | base64 --decode > "$STORE"
-
-          test -s "$STORE"
-
-          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 \
-            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk" \
-            "$ALIGNED"
-
-          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign \
-            --ks "$STORE" \
-            --key-alias "$SURVEYQUANT_KEY_ALIAS" \
-            --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD \
-            --key-pass env:SURVEYQUANT_KEY_PASSWORD \
-            --out "$FINAL" "$ALIGNED"
-
-          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
-
-          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" \
-            | grep -E "package: name=.*versionCode='159'.*versionName='1.0.159'"
-
-          unzip -t "$FINAL"
-          test -s "$FINAL"
-
-          rm -f "$ALIGNED" \
-            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_UNSIGNED.apk"
-
-          echo "PASS: V159 APK signed, aligned and verified"
-
-      - name: Package source patch and reports
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -f \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" \
-            "$V159_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py"
-
-          rm -rf "$V159_SOURCE_DIR/__pycache__"
-
-          cp SurveyQuant_v1.0.159_DROP_FILES_DXF_STUCK_FIX.py \
-            "$V159_SOURCE_DIR/"
-
-          cat > "$V159_SOURCE_DIR/README_V159_DROP_FILES_DXF_FIX_AR.md" <<'TXT'
-          # SurveyQuant v1.0.159: إصلاح إسقاط الملفات وتصدير DXF
-
-          - إبقاء زر استخراج لوحة DXF ظاهرًا داخل مشروع إسقاط الملفات.
-          - تعطيل الزر حتى تجهز نتيجة إسقاط صالحة.
-          - إظهار أخطاء القراءة بدل ترك الواجهة في حالة انتظار صامتة.
-          - فحص JavaScript وملف APK والتوقيع قبل نشر المخرجات.
-          - لا يُعد فحص الصياغة اختبارًا فعليًا لكل ملفات DWG.
-          - يجب اختبار ملف DWG المسبب للمشكلة على جهاز Android بعد التثبيت.
-          TXT
-
-          (
-            cd "$V159_SOURCE_DIR"
-            zip -qr "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" .
-          )
-
-          unzip -t "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip"
-
-          printf '%s\n' \
-            '# SurveyQuant v1.0.159' \
-            '- Keep the DXF export control visible.' \
-            '- Add visible errors and bounded waiting feedback.' \
-            '- Verify APK packaging and signing.' \
-            > "$V159_RELEASE_DIR/V159_CHANGELOG_EN.txt"
-
-          cp "$V159_SOURCE_DIR/README_V159_DROP_FILES_DXF_FIX_AR.md" \
-            "$V159_RELEASE_DIR/V159_CHANGELOG_AR.md"
-
-          sha256sum \
-            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk" \
-            "$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip" \
-            > "$V159_RELEASE_DIR/SHA256SUMS.txt"
-
-          cat "$V159_RELEASE_DIR/SHA256SUMS.txt"
-
-      - name: Upload verified V159 APK and source patch
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: SurveyQuant-v1.0.159-FREE-DROP-FILES-DXF-FIX
-          path: |
-            ${{ runner.temp }}/v159-release/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk
-            ${{ runner.temp }}/v159-release/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip
-            ${{ runner.temp }}/v159-release/V159_CHANGELOG_AR.md
-            ${{ runner.temp }}/v159-release/V159_CHANGELOG_EN.txt
-            ${{ runner.temp }}/v159-release/SHA256SUMS.txt
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Publish V159 release
-        if: success()
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_DROP_FILES_DXF_FIX.apk"
-          PATCH="$V159_RELEASE_DIR/SurveyQuant_v1.0.159_FREE_SOURCE_PATCH.zip"
-
-          if gh release view v1.0.159 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v1.0.159 "$APK" "$PATCH" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create v1.0.159 "$APK" "$PATCH" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "SurveyQuant v1.0.159 - Drop Files DXF Fix" \
-              --notes-file "$V159_RELEASE_DIR/V159_CHANGELOG_AR.md"
-          fi
-
-          echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.159"
+#!/usr/bin/env python3
+"""Repair SurveyQuant's drop-files flow with isolated, terminable DWG parsing."""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+
+OLD_RESULTS = '<div class="results-box" id="dropFilesResults"><div id="dropFilesSummary" class="info-list"></div><button class="btn-orange" onclick="downloadDroppedDXF()">📐 استخراج DXF المدمج</button></div>'
+NEW_RESULTS = '<div class="results-box" id="dropFilesResults" style="display:block"><div id="dropFilesSummary" class="info-list"></div><button id="downloadDroppedDXFButton" class="btn-orange" type="button" onclick="downloadDroppedDXF()" disabled style="opacity:.55;cursor:not-allowed">📐 استخراج لوحة DXF الناتجة (بعد نجاح الإسقاط)</button></div>'
+
+NEW_PROJECTION_FUNCTION = r'''function sqBuildDwgWorkerSource(){
+ const helpers=[p3,addCadEntity,textNumber,entityTextValue,sqPolylineIsClosed,vec,sqDwgRows,sqDwgType,sqDwgLayerName,sqDwgBlockRecords,sqDwgModelSpaceEntities,parseDWGDatabase,sqValidateDwgConversion].map(fn=>fn.toString()).join('\n');
+ const workerBody=String.raw`
+self.onmessage=async function(ev){
+ const payload=ev.data||{};let lib=null;const sourceBytes=new Uint8Array(payload.buffer);
+ let nativeModel=null,nativeReadError=null,dxfBytes=null,conversionError=null;
+ try{
+  const dwgSignature=new TextDecoder('latin1').decode(sourceBytes.subarray(0,6));
+  if(sourceBytes.length<16)throw new Error('ملف DWG قصير أو تالف.');
+  if(!/^(?:AC1004|AC1006|AC1009|AC1012|AC1014|AC1015|AC1018|AC1021|AC1024|AC1027|AC1032)$/.test(dwgSignature))throw new Error('ترويسة DWG غير معروفة أو إصدار غير مدعوم: '+dwgSignature);
+  importScripts(payload.wasmScriptUrl,payload.engineScriptUrl);
+  const mod=self.SurveyQuantLibreDwg;
+  const LibreDwg=mod&&(mod.LibreDwg||mod.default?.LibreDwg);
+  if(!LibreDwg||typeof LibreDwg.create!=='function')throw new Error('لم يتم تحميل واجهة محرك LibreDWG داخل عامل القراءة.');
+  lib=await LibreDwg.create(payload.wasmBase);
+  if(typeof lib.dwg_read_data==='function'&&typeof lib.convert==='function'){
+   let dataPtr=0;
+   try{
+    const fileTypes=mod.Dwg_File_Type||mod.default?.Dwg_File_Type||{};
+    dataPtr=lib.dwg_read_data(sourceBytes.buffer,fileTypes.DWG??0);
+    if(!dataPtr)throw new Error('لم يُرجع القارئ الأصلي قاعدة DWG صالحة.');
+    const db=lib.convert(dataPtr);
+    if(!db||!db.tables)throw new Error('قاعدة DWG لا تحتوي على جداول CAD.');
+    const m=parseDWGDatabase(db);
+    if(!m||!Array.isArray(m.entities)||!m.entities.length)throw new Error('قراءة DWG الأصلية لم تُرجع عناصر CAD قابلة للاستخدام.');
+    nativeModel={source:'DWG',entities:m.entities,layers:Array.from(m.layers.entries()),points:m.points,segments:m.segments,polylines:m.polylines,elevTexts:m.elevTexts};
+   }catch(e){nativeReadError=String(e?.message||e);nativeModel=null;}
+   finally{if(dataPtr&&typeof lib.dwg_free==='function'){try{lib.dwg_free(dataPtr);}catch(_){}}}
+  }else nativeReadError='إصدار LibreDWG لا يدعم قراءة قاعدة DWG الأصلية.';
+  try{
+   if(typeof lib.dwg_write_dxf!=='function')throw new Error('محرك LibreDWG لا يحتوي على محول DXF.');
+   dxfBytes=sqValidateDwgConversion(lib.dwg_write_dxf(sourceBytes.buffer));
+  }catch(e){conversionError=String(e?.message||e);}
+  if(!nativeModel&&!dxfBytes)throw new Error('تعذرت قراءة DWG وتحويله. القارئ: '+(nativeReadError||'غير متاح')+'؛ المحول: '+(conversionError||'غير متاح'));
+  const result={nativeModel,sourceBuffer:sourceBytes.buffer,dxfBuffer:dxfBytes?dxfBytes.buffer:null,nativeReadError:nativeReadError?String(nativeReadError):'',conversionError:conversionError?String(conversionError):''};
+  const transfers=[sourceBytes.buffer];if(dxfBytes&&dxfBytes.buffer!==sourceBytes.buffer)transfers.push(dxfBytes.buffer);
+  self.postMessage({ok:true,result},transfers);
+ }catch(e){self.postMessage({ok:false,error:String(e?.message||e||'DWG worker failed')});}
+};`;
+ return helpers+'\n'+workerBody;
+}
+async function sqParseDwgProjectionInWorker(file,label,timeoutMs=90000){
+ if(typeof Worker!=='function'||typeof Blob!=='function'||!URL.createObjectURL)throw new Error('بيئة Android WebView لا تدعم عامل القراءة المعزول؛ لم نبدأ قراءة DWG على الواجهة الرئيسية. حدّث Android System WebView ثم أعد المحاولة.');
+ const buffer=await file.arrayBuffer();
+ const wasmScriptUrl=new URL(SQ_WRITER_WASM_URL,document.baseURI).href;
+ const engineScriptUrl=new URL(SQ_WRITER_ENGINE_URL,document.baseURI).href;
+ const wasmBase=sqDwgWasmRuntimePath();
+ const blobUrl=URL.createObjectURL(new Blob([sqBuildDwgWorkerSource()],{type:'text/javascript'}));
+ return await new Promise((resolve,reject)=>{
+  let settled=false;
+  const worker=new Worker(blobUrl);
+  const finish=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);worker.terminate();URL.revokeObjectURL(blobUrl);fn(value);};
+  const timer=setTimeout(()=>finish(reject,new Error('انتهت مهلة قراءة '+label+' بعد '+Math.round(timeoutMs/1000)+' ثانية. تم إيقاف عامل DWG فعليًا حتى لا يظل عالقًا. جرّب لوحة أصغر أو تحقق من سلامة الملف وإصدار DWG.')),timeoutMs);
+  worker.onmessage=(event)=>{
+   const msg=event.data||{};
+   if(!msg.ok)return finish(reject,new Error('تعذرت قراءة '+label+': '+(msg.error||'خطأ غير معروف داخل عامل DWG.')));
+   try{
+    const r=msg.result||{};let model=null;
+    if(r.nativeModel){model={...r.nativeModel,layers:new Map(r.nativeModel.layers||[])};}
+    let rawDXFBytes=r.dxfBuffer?new Uint8Array(r.dxfBuffer):null;
+    if(!model&&rawDXFBytes){let lastErr=null;for(const enc of ['utf-8','windows-1252']){try{const candidate=parseDXF(new TextDecoder(enc,{fatal:false}).decode(rawDXFBytes));if(candidate&&(candidate.entities?.length||candidate.points?.length||candidate.segments?.length||candidate.polylines?.length)){model=candidate;break;}lastErr=new Error('تم تحويل DWG إلى DXF لكن لم يعثر القارئ على كيانات CAD.');}catch(e){lastErr=e;}}if(!model)throw lastErr||new Error('تعذر تحليل DXF المحول من DWG.');}
+    if(!model)throw new Error('لم ينتج محرك DWG عناصر قابلة للاستخدام.');
+    model.source='DWG';model.convertedFromDWG=!!rawDXFBytes;model.sourceName=file.name;model.rawDWGBytes=new Uint8Array(r.sourceBuffer);model.rawDXFBytes=rawDXFBytes;
+    if(r.nativeReadError)model.nativeDwgReadWarning=String(r.nativeReadError);
+    if(r.conversionError)model.dwgConversionError=String(r.conversionError);
+    finish(resolve,model);
+   }catch(e){finish(reject,e instanceof Error?e:new Error(String(e)));}
+  };
+  worker.onerror=(event)=>finish(reject,new Error('توقف عامل قراءة '+label+': '+(event.message||'خطأ في تشغيل Worker/WASM.')));
+  worker.onmessageerror=()=>finish(reject,new Error('تعذر استلام نتيجة قراءة DWG من العامل المعزول.'));
+  worker.postMessage({buffer,wasmScriptUrl,engineScriptUrl,wasmBase},[buffer]);
+ });
+}
+async function sqParseProjectionFileWithTimeout(file,label,timeoutMs=90000){
+ const ext=String(file?.name||'').toLowerCase().split('.').pop();
+ if(ext==='dwg')return sqParseDwgProjectionInWorker(file,label,timeoutMs);
+ let timer=null;
+ const readPromise=Promise.resolve().then(()=>parseFile(file));
+ const timeoutPromise=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('تجاوزت قراءة '+label+' مهلة '+Math.round(timeoutMs/1000)+' ثانية.')),timeoutMs);});
+ try{return await Promise.race([readPromise,timeoutPromise]);}finally{if(timer!==null)clearTimeout(timer);}
+}
+async function dropFilesMerge(){
+ const progress=document.getElementById('dropFilesProgress');
+ const results=document.getElementById('dropFilesResults');
+ const summary=document.getElementById('dropFilesSummary');
+ const exportButton=document.getElementById('downloadDroppedDXFButton');
+ const setProgress=(message)=>{if(progress){progress.style.display='block';progress.textContent=message;}};
+ const setExportReady=(ready)=>{if(exportButton){exportButton.disabled=!ready;exportButton.style.opacity=ready?'1':'.55';exportButton.style.cursor=ready?'pointer':'not-allowed';exportButton.textContent=ready?'📐 استخراج لوحة DXF الناتجة':'📐 استخراج لوحة DXF الناتجة (بعد نجاح الإسقاط)';}};
+ const src=document.getElementById('dropSurveyFiles')?.files?.[0],cad=document.getElementById('dropCadFile')?.files?.[0];
+ droppedDXF='';setExportReady(false);if(results)results.style.display='block';if(summary)summary.textContent='';
+ if(!src||!cad){setProgress('⚠️ اختر الملف الأول واللوحة المرجعية قبل بدء الإسقاط.');return alert('اختر الملف المراد إسقاطه في الخانة الأولى واللوحة المرجعية في الخانة الثانية.');}
+ try{
+  setProgress('⏳ جاري قراءة الملف الأول: '+src.name);
+  await new Promise(r=>setTimeout(r,30));
+  const sourceModel=await sqParseProjectionFileWithTimeout(src,'الملف الأول');
+  if(!sourceModel||!Array.isArray(sourceModel.entities))throw new Error('لم يُرجع الملف الأول عناصر قابلة للإسقاط.');
+  setProgress('✅ تمت قراءة الملف الأول. ⏳ جاري قراءة اللوحة المرجعية: '+cad.name);
+  await new Promise(r=>setTimeout(r,30));
+  const targetModel=await sqParseProjectionFileWithTimeout(cad,'اللوحة المرجعية');
+  if(!targetModel||!['DXF','DWG'].includes(String(targetModel.source).toUpperCase()))throw new Error('الخانة الثانية يجب أن تكون لوحة DXF أو DWG.');
+  if(!Array.isArray(targetModel.entities)||!targetModel.entities.length)throw new Error('تم فتح الملف المرجعي لكن لم تُقرأ منه عناصر CAD قابلة للاستخدام.');
+  const additions=[],entities=[...(targetModel.entities||[])];let addedPoints=0,addedCad=0;
+  if(Array.isArray(sourceModel.points)&&sourceModel.points.length){const ps=getPointStyleSettings();for(const p of sourceModel.points){addPointDetailEntities(additions,{e:Number(p.e),n:Number(p.n),z:Number(p.z||0),id:p.id||('P'+(addedPoints+1))},ps);addedPoints++;}}
+  if(sourceModel.entities?.length){if(!sourceModel.points?.length||sourceModel.source==='DXF'||sourceModel.source==='DWG'){for(const e of sourceModel.entities){additions.push(e);addedCad++;}}}
+  entities.push(...additions);
+  if(!entities.length)throw new Error('لم يتم العثور على عناصر قابلة للإسقاط.');
+  setProgress('⏳ تمت قراءة اللوحة المرجعية. جاري إعداد ملف DXF مع الحفاظ على العناصر الأصلية...');
+  await new Promise(r=>setTimeout(r,20));
+  if(targetModel.rawDXFBytes instanceof Uint8Array){
+    droppedDXF=mergeProjectionDxfPreservingReference(targetModel.rawDXFBytes,additions);
+    const checkText=new TextDecoder('windows-1252').decode(droppedDXF);
+    const validationIssue=inspectPreservedReferenceDXF(checkText);if(validationIssue)throw new Error(validationIssue+' تم إيقاف التصدير لحماية تفاصيل اللوحة المرجعية.');
+  }else{
+    droppedDXF=buildR12FromEntities(entities,{preserveEntityColors:true});
+    if(!validateGeneratedDXF(droppedDXF))throw new Error('تعذر إنشاء DXF صالح من اللوحة المرجعية.');
+  }
+  if(!(droppedDXF instanceof Uint8Array)&&!(typeof droppedDXF==='string'&&droppedDXF.length))throw new Error('لم ينتج عن الإسقاط ملف DXF قابل للتنزيل.');
+  if(summary)summary.innerHTML='تم إسقاط <b>'+escapeHtml(src.name)+'</b> على <b>'+escapeHtml(cad.name)+'</b>.<br>عناصر اللوحة المرجعية: <b>'+(targetModel.entities?.length||0)+'</b> | عناصر الملف الأول: <b>'+addedCad+'</b> | نقاط مضافة بالتفاصيل: <b>'+addedPoints+'</b>.<br><span class="muted">'+(String(targetModel.source).toUpperCase()==='DXF'?'تم الحفاظ على بايتات وعناصر وخصائص اللوحة المرجعية الأصلية كما هي؛ أُضيفت العناصر الجديدة فقط دون إعادة رسم عناصر المرجع.':'تم استخدام DXF الناتج من تحويل DWG كأساس للإضافة؛ قد توجد قيود تحويل على بعض الكيانات الخاصة. لا يمكن أن تكون نتيجة DXF نسخة ثنائية مطابقة لملف DWG.')+'<br>الإحداثيات ثابتة: X = Easting (E) وY = Northing (N)، دون تبديل.</span>';
+  if(results)results.style.display='block';setExportReady(true);setProgress('✅ اكتمل الإسقاط وتم تجهيز ملف DXF. اضغط زر «استخراج لوحة DXF الناتجة» للحفظ.');
+ }catch(e){
+  droppedDXF='';setExportReady(false);const message=String(e?.message||e||'خطأ غير معروف');
+  if(summary)summary.innerHTML='<b>تعذر تجهيز لوحة DXF.</b><br>'+escapeHtml(message);
+  if(results)results.style.display='block';setProgress('❌ فشل الإسقاط: '+message);
+  console.error('dropFilesMerge',e);alert('تعذر إسقاط الملف على اللوحة: '+message);
+ }
+}
+'''
+
+OLD_RESET = "card.querySelectorAll('.results-box,.cad-panel:not(.project-output-settings),.info-list[id$=\"Summary\"],.info-list[id$=\"Status\"]').forEach(e=>{if(e.id!=='quantResults')e.style.display='none';});"
+NEW_RESET = "card.querySelectorAll('.results-box,.cad-panel:not(.project-output-settings),.info-list[id$=\"Summary\"],.info-list[id$=\"Status\"]').forEach(e=>{if(e.id!=='quantResults'&&e.id!=='dropFilesResults')e.style.display='none';});if(card.id==='dropFilesCard'){const db=document.getElementById('downloadDroppedDXFButton'),rs=document.getElementById('dropFilesResults'),sm=document.getElementById('dropFilesSummary'),pr=document.getElementById('dropFilesProgress');if(rs)rs.style.display='block';if(sm)sm.textContent='';if(pr){pr.style.display='none';pr.textContent='⏳ جاري قراءة اللوحتين ومعالجة الإسقاط...';}if(db){db.disabled=true;db.style.opacity='.55';db.style.cursor='not-allowed';db.textContent='📐 استخراج لوحة DXF الناتجة (بعد نجاح الإسقاط)';}}"
+
+
+def replace_once(src: str, old: str, new: str, label: str) -> str:
+    count = src.count(old)
+    if count != 1:
+        raise ValueError(f'{label}: expected exactly one match, found {count}')
+    return src.replace(old, new, 1)
+
+
+def validate_html(src: str, patched: bool = False) -> None:
+    if patched:
+        checks = {
+            'always visible results box': 'id="dropFilesResults" style="display:block"',
+            'disabled until successful export': 'id="downloadDroppedDXFButton" class="btn-orange" type="button"',
+            'DWG parsing runs in Web Worker': 'async function sqParseDwgProjectionInWorker(file,label,timeoutMs=90000)',
+            'worker is actively terminated on timeout': 'worker.terminate();URL.revokeObjectURL(blobUrl)',
+            'worker timeout is tied to projection reader': "if(ext==='dwg')return sqParseDwgProjectionInWorker(file,label,timeoutMs)",
+            'visible failure status': "setProgress('❌ فشل الإسقاط: '+message)",
+            'export enabled only after DXF validation': 'setExportReady(true);setProgress(\'✅ اكتمل الإسقاط',
+            'project reset preserves export control': "e.id!=='quantResults'&&e.id!=='dropFilesResults'",
+        }
+        for label, marker in checks.items():
+            if marker not in src: raise ValueError(f'Validation failed: {label} missing')
+        if 'sqParseProjectionFileWithTimeout(file,label,timeoutMs=90000){\n let timer=null;\n const readPromise=Promise.resolve().then(()=>parseFile(file));' in src:
+            raise ValueError('Old timeout-only DWG parser remains')
+    else:
+        if OLD_RESULTS not in src: raise ValueError('Expected V158 hidden result button is not present')
+        if 'async function dropFilesMerge(){' not in src: raise ValueError('Projection function missing')
+        if 'function resetProjectInputs(card){' not in src: raise ValueError('Project reset function missing')
+
+
+def patch_html(src: str) -> str:
+    for marker in ('async function dropFilesMerge(){', '\nfunction downloadDroppedDXF(){', 'function resetProjectInputs(card){', OLD_RESULTS):
+        if marker not in src: raise ValueError(f'Missing required V158 marker: {marker[:70]}')
+    if 'downloadDroppedDXFButton' in src or 'sqParseDwgProjectionInWorker' in src:
+        raise ValueError('The drop-files repair already appears to be installed; refusing a duplicate patch.')
+    out = replace_once(src, OLD_RESULTS, NEW_RESULTS, 'always-visible DXF export button')
+    start = out.index('async function dropFilesMerge(){')
+    end = out.index('\nfunction downloadDroppedDXF(){', start)
+    out = out[:start] + NEW_PROJECTION_FUNCTION.rstrip() + out[end:]
+    out = replace_once(out, OLD_RESET, NEW_RESET, 'drop-files project reset')
+    validate_html(out, patched=True)
+    return out
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--html', required=True, type=Path)
+    p.add_argument('--output', type=Path)
+    p.add_argument('--check-only', action='store_true')
+    a = p.parse_args()
+    src = a.html.read_text(encoding='utf-8')
+    if a.check_only:
+        validate_html(src, patched=True)
+        print('PASS: worker-isolated DWG parsing, actively terminable timeout, visible DXF export control, visible error/success state, and reset behavior validated')
+        return
+    result = patch_html(src)
+    target = a.output or a.html
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(result, encoding='utf-8')
+    print(f'PASS: repaired drop-files flow using terminable DWG Web Worker; wrote {target} ({len(result)} characters)')
+
+if __name__ == '__main__': main()
