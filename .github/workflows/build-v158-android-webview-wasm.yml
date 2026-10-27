@@ -119,20 +119,32 @@ jobs:
           import copy,sys,zipfile
           apk=Path(sys.argv[1]); fixed=Path(sys.argv[2]).read_bytes(); temp=apk.with_suffix('.patched.apk')
           target='assets/libredwg-writer/wasm/libredwg-web.js'
+          removed=[]
           with zipfile.ZipFile(apk,'r') as zin:
               names=[x.filename for x in zin.infolist()]
               if names.count(target)!=1: raise SystemExit(f'Expected one {target} in base APK, found {names.count(target)}')
+              has_arm64=any(n.startswith('lib/arm64-v8a/') for n in names)
+              has_armv7=any(n.startswith('lib/armeabi-v7a/') for n in names)
+              if not has_arm64: raise SystemExit('Refusing ARM-phone build: arm64-v8a native libraries are missing')
               with zipfile.ZipFile(temp,'w',allowZip64=True) as zout:
                   for info in zin.infolist():
+                      if info.filename.startswith(('lib/x86/','lib/x86_64/')):
+                          removed.append(info.filename)
+                          continue
                       data=fixed if info.filename==target else zin.read(info.filename)
                       zout.writestr(copy.copy(info),data)
+          if not removed: raise SystemExit('Expected x86/x86_64 libraries to remove, found none; inspect base APK before continuing')
           temp.replace(apk)
           with zipfile.ZipFile(apk,'r') as z:
+              names=set(z.namelist())
+              if any(n.startswith(('lib/x86/','lib/x86_64/')) for n in names): raise SystemExit('x86 library directories remain in phone APK')
+              if not any(n.startswith('lib/arm64-v8a/') for n in names): raise SystemExit('ARM64 libraries missing after ABI trim')
+              if has_armv7 and not any(n.startswith('lib/armeabi-v7a/') for n in names): raise SystemExit('ARMv7 libraries were unexpectedly removed')
               embedded=z.read(target)
               if embedded!=fixed: raise SystemExit('APK runtime differs from patched source runtime')
               if b'new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' in embedded: raise SystemExit('Inverted WASM Promise remains in APK')
               if b'new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' not in embedded: raise SystemExit('Corrected WASM Promise missing in APK')
-          print('PASS: corrected WASM loader embedded in APK assets')
+          print(f'PASS: corrected WASM loader embedded; removed {len(removed)} x86/x86_64-only native files for Android phones')
           PY
           test -s "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk"
 
@@ -169,7 +181,7 @@ jobs:
           rm -f "$V158_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py"
           rm -rf "$V158_SOURCE_DIR/__pycache__"
           cat > "$V158_SOURCE_DIR/README_V158_ANDROID_WEBVIEW_WASM_FIX_AR.md" <<'TXT'
-          # SurveyQuant v1.0.158: إصلاح تحميل محرك DWG على Android WebView
+          # SurveyQuant v1.0.158: إصلاح تحميل DWG وتقليل حجم APK للهواتف
           - إصلاح ترتيب resolve/reject المعكوس في طلب XMLHttpRequest الذي يقرأ WebAssembly من file:// داخل Android WebView.
           - هذا الإصلاح يعالج فشل تحميل المحرك قبل قراءة الملف؛ لا يغيّر بايتات ملف DWG الذي يختاره المستخدم.
           - تم تضمين نفس ملف محرك WASM المصحح داخل APK وحزمة المصدر والتحقق من تطابقهما.
@@ -213,7 +225,7 @@ jobs:
               "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" \
               "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "SurveyQuant v1.0.158 - Android WebView WASM Fix" \
+              --title "SurveyQuant v1.0.158 - DWG Loader Fix and Smaller Android APK" \
               --notes-file "$V158_RELEASE_DIR/V158_CHANGELOG_AR.md"
           fi
           echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.158"
