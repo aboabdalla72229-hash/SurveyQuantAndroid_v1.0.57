@@ -1,0 +1,219 @@
+name: Build SurveyQuant v1.0.158 Android WebView WASM Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V157 universal CAD artifact run ID"
+        required: true
+        type: string
+        default: "40466432843"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v158-android-webview-wasm.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v158-webview-wasm
+  cancel-in-progress: false
+
+jobs:
+  build_v158:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40466432843' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python and Android toolchain
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download successful V157 APK and source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v157-base"
+          SOURCE_DIR="$RUNNER_TEMP/v158-source"
+          RELEASE_DIR="$RUNNER_TEMP/v158-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.157-FREE-UNIVERSAL-CAD" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.157_FREE_UNIVERSAL_CAD.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.157_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V157 APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V157 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          echo "V158_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V158_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V158_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Fix Android file URI WebAssembly loading
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V158_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          old='new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true);xhr.responseType="arraybuffer";xhr.onload=()=>{if(xhr.status==200||xhr.status==0&&xhr.response){resolve(xhr.response)}reject(xhr.status)};xhr.onerror=reject;xhr.send(null)})'
+          new='new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true);xhr.responseType="arraybuffer";xhr.onload=()=>{if(xhr.status==200||xhr.status==0&&xhr.response){resolve(xhr.response)}reject(xhr.status)};xhr.onerror=reject;xhr.send(null)})'
+          n=s.count(old)
+          if n!=1: raise SystemExit(f'Expected exactly one inverted file:// WASM Promise executor; found {n}. Refusing to build an unverified patch.')
+          s=s.replace(old,new,1)
+          if new not in s or old in s: raise SystemExit('WASM XHR promise correction verification failed')
+          p.write_text(s,encoding='utf-8')
+          print('PASS: file:// XMLHttpRequest now resolves successful WASM reads and rejects failed reads')
+          PY
+          node --check "$V158_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+
+      - name: Prepare V158 packager from V157 packager
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V158_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py" "$V158_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" <<'PY'
+          from pathlib import Path
+          import sys
+          src=Path(sys.argv[1]).read_text(encoding='utf-8')
+          pairs=[("OLD_NAME = '1.0.156'","OLD_NAME = '1.0.157'"),("NEW_NAME = '1.0.157'","NEW_NAME = '1.0.158'"),("NEW_CODE = 157","NEW_CODE = 158")]
+          for old,new in pairs:
+              if src.count(old)!=1: raise SystemExit(f'Packager version marker absent/duplicated: {old}')
+              src=src.replace(old,new,1)
+          src=src.replace('V157','V158')
+          Path(sys.argv[2]).write_text(src,encoding='utf-8')
+          PY
+          python3 -m py_compile "$V158_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py"
+
+      - name: Package V158 unsigned APK from V157 with corrected runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V158_SOURCE_DIR/SurveyQuant_v1.0.158_PACKAGE_FREE_APK.py" \
+            --apk-input "$V158_BASE_APK" \
+            --apk-output "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V158_SOURCE_DIR/index.html"
+          python3 - "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk" "$V158_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
+          from pathlib import Path
+          import copy,sys,zipfile
+          apk=Path(sys.argv[1]); fixed=Path(sys.argv[2]).read_bytes(); temp=apk.with_suffix('.patched.apk')
+          target='assets/libredwg-writer/wasm/libredwg-web.js'
+          with zipfile.ZipFile(apk,'r') as zin:
+              names=[x.filename for x in zin.infolist()]
+              if names.count(target)!=1: raise SystemExit(f'Expected one {target} in base APK, found {names.count(target)}')
+              with zipfile.ZipFile(temp,'w',allowZip64=True) as zout:
+                  for info in zin.infolist():
+                      data=fixed if info.filename==target else zin.read(info.filename)
+                      zout.writestr(copy.copy(info),data)
+          temp.replace(apk)
+          with zipfile.ZipFile(apk,'r') as z:
+              embedded=z.read(target)
+              if embedded!=fixed: raise SystemExit('APK runtime differs from patched source runtime')
+              if b'new Promise((reject,resolve)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' in embedded: raise SystemExit('Inverted WASM Promise remains in APK')
+              if b'new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true)' not in embedded: raise SystemExit('Corrected WASM Promise missing in APK')
+          print('PASS: corrected WASM loader embedded in APK assets')
+          PY
+          test -s "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk"
+
+      - name: Sign and verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ALIGNED.apk"
+          FINAL="$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='158'.*versionName='1.0.158'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_UNSIGNED.apk"
+
+      - name: Package source patch and reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$V158_SOURCE_DIR/SurveyQuant_v1.0.157_PACKAGE_FREE_APK.py"
+          rm -rf "$V158_SOURCE_DIR/__pycache__"
+          cat > "$V158_SOURCE_DIR/README_V158_ANDROID_WEBVIEW_WASM_FIX_AR.md" <<'TXT'
+          # SurveyQuant v1.0.158: إصلاح تحميل محرك DWG على Android WebView
+          - إصلاح ترتيب resolve/reject المعكوس في طلب XMLHttpRequest الذي يقرأ WebAssembly من file:// داخل Android WebView.
+          - هذا الإصلاح يعالج فشل تحميل المحرك قبل قراءة الملف؛ لا يغيّر بايتات ملف DWG الذي يختاره المستخدم.
+          - تم تضمين نفس ملف محرك WASM المصحح داخل APK وحزمة المصدر والتحقق من تطابقهما.
+          - نجاح البناء لا يغني عن اختبار ملفات DWG فعلية على الجهاز.
+          - ODA File Converter تطبيق تحويل لسطح المكتب (Windows/Linux/macOS)، وليس ملف تشغيل Android جاهزًا يمكن تضمينه مباشرة في APK.
+          TXT
+          (cd "$V158_SOURCE_DIR" && zip -qr "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" | tail -2
+          printf '%s\n' '# SurveyQuant v1.0.158' '- Fixes Android file:// WebView WASM XHR Promise handling.' '- Bundles the corrected LibreDWG WebAssembly loader in APK and source patch.' '- Original user DWG files are not edited by this fix.' > "$V158_RELEASE_DIR/V158_CHANGELOG_EN.txt"
+          cp "$V158_SOURCE_DIR/README_V158_ANDROID_WEBVIEW_WASM_FIX_AR.md" "$V158_RELEASE_DIR/V158_CHANGELOG_AR.md"
+          sha256sum "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" > "$V158_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V158_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V158 APK and source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.158-FREE-ANDROID-WEBVIEW-WASM-FIX
+          path: |
+            ${{ runner.temp }}/v158-release/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk
+            ${{ runner.temp }}/v158-release/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v158-release/V158_CHANGELOG_AR.md
+            ${{ runner.temp }}/v158-release/V158_CHANGELOG_EN.txt
+            ${{ runner.temp }}/v158-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V158 release
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.158 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v1.0.158 \
+              "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" \
+              "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v1.0.158 \
+              "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" \
+              "$V158_RELEASE_DIR/SurveyQuant_v1.0.158_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.158 - Android WebView WASM Fix" \
+              --notes-file "$V158_RELEASE_DIR/V158_CHANGELOG_AR.md"
+          fi
+          echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.158"
