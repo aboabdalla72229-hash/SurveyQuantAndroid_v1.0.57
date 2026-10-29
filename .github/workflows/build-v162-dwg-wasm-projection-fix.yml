@@ -1,0 +1,310 @@
+name: Build SurveyQuant v1.0.162 DWG WASM and Projection Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V161 APK and source artifact run ID"
+        required: true
+        type: string
+        default: "40695730380"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v162-dwg-wasm-projection-fix.yml"
+      - "SurveyQuant_v1.0.162_DWG_WASM_PROJECTION_FIX_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v162-dwg-wasm-projection-fix
+  cancel-in-progress: false
+
+jobs:
+  build_v162:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40695730380' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract self-contained V162 fix kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT_ZIP="$GITHUB_WORKSPACE/SurveyQuant_v1.0.162_DWG_WASM_PROJECTION_FIX_KIT.zip"
+          test -s "$KIT_ZIP" || { echo "ERROR: upload SurveyQuant_v1.0.162_DWG_WASM_PROJECTION_FIX_KIT.zip to the repository root"; exit 1; }
+          KIT="$RUNNER_TEMP/sq162-fix-kit"
+          rm -rf "$KIT" && mkdir -p "$KIT"
+          unzip -q "$KIT_ZIP" -d "$KIT"
+          test -s "$KIT/SurveyQuant_v1.0.162_DWG_WASM_FIX.py"
+          test -s "$KIT/SurveyQuant_v1.0.162_CAD_ENGINE.js"
+          test -s "$KIT/SurveyQuant_v1.0.162_CAD_INJECT.py"
+          echo "SQ162_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install free offline image and PDF engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPS="$RUNNER_TEMP/sq162-npm"
+          mkdir -p "$DEPS"
+          echo "SQ162_DEPS=$DEPS" >> "$GITHUB_ENV"
+          npm install --prefix "$DEPS" --no-save --no-audit --no-fund imagetracerjs@1.2.6 pdfjs-dist@3.11.174
+          TRACER="$(node -e 'console.log(require.resolve("imagetracerjs",{paths:[process.argv[1]]}))' "$DEPS")"
+          PDFJS="$DEPS/node_modules/pdfjs-dist/build/pdf.min.js"
+          test -s "$TRACER" && test -s "$PDFJS"
+          echo "SQ162_TRACER=$TRACER" >> "$GITHUB_ENV"
+          echo "SQ162_PDFJS=$PDFJS" >> "$GITHUB_ENV"
+
+      - name: Download verified V161 base APK and source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v161-base"
+          SOURCE_DIR="$RUNNER_TEMP/v162-source"
+          RELEASE_DIR="$RUNNER_TEMP/v162-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.161-FREE-PROJECTION-RAW-TARGET-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.161_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.161_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V161 APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V161 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          test -s "$SOURCE_DIR/SurveyQuant_v1.0.161_PACKAGE_FREE_APK.py"
+          echo "V162_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V162_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V162_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Fix DWG WebAssembly loading for Android WebView
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_FIX.py" \
+            --html "$V162_SOURCE_DIR/index.html" \
+            --wasm-loader "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            --wasm "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          python3 "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_FIX.py" \
+            --html "$V162_SOURCE_DIR/index.html" \
+            --wasm-loader "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            --wasm "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm" --check-only
+          node "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" \
+            "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          node "$V162_SOURCE_DIR/SurveyQuant_v1.0.161_PROJECTION_RAW_TARGET_TEST.js" "$V162_SOURCE_DIR/index.html"
+
+      - name: Inject V162 CAD alignment and free image/PDF converters
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_INJECT.py" \
+            --html "$V162_SOURCE_DIR/index.html" \
+            --core "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_ENGINE.js" \
+            --imagetracer "$SQ162_TRACER" \
+            --pdfjs "$SQ162_PDFJS"
+          python3 "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_INJECT.py" \
+            --html "$V162_SOURCE_DIR/index.html" \
+            --core "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_ENGINE.js" \
+            --imagetracer "$SQ162_TRACER" \
+            --pdfjs "$SQ162_PDFJS" --check-only
+          node "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_ENGINE_TEST.js"
+          python3 -m py_compile \
+            "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_FIX.py" \
+            "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_INJECT.py"
+          node --check "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          node --check "$SQ162_TRACER"
+          node --check "$SQ162_PDFJS"
+          python3 - "$V162_SOURCE_DIR/index.html" "$RUNNER_TEMP/sq162-inline-scripts" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding="utf-8")
+          out=Path(sys.argv[2]); out.mkdir(parents=True,exist_ok=True)
+          found=0
+          for i,m in enumerate(re.finditer(r"<script\b([^>]*)>([\s\S]*?)</script\s*>",html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              # The WASM payload is inert application/octet-stream data, not JavaScript.
+              if not body.strip() or re.search(r"type\s*=\s*['\"](?:application/json|application/octet-stream|importmap)['\"]",attrs,re.I):
+                  continue
+              p=out/f"inline-{i:04d}.js"; p.write_text(body,encoding="utf-8")
+              found+=1
+          if found<5: raise SystemExit(f"Expected the app and bundled engines' inline scripts; found {found}")
+          print(f"Prepared {found} inline JavaScript syntax checks")
+          PY
+          for js in "$RUNNER_TEMP"/sq162-inline-scripts/*.js; do node --check "$js"; done
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_FIX.py" "$V162_SOURCE_DIR/"
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" "$V162_SOURCE_DIR/"
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_ENGINE.js" "$V162_SOURCE_DIR/"
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_ENGINE_TEST.js" "$V162_SOURCE_DIR/"
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_CAD_INJECT.py" "$V162_SOURCE_DIR/"
+          cp "$SQ162_KIT/SurveyQuant_v1.0.162_THIRD_PARTY_NOTICES.md" "$V162_SOURCE_DIR/"
+          mkdir -p "$V162_SOURCE_DIR/third_party/licenses"
+          for lic in "$SQ162_DEPS"/node_modules/imagetracerjs/LICENSE* "$SQ162_DEPS"/node_modules/pdfjs-dist/LICENSE*; do
+            if [ -s "$lic" ]; then cp "$lic" "$V162_SOURCE_DIR/third_party/licenses/$(basename "$(dirname "$lic")")-$(basename "$lic")"; fi
+          done
+
+      - name: Prepare V162 APK packager
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V162_SOURCE_DIR/SurveyQuant_v1.0.161_PACKAGE_FREE_APK.py" "$V162_SOURCE_DIR/SurveyQuant_v1.0.162_PACKAGE_FREE_APK.py" <<'PY'
+          from pathlib import Path
+          import sys
+          src=Path(sys.argv[1]).read_text(encoding="utf-8")
+          pairs=[
+            ("OLD_NAME = '1.0.159'","OLD_NAME = '1.0.161'"),
+            ("NEW_NAME = '1.0.161'","NEW_NAME = '1.0.162'"),
+            ("NEW_CODE = 161","NEW_CODE = 162"),
+          ]
+          for old,new in pairs:
+              if src.count(old)!=1: raise SystemExit(f"Missing/duplicate package version marker: {old}")
+              src=src.replace(old,new,1)
+          src=src.replace("V161","V162")
+          src=src.replace("1.0.161/161","1.0.162/162")
+          Path(sys.argv[2]).write_text(src,encoding="utf-8")
+          PY
+          python3 -m py_compile "$V162_SOURCE_DIR/SurveyQuant_v1.0.162_PACKAGE_FREE_APK.py"
+
+      - name: Package V162 and embed the corrected DWG loader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V162_SOURCE_DIR/SurveyQuant_v1.0.162_PACKAGE_FREE_APK.py" \
+            --apk-input "$V162_BASE_APK" \
+            --apk-output "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V162_SOURCE_DIR/index.html"
+          test -s "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_UNSIGNED.apk"
+          python3 - "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_UNSIGNED.apk" "$V162_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" <<'PY'
+          from pathlib import Path
+          import copy,sys,zipfile
+          apk=Path(sys.argv[1]); fixed=Path(sys.argv[2]).read_bytes(); temp=apk.with_suffix('.patched.apk')
+          target='assets/libredwg-writer/wasm/libredwg-web.js'; removed=[]
+          with zipfile.ZipFile(apk,'r') as zin:
+              names=[i.filename for i in zin.infolist()]
+              if names.count(target)!=1: raise SystemExit(f'Expected one {target}, found {names.count(target)}')
+              html=zin.read('assets/index.html')
+              if b'id="sq162-wasm-binary"' not in html or b'sq162GetBundledDwgWasmBinary' not in html:
+                  raise SystemExit('Embedded V162 WASM binary/helper missing from packaged HTML')
+              if b'Module["wasmBinary"]=self.SQ_DWG_WASM_BINARY' not in fixed:
+                  raise SystemExit('Corrected Emscripten wasmBinary handoff missing from runtime')
+              with zipfile.ZipFile(temp,'w',allowZip64=True) as zout:
+                  for info in zin.infolist():
+                      if info.filename.startswith(('lib/x86/','lib/x86_64/')):
+                          removed.append(info.filename); continue
+                      zout.writestr(copy.copy(info),fixed if info.filename==target else zin.read(info.filename))
+          temp.replace(apk)
+          with zipfile.ZipFile(apk,'r') as z:
+              names=set(z.namelist())
+              if any(n.startswith(('lib/x86/','lib/x86_64/')) for n in names): raise SystemExit('x86 libraries remain')
+              if not any(n.startswith('lib/arm64-v8a/') for n in names): raise SystemExit('ARM64 libraries missing')
+              embedded=z.read(target)
+              if embedded!=fixed: raise SystemExit('Corrected WASM runtime differs from source')
+              if b'Module["wasmBinary"]=self.SQ_DWG_WASM_BINARY' not in embedded: raise SystemExit('Corrected WASM preload hook missing in APK')
+              html=z.read('assets/index.html')
+              if html.count(b'id="sq162-wasm-binary"')!=1: raise SystemExit('V162 embedded WASM payload is not unique')
+              if b'sqDwgWorkerWasmSent' not in html: raise SystemExit('V162 one-time WASM worker transfer missing')
+          print(f'PASS V162 APK package integrity; fixed WASM loader injected; removed {len(removed)} optional x86/x86_64 native files')
+          PY
+
+      - name: Sign and verify V162 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_ALIGNED.apk"
+          FINAL="$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='162'.*versionName='1.0.162'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_UNSIGNED.apk"
+
+      - name: Package source patch and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$V162_SOURCE_DIR/SurveyQuant_v1.0.161_PACKAGE_FREE_APK.py"
+          rm -rf "$V162_SOURCE_DIR/__pycache__"
+          cat > "$V162_SOURCE_DIR/README_V162_AR.md" <<'TXT'
+          # SurveyQuant v1.0.162: إصلاح قراءة DWG والإسقاط
+          - إصلاح خطأ Android WebView: Aborted(both async and sync fetching of the wasm failed).
+          - يضمّن التطبيق بايتات LibreDWG WASM من نفس البناء داخل HTML، ويفكها عند أول قراءة DWG فقط.
+          - تُنقل نسخة واحدة من بيانات WASM إلى عامل القراءة، ويحتفظ العامل بمحرك LibreDWG محمّلًا للملفات التالية. لا يعتمد تشغيل المحرك على جلب wasm من file://.
+          - يعتمد على مسار V161 المحسّن للذاكرة والإسقاط ثنائي اللوحات، ويحتفظ بفحوصات regression الأصلية.
+          - يضيف أدوات توجيه هندسي بنقطتين وتحويل مجاني للصورة/PDF إلى DXF باستخدام مكتبات مفتوحة المصدر.
+          - التوجيه على DXF يعدّل الإحداثيات الرقمية مباشرة. DWG يُحوّل إلى DXF أولًا، فتظل تفاصيل التحويل مرتبطة بقدرات LibreDWG.
+          - اجتاز اختبار تشغيل WASM الحقيقي في Node، واختبارات V161 النصية، واختبارات المحرك الاصطناعية وصياغة JavaScript. يلزم اختبار ملفي DWG مساحيين حقيقيين على الهاتف بعد تثبيت APK.
+          TXT
+          (cd "$V162_SOURCE_DIR" && zip -qr "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip" | tail -2
+          printf '%s\n' '# SurveyQuant v1.0.162 DWG WASM and projection fix' '- Preloads the real LibreDWG WASM into Emscripten Module.wasmBinary instead of fetching it from file://.' '- Transfers the WASM buffer once to the shared worker; retains the V160/V161 memory optimizations.' '- Adds the free ImageTracer/PDF.js tools and two-point alignment UI.' '- Runtime and synthetic tests pass; field test with two actual DWG survey boards remains necessary.' > "$V162_RELEASE_DIR/V162_CHANGELOG_EN.txt"
+          cp "$V162_SOURCE_DIR/README_V162_AR.md" "$V162_RELEASE_DIR/V162_CHANGELOG_AR.md"
+          sha256sum "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip" > "$V162_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V162_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V162 APK, source patch, and checksums
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.162-FREE-DWG-WASM-PROJECTION-FIX
+          path: |
+            ${{ runner.temp }}/v162-release/SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk
+            ${{ runner.temp }}/v162-release/SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v162-release/V162_CHANGELOG_AR.md
+            ${{ runner.temp }}/v162-release/V162_CHANGELOG_EN.txt
+            ${{ runner.temp }}/v162-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish new V162 release without overwriting immutable assets
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.162 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v1.0.162 already exists; APK and patch remain in the Actions artifact."
+          else
+            gh release create v1.0.162 \
+              "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" \
+              "$V162_RELEASE_DIR/SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.162 - DWG WASM and Projection Fix" \
+              --notes-file "$V162_RELEASE_DIR/V162_CHANGELOG_AR.md"
+          fi
