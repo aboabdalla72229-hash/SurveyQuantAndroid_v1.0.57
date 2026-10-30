@@ -1,0 +1,220 @@
+name: Build SurveyQuant v1.0.164 Output Save and Axis Labels Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V163 APK and source artifact run ID"
+        required: true
+        type: string
+        default: "41015665398"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v164-cad-output-axis-labels.yml"
+      - "SurveyQuant_v1.0.164_CAD_OUTPUT_AXIS_FIX_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v164-cad-output-axis-labels
+  cancel-in-progress: false
+
+jobs:
+  build_v164:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41015665398' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract V164 fix kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s SurveyQuant_v1.0.164_CAD_OUTPUT_AXIS_FIX_KIT.zip
+          mkdir -p "$RUNNER_TEMP/v164-kit"
+          unzip -t SurveyQuant_v1.0.164_CAD_OUTPUT_AXIS_FIX_KIT.zip | tail -2
+          unzip -q SurveyQuant_v1.0.164_CAD_OUTPUT_AXIS_FIX_KIT.zip -d "$RUNNER_TEMP/v164-kit"
+          echo "V164_KIT=$RUNNER_TEMP/v164-kit" >> "$GITHUB_ENV"
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download successful V163 APK and source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v163-base"
+          SOURCE_DIR="$RUNNER_TEMP/v164-source"
+          RELEASE_DIR="$RUNNER_TEMP/v164-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.163-FREE-CAD-DWG-OVERLAY-ALIGNMENT-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.163_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.163_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V163 APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V163 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V164_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V164_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V164_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply V164 named save and axis-label engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V164_KIT/SurveyQuant_v1.0.164_PATCH.py" \
+            --html "$V164_SOURCE_DIR/index.html" \
+            --engine "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js"
+          python3 "$V164_KIT/SurveyQuant_v1.0.164_PATCH.py" \
+            --html "$V164_SOURCE_DIR/index.html" \
+            --engine "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js" --check-only
+
+      - name: Run V164 CAD, label, save, DWG overlay, and PDF worker tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V164_KIT"
+          node SurveyQuant_v1.0.164_CAD_ENGINE_TEST.js
+          node SurveyQuant_v1.0.164_APP_REGRESSION_TEST.js \
+            "$V164_SOURCE_DIR/index.html" \
+            "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js"
+          node SurveyQuant_v1.0.164_DOWNLOAD_TEST.js "$V164_SOURCE_DIR/index.html"
+          node "$V164_SOURCE_DIR/SurveyQuant_v1.0.163_DWG_OVERLAY_PIPELINE_TEST.js" "$V164_SOURCE_DIR/index.html"
+          node "$V164_SOURCE_DIR/SurveyQuant_v1.0.163_PDF_WORKER_BOOTSTRAP_TEST.js" "$V164_SOURCE_DIR/index.html"
+          node "$V164_SOURCE_DIR/SurveyQuant_v1.0.163_APP_REGRESSION_TEST.js" \
+            "$V164_SOURCE_DIR/index.html" \
+            "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js" \
+            "$V164_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          node "$V164_SOURCE_DIR/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" \
+            "$V164_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V164_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          python3 -m py_compile \
+            "$V164_KIT/SurveyQuant_v1.0.164_PATCH.py" \
+            "$V164_KIT/SurveyQuant_v1.0.164_PACKAGE_FREE_APK.py"
+          node --check "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js"
+          node --check "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE_TEST.js"
+          node --check "$V164_KIT/SurveyQuant_v1.0.164_APP_REGRESSION_TEST.js"
+          node --check "$V164_KIT/SurveyQuant_v1.0.164_DOWNLOAD_TEST.js"
+          node --check "$V164_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V164_SOURCE_DIR/index.html" "$RUNNER_TEMP/v164-inline-check" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          out=Path(sys.argv[2]);out.mkdir(parents=True,exist_ok=True)
+          matches=list(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I))
+          count=0
+          for i,m in enumerate(matches):
+              attrs,body=m.group(1),m.group(2)
+              typ=re.search(r'\btype\s*=\s*["\']([^"\']+)',attrs,re.I)
+              if not body.strip() or (typ and typ.group(1).lower() not in ('text/javascript','application/javascript','module')):continue
+              path=out/f'inline-{i}.js';path.write_text(body,encoding='utf-8');count+=1
+          if not count:raise SystemExit('No executable inline JavaScript found')
+          print(f'Extracted {count} inline scripts for syntax verification')
+          PY
+          for js in "$RUNNER_TEMP"/v164-inline-check/*.js; do node --check "$js"; done
+
+      - name: Prepare V164 source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE.js" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/SurveyQuant_v1.0.164_CAD_ENGINE_TEST.js" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/SurveyQuant_v1.0.164_APP_REGRESSION_TEST.js" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/SurveyQuant_v1.0.164_DOWNLOAD_TEST.js" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/SurveyQuant_v1.0.164_PATCH.py" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/SurveyQuant_v1.0.164_PACKAGE_FREE_APK.py" "$V164_SOURCE_DIR/"
+          cp "$V164_KIT/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md" "$V164_SOURCE_DIR/"
+          rm -rf "$V164_SOURCE_DIR/__pycache__"
+          python3 -m py_compile "$V164_SOURCE_DIR/SurveyQuant_v1.0.164_PACKAGE_FREE_APK.py"
+
+      - name: Package V164 APK from the verified V163 native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V164_KIT/SurveyQuant_v1.0.164_PACKAGE_FREE_APK.py" \
+            --apk-input "$V164_BASE_APK" \
+            --apk-output "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V164_SOURCE_DIR/index.html" \
+            --wasm-loader "$V164_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_UNSIGNED.apk"
+          python3 - "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_UNSIGNED.apk" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          apk=Path(sys.argv[1])
+          with zipfile.ZipFile(apk) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              for marker in (b'sq164-cad-output-axis-fix',b'sqDownloadNameDialog',b'id="sq163-cad-engine"',b'id="sq163-pdfjs-worker"',b'id="sq162-wasm-binary"'):
+                  if marker not in html:raise SystemExit('V164 APK HTML marker missing: '+marker.decode())
+              for abi in ('lib/x86/','lib/x86_64/'):
+                  if any(n.startswith(abi) for n in names):raise SystemExit('Unexpected x86 ABI payload remains: '+abi)
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 runtime missing')
+          print('PASS V164 APK package inspection: named-output UI, Android save bridge, axis-label CAD engine, PDF worker and LibreDWG WASM are embedded.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_ALIGNED.apk"
+          FINAL="$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='164'.*versionName='1.0.164'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_UNSIGNED.apk"
+
+      - name: Package source patch, changelog, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$V164_RELEASE_DIR/V164_CHANGELOG_AR.md" <<'TXT'
+          # SurveyQuant v1.0.164
+          - توحيد حفظ جميع مخرجات التوجيه والتحويل والإسقاط عبر نافذة تسمية الملف قبل الحفظ.
+          - استخدام Android.saveFile لحفظ الملف داخل Downloads/SurveyQuant، ثم إرسال Android.notifyDownload بعد نجاح الحفظ وإظهار تأكيد داخل التطبيق.
+          - إصلاح إلغاء الحفظ ومنع إظهار نجاح زائف عند فشل الكتابة.
+          - إظهار أسماء المحاور والنصوص TEXT وMTEXT وATTRIB وATTDEF، بما فيها النصوص داخل تعريفات BLOCK وINSERT في معاينة التوجيه.
+          - تلوين النصوص المعروضة وفق ACI/TrueColor متى توفرت بيانات اللون.
+          - الإبقاء على التوجيه كتعديل مباشر لسجلات الإحداثيات في DXF؛ تبقى أسماء العناصر والطبقات والألوان والأنماط والنصوص ومقابض الكيانات الأصلية محفوظة خارج قيم الإحداثيات والهندسة التي يلزم تحويلها.
+          - اختبارات آلية لدمج المحاور، والأسماء داخل البلوكات، وACI/TrueColor، والتحويل الثنائي للنقاط، والحفظ والإشعار.
+          - لم يتم تضمين ملفات DWG للمستخدم في اختبارات GitHub؛ يجب تجربة اللوحات الأصلية على الهاتف بعد التثبيت للتأكد من سلوك محرك LibreDWG مع تلك الملفات.
+          TXT
+          cp "$V164_KIT/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md" "$V164_RELEASE_DIR/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md"
+          (cd "$V164_SOURCE_DIR" && zip -qr 
