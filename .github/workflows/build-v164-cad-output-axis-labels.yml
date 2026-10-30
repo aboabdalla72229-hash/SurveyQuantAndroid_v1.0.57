@@ -217,4 +217,39 @@ jobs:
           - لم يتم تضمين ملفات DWG للمستخدم في اختبارات GitHub؛ يجب تجربة اللوحات الأصلية على الهاتف بعد التثبيت للتأكد من سلوك محرك LibreDWG مع تلك الملفات.
           TXT
           cp "$V164_KIT/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md" "$V164_RELEASE_DIR/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md"
-          (cd "$V164_SOURCE_DIR" && zip -qr 
+          (cd "$V164_SOURCE_DIR" && zip -qr "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip" > "$V164_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V164_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V164 APK and source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.164-FREE-OUTPUT-SAVE-AXIS-LABELS-FIX
+          path: |
+            ${{ runner.temp }}/v164-release/SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk
+            ${{ runner.temp }}/v164-release/SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v164-release/V164_CHANGELOG_AR.md
+            ${{ runner.temp }}/v164-release/README_V164_OUTPUT_SAVE_AXIS_LABELS_AR.md
+            ${{ runner.temp }}/v164-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V164 release without replacing immutable assets
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.164 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v1.0.164 already exists; APK and source patch remain in Actions artifact."
+          else
+            gh release create v1.0.164 \
+              "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk" \
+              "$V164_RELEASE_DIR/SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.164 - Output Save and CAD Axis Labels Fix" \
+              --notes-file "$V164_RELEASE_DIR/V164_CHANGELOG_AR.md"
+          fi
+          echo "Release page, if created: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.164"
