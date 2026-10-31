@@ -104,7 +104,7 @@ jobs:
           test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
           test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
           cp "$BASE_PDF_DXF" "$TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf"
-          cp "$BASE_PDF_JPG" "$TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg"
+          cp "$BASE_PDF_JPG" "$TEST_DIR/V172_PDF_PAGE_REGRESSION.jpg"
           echo "V174_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
           echo "V174_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
           echo "V174_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
@@ -152,7 +152,7 @@ jobs:
             "$V174_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
           python3 "$V174_KIT/SurveyQuant_v1.0.172_IMAGE_DXF_TEST.py" \
             "$V174_TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" \
-            "$V174_TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg" \
+            "$V174_TEST_DIR/V172_PDF_PAGE_REGRESSION.jpg" \
             --report "$V174_RELEASE_DIR/V174_PDF_IMAGE_DXF_AUDIT.json"
 
       - name: Syntax-check and prepare reproducible V174 source patch
@@ -242,7 +242,7 @@ jobs:
           cp "$V174_KIT/README_V174_AR.md" "$V174_RELEASE_DIR/README_V174_AR.md"
           cp "$V174_KIT/V174_TEST_REPORT_AR.txt" "$V174_RELEASE_DIR/V174_TEST_REPORT_AR.txt"
           cp "$V174_TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf"
-          cp "$V174_TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg" "$V174_RELEASE_DIR/V174_PDF_PAGE_REGRESSION.jpg"
+          cp "$V174_TEST_DIR/V172_PDF_PAGE_REGRESSION.jpg" "$V174_RELEASE_DIR/V172_PDF_PAGE_REGRESSION.jpg"
           sha256sum "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk" \
             "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip" \
             "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" > "$V174_RELEASE_DIR/SHA256SUMS.txt"
@@ -256,7 +256,7 @@ jobs:
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf
-            ${{ runner.temp }}/v174-release/V174_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v174-release/V172_PDF_PAGE_REGRESSION.jpg
             ${{ runner.temp }}/v174-release/V174_PDF_IMAGE_DXF_AUDIT.json
             ${{ runner.temp }}/v174-release/README_V174_AR.md
             ${{ runner.temp }}/v174-release/V174_TEST_REPORT_AR.txt
@@ -278,6 +278,6 @@ jobs:
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip
             ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf
-            ${{ runner.temp }}/v174-release/V174_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v174-release/V172_PDF_PAGE_REGRESSION.jpg
             ${{ runner.temp }}/v174-release/V174_PDF_IMAGE_DXF_AUDIT.json
             ${{ runner.temp }}/v174-release/SHA256SUMS.txt
