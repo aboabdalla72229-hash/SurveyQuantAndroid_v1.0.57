@@ -1,0 +1,283 @@
+name: Build SurveyQuant v1.0.174 Orientation Order + Rotation + Offset Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V172 Android build run ID"
+        required: true
+        type: string
+        default: "41212650040"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v174-orientation-order-rotation-offset-fix.yml"
+      - "SurveyQuant_v1.0.174_UPLOAD_BUNDLE*.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v174-orientation-order-rotation-offset-fix
+  cancel-in-progress: false
+
+jobs:
+  build_v174:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41212650040' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate and extract V174 upload bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE:-$PWD}"
+          KIT="$RUNNER_TEMP/v174-kit"
+          BUNDLE="$(find "$ROOT" -maxdepth 2 -type f -iname 'SurveyQuant_v1.0.174_UPLOAD_BUNDLE*.zip' -size +0c -print -quit)"
+          test -n "$BUNDLE" || { echo "ERROR: Upload SurveyQuant_v1.0.174_UPLOAD_BUNDLE.zip to repository root."; exit 1; }
+          rm -rf "$KIT"; mkdir -p "$KIT"
+          unzip -t "$BUNDLE" | tail -2
+          unzip -q "$BUNDLE" -d "$KIT"
+          for f in \
+            SurveyQuant_v1.0.173_PATCH.py SurveyQuant_v1.0.173_CAD_ENGINE.js \
+            SurveyQuant_v1.0.174_PATCH.py SurveyQuant_v1.0.174_CAD_ENGINE.js \
+            SurveyQuant_v1.0.174_CAD_ENGINE_TEST.js SurveyQuant_v1.0.174_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.174_UI_REGRESSION_TEST.py SurveyQuant_v1.0.174_PACKAGE_FREE_APK.py \
+            SurveyQuant_v1.0.172_IMAGE_DXF_TEST.py SurveyQuant_v1.0.170_CAD_ENGINE.js \
+            SurveyQuant_v1.0.170_REGRESSION_TEST.js SurveyQuant_v1.0.170_DWG_WASM_BINARY_TEST.js \
+            V174_ORIENTATION_SOURCE_TEST.dxf V174_ORIENTATION_TARGET_TEST.dxf \
+            V170_TEST_TILE_0.jpg V170_TEST_TILE_1.jpg V170_TEST_TILE_2.jpg V170_TEST_TILE_3.jpg \
+            README_V174_AR.md V174_TEST_REPORT_AR.txt THIRD_PARTY_NOTICES.md; do
+            test -s "$KIT/$f" || { echo "ERROR: V174 bundle member missing: $f"; exit 1; }
+          done
+          echo "V174_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "PASS: V174 bundle validated."
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install CAD, image, and browser test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet ezdxf pillow playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Download verified V172 APK and full source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v172-base"
+          SOURCE_DIR="$RUNNER_TEMP/v174-source"
+          RELEASE_DIR="$RUNNER_TEMP/v174-release"
+          TEST_DIR="$RUNNER_TEMP/v174-test"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR" "$TEST_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR" "$TEST_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.172-FREE-HOME-SHORTCUTS-PDF-IMAGE-DXF" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.172_FREE_ANDROID_PDF_IMAGE_DXF.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.172_FREE_SOURCE_PATCH.zip' -print -quit)"
+          BASE_PDF_DXF="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.172_PDF_IMAGE_TEST.dxf' -print -quit)"
+          BASE_PDF_JPG="$(find "$BASE_DIR" -type f -name 'V172_PDF_PAGE_REGRESSION.jpg' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V172 signed APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V172 complete source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PDF_DXF" && test -s "$BASE_PDF_JPG" || { echo "ERROR: V172 PDF IMAGE test pair missing"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          cp "$BASE_PDF_DXF" "$TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf"
+          cp "$BASE_PDF_JPG" "$TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg"
+          echo "V174_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V174_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V174_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+          echo "V174_TEST_DIR=$TEST_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply V173 runtime startup repair and V174 orientation fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V174_KIT/SurveyQuant_v1.0.173_PATCH.py" \
+            --html "$V174_SOURCE_DIR/index.html" \
+            --engine "$V174_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js"
+          python3 "$V174_KIT/SurveyQuant_v1.0.174_PATCH.py" \
+            --html "$V174_SOURCE_DIR/index.html" \
+            --engine "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE.js"
+          python3 "$V174_KIT/SurveyQuant_v1.0.174_PATCH.py" \
+            --html "$V174_SOURCE_DIR/index.html" \
+            --engine "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE.js" --check-only
+          echo "PASS: V173 PDF.js startup repair and V174 alignment diagnostics applied."
+
+      - name: Test signed rotation, scale, offset, and source DXF transform
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE_TEST.js"
+          node "$V174_KIT/SurveyQuant_v1.0.174_APP_REGRESSION_TEST.js" \
+            "$V174_SOURCE_DIR/index.html" "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE.js"
+          python3 "$V174_KIT/SurveyQuant_v1.0.174_UI_REGRESSION_TEST.py" \
+            "$V174_SOURCE_DIR/index.html" \
+            "$V174_KIT/V174_ORIENTATION_SOURCE_TEST.dxf" \
+            "$V174_KIT/V174_ORIENTATION_TARGET_TEST.dxf"
+          echo "PASS: V174 orientation interaction, save, and coordinate transformation verified."
+
+      - name: Run DWG WASM, legacy CAD, and PDF IMAGE regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V174_KIT/SurveyQuant_v1.0.170_REGRESSION_TEST.js" \
+            "$V174_KIT/V170_TEST_TILE_0.jpg" "$V174_KIT/V170_TEST_TILE_1.jpg" \
+            "$V174_KIT/V170_TEST_TILE_2.jpg" "$V174_KIT/V170_TEST_TILE_3.jpg" \
+            "$V174_TEST_DIR/V174_LEGACY_CAD_TEST.dxf"
+          node "$V174_KIT/SurveyQuant_v1.0.170_DWG_WASM_BINARY_TEST.js" \
+            "$V174_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V174_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm" \
+            "$V174_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
+          python3 "$V174_KIT/SurveyQuant_v1.0.172_IMAGE_DXF_TEST.py" \
+            "$V174_TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" \
+            "$V174_TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg" \
+            --report "$V174_RELEASE_DIR/V174_PDF_IMAGE_DXF_AUDIT.json"
+
+      - name: Syntax-check and prepare reproducible V174 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            "$V174_KIT/SurveyQuant_v1.0.173_PATCH.py" \
+            "$V174_KIT/SurveyQuant_v1.0.174_PATCH.py" \
+            "$V174_KIT/SurveyQuant_v1.0.174_PACKAGE_FREE_APK.py" \
+            "$V174_KIT/SurveyQuant_v1.0.174_UI_REGRESSION_TEST.py" \
+            "$V174_KIT/SurveyQuant_v1.0.172_IMAGE_DXF_TEST.py"
+          for js in \
+            "$V174_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" \
+            "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE.js" \
+            "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE_TEST.js" \
+            "$V174_KIT/SurveyQuant_v1.0.174_APP_REGRESSION_TEST.js" \
+            "$V174_KIT/SurveyQuant_v1.0.170_CAD_ENGINE.js" \
+            "$V174_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"; do node --check "$js"; done
+          cp "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE.js" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.174_PATCH.py" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.173_PATCH.py" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.174_CAD_ENGINE_TEST.js" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.174_APP_REGRESSION_TEST.js" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.174_UI_REGRESSION_TEST.py" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/SurveyQuant_v1.0.174_PACKAGE_FREE_APK.py" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/README_V174_AR.md" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/V174_TEST_REPORT_AR.txt" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/THIRD_PARTY_NOTICES.md" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/V174_ORIENTATION_SOURCE_TEST.dxf" "$V174_SOURCE_DIR/"
+          cp "$V174_KIT/V174_ORIENTATION_TARGET_TEST.dxf" "$V174_SOURCE_DIR/"
+          rm -rf "$V174_SOURCE_DIR/__pycache__"
+          (cd "$V174_SOURCE_DIR" && zip -qr "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip" | tail -2
+
+      - name: Package V174 APK from the signed V172 Android base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V174_KIT/SurveyQuant_v1.0.174_PACKAGE_FREE_APK.py" \
+            --apk-input "$V174_BASE_APK" \
+            --apk-output "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V174_SOURCE_DIR/index.html" \
+            --wasm-loader "$V174_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_UNSIGNED.apk" <<'PY'
+          import sys,zipfile
+          p=sys.argv[1]
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              for m in (b'sq174-ordered-matched-points-bearing-rotation-translation-validation',b'sq173-pdfjs-readonly-getdocument-runtime-startup-fix',b'sq163-cad-engine',b'sq163-pdfjs-worker',b'sq162-wasm-binary'):
+                  if m not in html:raise SystemExit('Missing APK marker '+m.decode())
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 JNI runtime missing')
+          print('PASS: V174 packaged APK contains patched source, PDF.js worker, LibreDWG WASM and ARM64 runtime.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_ALIGNED.apk"
+          FINAL="$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='174'.*versionName='1.0.174'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_UNSIGNED.apk"
+
+      - name: Prepare release notes and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V174_KIT/README_V174_AR.md" "$V174_RELEASE_DIR/README_V174_AR.md"
+          cp "$V174_KIT/V174_TEST_REPORT_AR.txt" "$V174_RELEASE_DIR/V174_TEST_REPORT_AR.txt"
+          cp "$V174_TEST_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf"
+          cp "$V174_TEST_DIR/V174_PDF_PAGE_REGRESSION.jpg" "$V174_RELEASE_DIR/V174_PDF_PAGE_REGRESSION.jpg"
+          sha256sum "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk" \
+            "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip" \
+            "$V174_RELEASE_DIR/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf" > "$V174_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V174_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload V174 APK, source, and test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.174-FREE-ORIENTATION-ROTATION-OFFSET-FIX
+          path: |
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf
+            ${{ runner.temp }}/v174-release/V174_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v174-release/V174_PDF_IMAGE_DXF_AUDIT.json
+            ${{ runner.temp }}/v174-release/README_V174_AR.md
+            ${{ runner.temp }}/v174-release/V174_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v174-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish immutable V174 GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.174
+          name: SurveyQuant v1.0.174 - Orientation Rotation + Offset Fix
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body_path: ${{ runner.temp }}/v174-release/README_V174_AR.md
+          files: |
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_ANDROID_ORIENTATION_FIX.apk
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v174-release/SurveyQuant_v1.0.174_PDF_IMAGE_TEST.dxf
+            ${{ runner.temp }}/v174-release/V174_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v174-release/V174_PDF_IMAGE_DXF_AUDIT.json
+            ${{ runner.temp }}/v174-release/SHA256SUMS.txt
