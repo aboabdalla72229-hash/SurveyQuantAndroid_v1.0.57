@@ -13,6 +13,7 @@ on:
     paths:
       - ".github/workflows/build-v168-pdf-access-axes-explicit-snap.yml"
       - "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip"
+      - "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip"
 
 permissions:
   actions: read
@@ -40,17 +41,56 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V168 fix kit
+      - name: Extract V168 fix kit (standalone ZIP or nested upload bundle)
         shell: bash
         run: |
           set -euo pipefail
-          test -s SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip
           KIT="$RUNNER_TEMP/v168-kit"
-          rm -rf "$KIT"
+          BUNDLE_DIR="$RUNNER_TEMP/v168-upload-bundle"
+          rm -rf "$KIT" "$BUNDLE_DIR"
           mkdir -p "$KIT"
-          unzip -t SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip | tail -2
-          unzip -q SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip -d "$KIT"
+
+          if [ -s "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip" ]; then
+            KIT_ZIP="$PWD/SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip"
+            echo "Using standalone V168 fix kit."
+          elif [ -s "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" ]; then
+            echo "Standalone V168 fix kit not found; extracting it from the upload bundle."
+            mkdir -p "$BUNDLE_DIR"
+            unzip -t "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" | tail -2
+            unzip -q "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" -d "$BUNDLE_DIR"
+            KIT_ZIP="$(find "$BUNDLE_DIR" -type f -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip' -print -quit)"
+            if [ -z "$KIT_ZIP" ] || [ ! -s "$KIT_ZIP" ]; then
+              echo "ERROR: V168 fix kit is missing both as a standalone ZIP and inside SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip."
+              echo "Bundle contents:"
+              find "$BUNDLE_DIR" -maxdepth 3 -type f -printf '%P (%s bytes)\n' | sort
+              exit 1
+            fi
+          else
+            echo "ERROR: No V168 fix kit or upload bundle exists in the repository root."
+            ls -lah
+            exit 1
+          fi
+
+          unzip -t "$KIT_ZIP" | tail -2
+          unzip -q "$KIT_ZIP" -d "$KIT"
+          for required in \
+            SurveyQuant_v1.0.166_PATCH.py \
+            SurveyQuant_v1.0.166_CAD_ENGINE.js \
+            SurveyQuant_v1.0.167_PATCH.py \
+            SurveyQuant_v1.0.167_CAD_ENGINE.js \
+            SurveyQuant_v1.0.168_PATCH.py \
+            SurveyQuant_v1.0.168_CAD_ENGINE.js \
+            SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js \
+            SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.168_PACKAGE_FREE_APK.py \
+            README_V168_AR.md V168_TEST_REPORT_AR.txt THIRD_PARTY_NOTICES.md; do
+            if [ ! -s "$KIT/$required" ]; then
+              echo "ERROR: Required V168 kit member is missing: $required"
+              exit 1
+            fi
+          done
           echo "V168_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "PASS: V168 kit extracted and all required files verified."
 
       - name: Set up Python and Node
         uses: actions/setup-python@v5
