@@ -1,0 +1,291 @@
+name: Build SurveyQuant v1.0.173 PDF.js Runtime + Project Open Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V172 Android build run ID"
+        required: true
+        type: string
+        default: "41212650040"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v173-pdfjs-readonly-engine-open-fix.yml"
+      - "SurveyQuant_v1.0.173_UPLOAD_BUNDLE*.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v173-pdfjs-runtime-project-open-fix
+  cancel-in-progress: false
+
+jobs:
+  build_v173:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41212650040' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate V173 repair bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE:-$PWD}"
+          KIT="$RUNNER_TEMP/v173-kit"
+          BUNDLE="$(find "$ROOT" -maxdepth 2 -type f -iname 'SurveyQuant_v1.0.173_UPLOAD_BUNDLE*.zip' -size +0c -print -quit)"
+          test -n "$BUNDLE" || { echo "ERROR: SurveyQuant_v1.0.173_UPLOAD_BUNDLE.zip is missing from repository root."; exit 1; }
+          rm -rf "$KIT"; mkdir -p "$KIT"
+          unzip -t "$BUNDLE" | tail -2
+          unzip -q "$BUNDLE" -d "$KIT"
+          for f in \
+            SurveyQuant_v1.0.173_PATCH.py SurveyQuant_v1.0.173_CAD_ENGINE.js \
+            SurveyQuant_v1.0.173_CAD_ENGINE_TEST.js SurveyQuant_v1.0.173_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.173_IMAGE_DXF_TEST.py SurveyQuant_v1.0.173_PACKAGE_FREE_APK.py \
+            README_V173_AR.md V173_TEST_REPORT_AR.txt; do
+            test -s "$KIT/$f" || { echo "ERROR: Missing V173 bundle member: $f"; exit 1; }
+          done
+          echo "V173_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "PASS: V173 repair bundle verified."
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install independent DXF validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet ezdxf pillow
+
+      - name: Download signed V172 APK and complete V172 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v172-base"
+          SOURCE_DIR="$RUNNER_TEMP/v173-source"
+          RELEASE_DIR="$RUNNER_TEMP/v173-release"
+          TEST_DIR="$RUNNER_TEMP/v173-test"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR" "$TEST_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR" "$TEST_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.172-FREE-HOME-SHORTCUTS-PDF-IMAGE-DXF" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.172_FREE_ANDROID_PDF_IMAGE_DXF.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.172_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: Signed V172 APK missing from source run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V172 source patch missing from source run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          test -s "$SOURCE_DIR/V170_TEST_TILE_0.jpg"
+          echo "V173_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V173_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V173_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+          echo "V173_TEST_DIR=$TEST_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply V173 PDF.js and project engine repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/SurveyQuant_v1.0.173_PATCH.py" "$V173_SOURCE_DIR/"
+          python3 "$V173_KIT/SurveyQuant_v1.0.173_PATCH.py" \
+            --html "$V173_SOURCE_DIR/index.html" \
+            --engine "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js"
+          python3 "$V173_KIT/SurveyQuant_v1.0.173_PATCH.py" \
+            --html "$V173_SOURCE_DIR/index.html" \
+            --engine "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" --check-only
+
+      - name: Test CAD runtime, project shortcuts, PDF IMAGE DXF and DWG WASM
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V173_KIT/SurveyQuant_v1.0.173_APP_REGRESSION_TEST.js" \
+            "$V173_SOURCE_DIR/index.html" "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js"
+          node "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE_TEST.js" \
+            "$V173_SOURCE_DIR/V170_TEST_TILE_0.jpg" \
+            "$V173_TEST_DIR/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf"
+          cp "$V173_SOURCE_DIR/V170_TEST_TILE_0.jpg" "$V173_TEST_DIR/V173_PDF_PAGE_REGRESSION.jpg"
+          python3 "$V173_KIT/SurveyQuant_v1.0.173_IMAGE_DXF_TEST.py" \
+            "$V173_TEST_DIR/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf" \
+            "$V173_TEST_DIR/V173_PDF_PAGE_REGRESSION.jpg" \
+            --report "$V173_RELEASE_DIR/V173_PDF_IMAGE_DXF_AUDIT.json"
+          node "$V173_SOURCE_DIR/SurveyQuant_v1.0.170_REGRESSION_TEST.js" \
+            "$V173_SOURCE_DIR/V170_TEST_TILE_0.jpg" "$V173_SOURCE_DIR/V170_TEST_TILE_1.jpg" \
+            "$V173_SOURCE_DIR/V170_TEST_TILE_2.jpg" "$V173_SOURCE_DIR/V170_TEST_TILE_3.jpg" \
+            "$V173_TEST_DIR/V170_LEGACY_DXF_TEST.dxf"
+          node "$V173_SOURCE_DIR/SurveyQuant_v1.0.170_DWG_WASM_BINARY_TEST.js" \
+            "$V173_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V173_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm" \
+            "$V173_SOURCE_DIR/libredwg-writer/dist/libredwg-web.js"
+
+      - name: Syntax checks and embedded engine identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            "$V173_KIT/SurveyQuant_v1.0.173_PATCH.py" \
+            "$V173_KIT/SurveyQuant_v1.0.173_IMAGE_DXF_TEST.py" \
+            "$V173_KIT/SurveyQuant_v1.0.173_PACKAGE_FREE_APK.py"
+          for js in \
+            "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" \
+            "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE_TEST.js" \
+            "$V173_KIT/SurveyQuant_v1.0.173_APP_REGRESSION_TEST.js" \
+            "$V173_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"; do node --check "$js"; done
+          INLINE_DIR="$RUNNER_TEMP/v173-inline-check"; rm -rf "$INLINE_DIR"; mkdir -p "$INLINE_DIR"
+          python3 - "$V173_SOURCE_DIR/index.html" "$INLINE_DIR" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8');out=Path(sys.argv[2]);count=0
+          for i,m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              typ=re.search(r'\btype\s*=\s*["\']([^"\']+)',attrs,re.I)
+              if not body.strip() or (typ and typ.group(1).lower() not in ('text/javascript','application/javascript','module')):continue
+              if re.search(r'\bsrc\s*=',attrs,re.I):continue
+              (out/f'inline-{i}.js').write_text(body,encoding='utf-8');count+=1
+          if not count:raise SystemExit('No executable inline JavaScript was found')
+          print(f'PASS: extracted {count} inline JavaScript blocks')
+          PY
+          for js in "$INLINE_DIR"/*.js; do node --check "$js"; done
+          python3 - "$V173_SOURCE_DIR/index.html" "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE.js" <<'PY'
+          from pathlib import Path
+          import base64,re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8');engine=Path(sys.argv[2]).read_bytes()
+          m=re.search(r'<script\s+type="application/octet-stream"\s+id="sq163-cad-engine">([A-Za-z0-9+/=\r\n]+)</script>',html,re.I)
+          if not m or base64.b64decode(m.group(1))!=engine:raise SystemExit('Embedded V173 CAD engine does not match tested source')
+          if 'lib.getDocument=guarded' in html or 'renderImageSideRows();' in html:raise SystemExit('V173 runtime regression marker detected')
+          print('PASS: patched HTML contains exact tested V173 engine and no V172 startup defects')
+          PY
+
+      - name: Prepare complete V173 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V173_KIT/SurveyQuant_v1.0.173_CAD_ENGINE_TEST.js" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/SurveyQuant_v1.0.173_APP_REGRESSION_TEST.js" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/SurveyQuant_v1.0.173_IMAGE_DXF_TEST.py" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/SurveyQuant_v1.0.173_PACKAGE_FREE_APK.py" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/README_V173_AR.md" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/V173_TEST_REPORT_AR.txt" "$V173_SOURCE_DIR/"
+          cp "$V173_KIT/README_V173_AR.md" "$V173_RELEASE_DIR/"
+          cp "$V173_KIT/V173_TEST_REPORT_AR.txt" "$V173_RELEASE_DIR/"
+          rm -rf "$V173_SOURCE_DIR/__pycache__"
+          (cd "$V173_SOURCE_DIR" && zip -qr "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_SOURCE_PATCH.zip" | tail -2
+
+      - name: Package V173 APK from signed V172 Android base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V173_KIT/SurveyQuant_v1.0.173_PACKAGE_FREE_APK.py" \
+            --apk-input "$V173_BASE_APK" \
+            --apk-output "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V173_SOURCE_DIR/index.html" \
+            --wasm-loader "$V173_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_UNSIGNED.apk" <<'PY'
+          import sys,zipfile
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          with zipfile.ZipFile(p) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              for marker in (b'sq173-pdfjs-readonly-getdocument-runtime-startup-fix',b'sq173-home-shortcuts-handler',b'sq163-cad-engine',b'sq163-pdfjs-worker',b'sq162-wasm-binary'):
+                  if marker not in html:raise SystemExit('V173 APK missing marker: '+marker.decode())
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 native runtime missing')
+              for abi in ('lib/x86/','lib/x86_64/'):
+                  if any(n.startswith(abi) for n in names):raise SystemExit('Unexpected x86 payload: '+abi)
+              slot=html.split(b'id="sq163-cad-engine">',1)[1].split(b'</script>',1)[0]
+              import base64
+              engine=base64.b64decode(slot.strip())
+              if b'SQ_V173_NO_DUPLICATE_HOME_FALLBACK' not in engine:raise SystemExit('V173 APK contains old duplicate-button CAD engine')
+          print('PASS V173 APK package: getter-safe PDF.js runtime, 10 home buttons, V173 CAD engine, PDF worker, WASM and ARM64 runtime verified.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_ALIGNED.apk"
+          FINAL="$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_ANDROID_ENGINE_OPEN_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='173'.*versionName='1.0.173'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_UNSIGNED.apk"
+
+      - name: Include PDF test pair and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V173_TEST_DIR/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf" "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf"
+          cp "$V173_TEST_DIR/V173_PDF_PAGE_REGRESSION.jpg" "$V173_RELEASE_DIR/V173_PDF_PAGE_REGRESSION.jpg"
+          sha256sum \
+            "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_ANDROID_ENGINE_OPEN_FIX.apk" \
+            "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_FREE_SOURCE_PATCH.zip" \
+            "$V173_RELEASE_DIR/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf" \
+            "$V173_RELEASE_DIR/V173_PDF_PAGE_REGRESSION.jpg" > "$V173_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V173_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V173 APK, source, and PDF test pair
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyQuant-v1.0.173-FREE-PDFJS-ENGINE-OPEN-FIX
+          path: |
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_FREE_ANDROID_ENGINE_OPEN_FIX.apk
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf
+            ${{ runner.temp }}/v173-release/V173_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v173-release/V173_PDF_IMAGE_DXF_AUDIT.json
+            ${{ runner.temp }}/v173-release/README_V173_AR.md
+            ${{ runner.temp }}/v173-release/V173_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v173-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish immutable V173 GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.173
+          name: SurveyQuant v1.0.173 - PDF.js Runtime + Project Open Fix
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body_path: ${{ runner.temp }}/v173-release/README_V173_AR.md
+          files: |
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_FREE_ANDROID_ENGINE_OPEN_FIX.apk
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v173-release/SurveyQuant_v1.0.173_PDF_IMAGE_TEST.dxf
+            ${{ runner.temp }}/v173-release/V173_PDF_PAGE_REGRESSION.jpg
+            ${{ runner.temp }}/v173-release/V173_PDF_IMAGE_DXF_AUDIT.json
+            ${{ runner.temp }}/v173-release/SHA256SUMS.txt
