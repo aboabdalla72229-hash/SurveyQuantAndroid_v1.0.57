@@ -1,0 +1,303 @@
+name: Build SurveyQuant v1.0.169 Orientation Save, Block Axes, Same-name Load and Single PDF DXF
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V164 base APK + source artifact run ID"
+        required: true
+        type: string
+        default: "41046602097"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v169-orientation-save-same-name-pdf-single-dxf.yml"
+      - "SurveyQuant_v1.0.169_UPLOAD_BUNDLE*.zip"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: surveyquant-v169-orientation-pdf-single-dxf
+  cancel-in-progress: false
+
+jobs:
+  build_v169:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41046602097' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract the uploaded V169 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE:-$PWD}"
+          KIT="$RUNNER_TEMP/v169-kit"
+          BUNDLE_DIR="$RUNNER_TEMP/v169-bundle"
+          rm -rf "$KIT" "$BUNDLE_DIR"
+          mkdir -p "$KIT" "$BUNDLE_DIR"
+
+          mapfile -d '' BUNDLES < <(find "$ROOT" -type f -iname 'SurveyQuant_v1.0.169_UPLOAD_BUNDLE*.zip' -size +0c -print0 | sort -z)
+          if [ "${#BUNDLES[@]}" -eq 0 ]; then
+            echo "ERROR: V169 upload bundle is not in the GitHub repository checkout."
+            echo "Upload SurveyQuant_v1.0.169_UPLOAD_BUNDLE.zip to the repository root and commit it."
+            echo "Detected V169 files:"
+            find "$ROOT" -type f -iname '*169*' -printf '%P (%s bytes)\\n' | sort || true
+            exit 1
+          fi
+
+          BUNDLE_ZIP="${BUNDLES[0]}"
+          echo "Using uploaded bundle: $BUNDLE_ZIP"
+          unzip -t "$BUNDLE_ZIP" | tail -2
+          unzip -q "$BUNDLE_ZIP" -d "$BUNDLE_DIR"
+
+          mapfile -d '' KITS < <(find "$BUNDLE_DIR" -type f -iname 'SurveyQuant_v1.0.169_FIX_KIT*.zip' -size +0c -print0 | sort -z)
+          if [ "${#KITS[@]}" -eq 0 ]; then
+            echo "ERROR: Upload bundle does not contain SurveyQuant_v1.0.169_FIX_KIT.zip."
+            find "$BUNDLE_DIR" -type f -printf '%P (%s bytes)\\n' | sort
+            exit 1
+          fi
+          KIT_ZIP="${KITS[0]}"
+          unzip -t "$KIT_ZIP" | tail -2
+          unzip -q "$KIT_ZIP" -d "$KIT"
+
+          for required in \
+            SurveyQuant_v1.0.166_PATCH.py SurveyQuant_v1.0.166_CAD_ENGINE.js \
+            SurveyQuant_v1.0.167_PATCH.py SurveyQuant_v1.0.167_CAD_ENGINE.js \
+            SurveyQuant_v1.0.168_PATCH.py SurveyQuant_v1.0.168_CAD_ENGINE.js \
+            SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.169_PATCH.py SurveyQuant_v1.0.169_CAD_ENGINE.js \
+            SurveyQuant_v1.0.169_REGRESSION_TEST.js SurveyQuant_v1.0.169_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.169_OLE_DXF_TEST.py SurveyQuant_v1.0.169_PACKAGE_FREE_APK.py \
+            V169_TEST_TILE_0.jpg V169_TEST_TILE_1.jpg V169_TEST_TILE_2.jpg V169_TEST_TILE_3.jpg README_V169_AR.md V169_TEST_REPORT_AR.txt THIRD_PARTY_NOTICES.md; do
+            if [ ! -s "$KIT/$required" ]; then
+              echo "ERROR: Required V169 kit member missing: $required"
+              exit 1
+            fi
+          done
+          echo "V169_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "PASS: V169 upload bundle and all required kit members verified."
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install DXF validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet ezdxf pillow
+
+      - name: Download successful V164 Android runtime and source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v164-base"
+          SOURCE_DIR="$RUNNER_TEMP/v169-source"
+          RELEASE_DIR="$RUNNER_TEMP/v169-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.164-FREE-OUTPUT-SAVE-AXIS-LABELS-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V164 signed APK missing from source run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V164 source patch missing from source run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V169_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V169_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V169_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Inject V166, V167, V168 and V169 into the V164 application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V169_KIT/SurveyQuant_v1.0.166_PATCH.py" --html "$V169_SOURCE_DIR/index.html" --engine "$V169_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js"
+          python3 "$V169_KIT/SurveyQuant_v1.0.167_PATCH.py" --html "$V169_SOURCE_DIR/index.html" --engine "$V169_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          python3 "$V169_KIT/SurveyQuant_v1.0.168_PATCH.py" --html "$V169_SOURCE_DIR/index.html" --engine "$V169_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js"
+          python3 "$V169_KIT/SurveyQuant_v1.0.169_PATCH.py" --html "$V169_SOURCE_DIR/index.html" --engine "$V169_KIT/SurveyQuant_v1.0.169_CAD_ENGINE.js"
+          python3 "$V169_KIT/SurveyQuant_v1.0.169_PATCH.py" --html "$V169_SOURCE_DIR/index.html" --engine "$V169_KIT/SurveyQuant_v1.0.169_CAD_ENGINE.js" --check-only
+
+      - name: Test axes, oriented DXF save, duplicate filenames, and the actual PDF page
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V169_KIT/SurveyQuant_v1.0.169_REGRESSION_TEST.js" \
+            "$V169_KIT/V169_TEST_TILE_0.jpg" \
+            "$V169_KIT/V169_TEST_TILE_1.jpg" \
+            "$V169_KIT/V169_TEST_TILE_2.jpg" \
+            "$V169_KIT/V169_TEST_TILE_3.jpg" \
+            "$RUNNER_TEMP/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf"
+          python3 "$V169_KIT/SurveyQuant_v1.0.169_OLE_DXF_TEST.py" \
+            "$RUNNER_TEMP/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf" \
+            --report "$V169_RELEASE_DIR/V169_PDF_SINGLE_DXF_AUDIT.json"
+          node "$V169_KIT/SurveyQuant_v1.0.169_APP_REGRESSION_TEST.js" \
+            "$V169_SOURCE_DIR/index.html" "$V169_KIT/SurveyQuant_v1.0.169_CAD_ENGINE.js"
+          node "$V169_KIT/SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js"
+          node "$V169_SOURCE_DIR/SurveyQuant_v1.0.164_DOWNLOAD_TEST.js" "$V169_SOURCE_DIR/index.html"
+          node "$V169_SOURCE_DIR/SurveyQuant_v1.0.163_DWG_OVERLAY_PIPELINE_TEST.js" "$V169_SOURCE_DIR/index.html"
+          node "$V169_SOURCE_DIR/SurveyQuant_v1.0.163_PDF_WORKER_BOOTSTRAP_TEST.js" "$V169_SOURCE_DIR/index.html"
+          node "$V169_SOURCE_DIR/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" \
+            "$V169_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V169_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+
+      - name: Syntax and inline application JavaScript checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            "$V169_KIT/SurveyQuant_v1.0.166_PATCH.py" \
+            "$V169_KIT/SurveyQuant_v1.0.167_PATCH.py" \
+            "$V169_KIT/SurveyQuant_v1.0.168_PATCH.py" \
+            "$V169_KIT/SurveyQuant_v1.0.169_PATCH.py" \
+            "$V169_KIT/SurveyQuant_v1.0.169_OLE_DXF_TEST.py" \
+            "$V169_KIT/SurveyQuant_v1.0.169_PACKAGE_FREE_APK.py"
+          for js in \
+            "$V169_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js" \
+            "$V169_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js" \
+            "$V169_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js" \
+            "$V169_KIT/SurveyQuant_v1.0.169_CAD_ENGINE.js" \
+            "$V169_KIT/SurveyQuant_v1.0.169_REGRESSION_TEST.js" \
+            "$V169_KIT/SurveyQuant_v1.0.169_APP_REGRESSION_TEST.js" \
+            "$V169_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"; do
+            node --check "$js"
+          done
+          INLINE_DIR="$RUNNER_TEMP/v169-inline-check"
+          rm -rf "$INLINE_DIR"; mkdir -p "$INLINE_DIR"
+          python3 - "$V169_SOURCE_DIR/index.html" "$INLINE_DIR" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          out=Path(sys.argv[2]);count=0
+          for i,m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              typ=re.search(r'\btype\s*=\s*["\']([^"\']+)',attrs,re.I)
+              if not body.strip() or (typ and typ.group(1).lower() not in ('text/javascript','application/javascript','module')):continue
+              (out/f'inline-{i}.js').write_text(body,encoding='utf-8');count+=1
+          if not count:raise SystemExit('No executable inline JavaScript was found')
+          print(f'Extracted {count} executable inline JS blocks')
+          PY
+          for js in "$INLINE_DIR"/*.js; do node --check "$js"; done
+          echo "PASS: V169 Python, JavaScript, inline scripts, PDF DXF, block axes and app regression checks."
+
+      - name: Prepare V169 complete source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            SurveyQuant_v1.0.166_CAD_ENGINE.js SurveyQuant_v1.0.166_PATCH.py \
+            SurveyQuant_v1.0.167_CAD_ENGINE.js SurveyQuant_v1.0.167_PATCH.py \
+            SurveyQuant_v1.0.168_CAD_ENGINE.js SurveyQuant_v1.0.168_PATCH.py \
+            SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.169_CAD_ENGINE.js SurveyQuant_v1.0.169_PATCH.py \
+            SurveyQuant_v1.0.169_REGRESSION_TEST.js SurveyQuant_v1.0.169_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.169_OLE_DXF_TEST.py SurveyQuant_v1.0.169_PACKAGE_FREE_APK.py \
+            README_V169_AR.md V169_TEST_REPORT_AR.txt THIRD_PARTY_NOTICES.md; do
+            cp "$V169_KIT/$f" "$V169_SOURCE_DIR/"
+          done
+          rm -rf "$V169_SOURCE_DIR/__pycache__"
+          python3 -m py_compile "$V169_SOURCE_DIR/SurveyQuant_v1.0.169_PACKAGE_FREE_APK.py"
+          (cd "$V169_SOURCE_DIR" && zip -qr "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_SOURCE_PATCH.zip" | tail -2
+
+      - name: Package V169 APK from the verified V164 Android base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V169_KIT/SurveyQuant_v1.0.169_PACKAGE_FREE_APK.py" \
+            --apk-input "$V169_BASE_APK" \
+            --apk-output "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V169_SOURCE_DIR/index.html" \
+            --wasm-loader "$V169_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_UNSIGNED.apk"
+          python3 - "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_UNSIGNED.apk" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          apk=Path(sys.argv[1])
+          with zipfile.ZipFile(apk) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              markers=(b'sq164-cad-output-axis-fix',b'sq166-readonly-source-and-exact-pdf-raster',b'sq167-dwg-orientation-view-transform',b'sq168-pdf-access-axis-points-explicit-snap-fix',b'sq169-orientation-save-block-axis-content-identity-single-dxf-ole',b'id="sq163-cad-engine"',b'id="sq163-pdfjs-worker"',b'id="sq162-wasm-binary"')
+              for marker in markers:
+                  if marker not in html:raise SystemExit('V169 APK HTML marker missing: '+marker.decode())
+              for abi in ('lib/x86/','lib/x86_64/'):
+                  if any(n.startswith(abi) for n in names):raise SystemExit('Unexpected x86 ABI payload remains: '+abi)
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 runtime missing')
+          print('PASS V169 APK package inspection: app engine, oriented DXF save, file identity, OLE2FRAME PDF export, PDF worker and LibreDWG WASM present.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_ALIGNED.apk"
+          FINAL="$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_ANDROID_ORIENTATION_PDF_SINGLE_DXF.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='169'.*versionName='1.0.169'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_UNSIGNED.apk"
+
+      - name: Include standalone PDF-to-DXF test drawing, report and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf" "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf"
+          cp "$V169_KIT/README_V169_AR.md" "$V169_RELEASE_DIR/README_V169_AR.md"
+          cp "$V169_KIT/V169_TEST_REPORT_AR.txt" "$V169_RELEASE_DIR/V169_TEST_REPORT_AR.txt"
+          cp "$V169_KIT/THIRD_PARTY_NOTICES.md" "$V169_RELEASE_DIR/THIRD_PARTY_NOTICES.md"
+          sha256sum \
+            "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_ANDROID_ORIENTATION_PDF_SINGLE_DXF.apk" \
+            "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_FREE_SOURCE_PATCH.zip" \
+            "$V169_RELEASE_DIR/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf" \
+            > "$V169_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V169_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V169 APK, source patch, and test DXF
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.169-FREE-ORIENTATION-SAVE-SAME-NAME-PDF-SINGLE-DXF
+          path: |
+            ${{ runner.temp }}/v169-release/SurveyQuant_v1.0.169_FREE_ANDROID_ORIENTATION_PDF_SINGLE_DXF.apk
+            ${{ runner.temp }}/v169-release/SurveyQuant_v1.0.169_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v169-release/SurveyQuant_v1.0.169_PDF_SINGLE_DXF_TEST.dxf
+            ${{ runner.temp }}/v169-release/V169_PDF_SINGLE_DXF_AUDIT.json
+            ${{ runner.temp }}/v169-release/README_V169_AR.md
+            ${{ runner.temp }}/v169-release/V169_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v169-release/THIRD_PARTY_NOTICES.md
+            ${{ runner.temp }}/v169-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
