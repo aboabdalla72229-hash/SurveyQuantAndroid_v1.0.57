@@ -12,8 +12,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/build-v168-pdf-access-axes-explicit-snap.yml"
-      - "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip"
-      - "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip"
+      - "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip"
+      - "SurveyQuant_v1.0.168_UPLOAD_BUNDLE*.zip"
+      - "**/SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip"
+      - "**/SurveyQuant_v1.0.168_UPLOAD_BUNDLE*.zip"
 
 permissions:
   actions: read
@@ -41,7 +43,7 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V168 fix kit (accept GitHub duplicate -1 suffix)
+      - name: Locate and extract V168 fix kit (root or nested upload)
         shell: bash
         run: |
           set -euo pipefail
@@ -52,31 +54,47 @@ jobs:
           mkdir -p "$KIT"
           KIT_ZIP=""
 
-          # GitHub may rename a duplicate upload to *-1.zip, *-2.zip, etc.
-          mapfile -d '' KIT_CANDIDATES < <(find "$ROOT" -maxdepth 2 -type f \
-            -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' -size +0c -print0 | sort -z)
+          # Search the entire checked-out repository, not only its first two levels.
+          # This accepts GitHub's duplicate suffixes such as -1, -2 and -3.
+          mapfile -d '' KIT_CANDIDATES < <(find "$ROOT" -type f \
+            -not -path "$ROOT/.git/*" \
+            -iname 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' \
+            -size +0c -print0 | sort -z)
+
           if [ "${#KIT_CANDIDATES[@]}" -gt 0 ]; then
             KIT_ZIP="${KIT_CANDIDATES[0]}"
-            echo "Using standalone V168 fix kit: $(basename "$KIT_ZIP")"
+            echo "Using standalone V168 fix kit: ${KIT_ZIP#"$ROOT"/}"
           else
-            mapfile -d '' BUNDLE_CANDIDATES < <(find "$ROOT" -maxdepth 2 -type f \
-              -name 'SurveyQuant_v1.0.168_UPLOAD_BUNDLE*.zip' -size +0c -print0 | sort -z)
+            mapfile -d '' BUNDLE_CANDIDATES < <(find "$ROOT" -type f \
+              -not -path "$ROOT/.git/*" \
+              -iname 'SurveyQuant_v1.0.168_UPLOAD_BUNDLE*.zip' \
+              -size +0c -print0 | sort -z)
+
             if [ "${#BUNDLE_CANDIDATES[@]}" -eq 0 ]; then
-              echo "ERROR: No V168 fix kit or upload bundle found (including duplicate -1/-2 filenames)."
-              find "$ROOT" -maxdepth 2 -type f -iname '*168*zip' -printf '%P (%s bytes)\n' | sort || true
+              echo "ERROR: V168 ZIP is not present in this GitHub checkout."
+              echo "A ZIP attached to the chat or left in a runner's temporary folder is NOT part of the repository checkout."
+              echo "Upload and commit one of these files to the repository (root or any subfolder):"
+              echo "  SurveyQuant_v1.0.168_UPLOAD_BUNDLE_FIXED.zip"
+              echo "  SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT_FIXED.zip"
+              echo "Tracked 168 files in this commit:"
+              git -C "$ROOT" ls-files | grep -i '168.*\.zip$' || true
+              echo "ZIP files found in this checkout:"
+              find "$ROOT" -type f -iname '*.zip' -not -path "$ROOT/.git/*" \
+                -printf '%P (%s bytes)\n' | sort | tail -100
               exit 1
             fi
 
             BUNDLE_ZIP="${BUNDLE_CANDIDATES[0]}"
-            echo "Extracting V168 fix kit from: $(basename "$BUNDLE_ZIP")"
+            echo "Extracting V168 fix kit from: ${BUNDLE_ZIP#"$ROOT"/}"
             mkdir -p "$BUNDLE_DIR"
             unzip -t "$BUNDLE_ZIP" | tail -2
             unzip -q "$BUNDLE_ZIP" -d "$BUNDLE_DIR"
             mapfile -d '' KIT_CANDIDATES < <(find "$BUNDLE_DIR" -type f \
-              -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' -size +0c -print0 | sort -z)
+              -iname 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' \
+              -size +0c -print0 | sort -z)
             if [ "${#KIT_CANDIDATES[@]}" -eq 0 ]; then
-              echo "ERROR: Upload bundle does not contain the V168 fix kit. Contents:"
-              find "$BUNDLE_DIR" -maxdepth 4 -type f -printf '%P (%s bytes)\n' | sort
+              echo "ERROR: The committed upload bundle does not contain the V168 fix kit. Contents:"
+              find "$BUNDLE_DIR" -maxdepth 5 -type f -printf '%P (%s bytes)\n' | sort
               exit 1
             fi
             KIT_ZIP="${KIT_CANDIDATES[0]}"
@@ -101,7 +119,7 @@ jobs:
             fi
           done
           echo "V168_KIT=$KIT" >> "$GITHUB_ENV"
-          echo "PASS: V168 kit extracted; all 12 required files verified."
+          echo "PASS: V168 fix kit extracted; all required files verified."
 
       - name: Set up Python and Node
         uses: actions/setup-python@v5
