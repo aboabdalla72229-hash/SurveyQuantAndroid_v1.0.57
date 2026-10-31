@@ -1,0 +1,276 @@
+name: Build SurveyQuant v1.0.168 PDF Access, Axes, Phantom Points and Explicit Snap Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V164 APK and source artifact run ID"
+        required: true
+        type: string
+        default: "41046602097"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v168-pdf-access-axes-explicit-snap.yml"
+      - "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v168-pdf-access-axes-snap
+  cancel-in-progress: false
+
+jobs:
+  build_v168:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41046602097' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract V168 fix kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip
+          KIT="$RUNNER_TEMP/v168-kit"
+          rm -rf "$KIT"
+          mkdir -p "$KIT"
+          unzip -t SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip | tail -2
+          unzip -q SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip -d "$KIT"
+          echo "V168_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download successful V164 APK and complete source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v164-base"
+          SOURCE_DIR="$RUNNER_TEMP/v168-source"
+          RELEASE_DIR="$RUNNER_TEMP/v168-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.164-FREE-OUTPUT-SAVE-AXIS-LABELS-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V164 signed APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V164 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V168_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V168_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V168_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Inject V166, V167 and V168 CAD engines without changing the V164 save bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V168_KIT/SurveyQuant_v1.0.166_PATCH.py" \
+            --html "$V168_SOURCE_DIR/index.html" \
+            --engine "$V168_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js"
+          python3 "$V168_KIT/SurveyQuant_v1.0.167_PATCH.py" \
+            --html "$V168_SOURCE_DIR/index.html" \
+            --engine "$V168_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          python3 "$V168_KIT/SurveyQuant_v1.0.168_PATCH.py" \
+            --html "$V168_SOURCE_DIR/index.html" \
+            --engine "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js"
+          python3 "$V168_KIT/SurveyQuant_v1.0.168_PATCH.py" \
+            --html "$V168_SOURCE_DIR/index.html" \
+            --engine "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js" --check-only
+
+      - name: Run V168 DWG, axes, PDF raster, snap, WASM and app regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js"
+          python3 -m pip install --quiet ezdxf
+          python3 - <<'PYDXF'
+          import ezdxf, zipfile
+          d=ezdxf.readfile('/tmp/sq-v167-raster-smoke.dxf')
+          audit=d.audit()
+          assert not audit.errors and not audit.fixes
+          assert len(d.modelspace().query('IMAGE'))==1
+          assert len(d.objects.query('IMAGEDEF'))==1
+          with zipfile.ZipFile('/tmp/sq-v167-raster-smoke.zip') as z:
+              assert z.testzip() is None
+              assert set(z.namelist())=={'SQ_PDF_PAGE.dxf','SQ_PDF_PAGE.png'}
+          print('PASS V168 DXF IMAGE/IMAGEDEF audit and portable PDF PNG ZIP')
+          PYDXF
+          node "$V168_KIT/SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js" \
+            "$V168_SOURCE_DIR/index.html" \
+            "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js"
+          node "$V168_SOURCE_DIR/SurveyQuant_v1.0.164_DOWNLOAD_TEST.js" "$V168_SOURCE_DIR/index.html"
+          node "$V168_SOURCE_DIR/SurveyQuant_v1.0.163_DWG_OVERLAY_PIPELINE_TEST.js" "$V168_SOURCE_DIR/index.html"
+          node "$V168_SOURCE_DIR/SurveyQuant_v1.0.163_PDF_WORKER_BOOTSTRAP_TEST.js" "$V168_SOURCE_DIR/index.html"
+          node "$V168_SOURCE_DIR/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" \
+            "$V168_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V168_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          python3 -m py_compile "$V168_KIT/SurveyQuant_v1.0.166_PATCH.py" "$V168_KIT/SurveyQuant_v1.0.167_PATCH.py" "$V168_KIT/SurveyQuant_v1.0.168_PATCH.py" "$V168_KIT/SurveyQuant_v1.0.168_PACKAGE_FREE_APK.py"
+          node --check "$V168_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js"
+          node --check "$V168_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          node --check "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE.js"
+          node --check "$V168_KIT/SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js"
+          node --check "$V168_KIT/SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js"
+          node --check "$V168_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V168_SOURCE_DIR/index.html" "$RUNNER_TEMP/v168-inline-check" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          out=Path(sys.argv[2]);out.mkdir(parents=True,exist_ok=True)
+          count=0
+          for i,m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              typ=re.search(r'\btype\s*=\s*["\']([^"\']+)',attrs,re.I)
+              if not body.strip() or (typ and typ.group(1).lower() not in ('text/javascript','application/javascript','module')):continue
+              (out/f'inline-{i}.js').write_text(body,encoding='utf-8');count+=1
+          if not count:raise SystemExit('No executable inline JavaScript found')
+          print(f'Extracted {count} inline JavaScript blocks for syntax verification')
+          PY
+          for js in "$RUNNER_TEMP"/v168-inline-check/*.js; do node --check "$js"; done
+
+      - name: Prepare complete V168 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            SurveyQuant_v1.0.166_CAD_ENGINE.js SurveyQuant_v1.0.166_PATCH.py \
+            SurveyQuant_v1.0.167_CAD_ENGINE.js SurveyQuant_v1.0.167_PATCH.py \
+            SurveyQuant_v1.0.168_CAD_ENGINE.js SurveyQuant_v1.0.168_PATCH.py \
+            SurveyQuant_v1.0.168_CAD_ENGINE_TEST.js SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js \
+            SurveyQuant_v1.0.168_PACKAGE_FREE_APK.py README_V168_AR.md V168_TEST_REPORT_AR.txt THIRD_PARTY_NOTICES.md; do
+            cp "$V168_KIT/$f" "$V168_SOURCE_DIR/"
+          done
+          rm -rf "$V168_SOURCE_DIR/__pycache__"
+          python3 -m py_compile "$V168_SOURCE_DIR/SurveyQuant_v1.0.168_PACKAGE_FREE_APK.py"
+
+      - name: Package V168 APK from verified V164 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V168_KIT/SurveyQuant_v1.0.168_PACKAGE_FREE_APK.py" \
+            --apk-input "$V168_BASE_APK" \
+            --apk-output "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V168_SOURCE_DIR/index.html" \
+            --wasm-loader "$V168_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_UNSIGNED.apk"
+          python3 - "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_UNSIGNED.apk" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          apk=Path(sys.argv[1])
+          with zipfile.ZipFile(apk) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              for marker in (b'sq164-cad-output-axis-fix',b'sq166-readonly-source-and-exact-pdf-raster',b'sq167-dwg-orientation-view-transform',b'sq168-pdf-access-axis-points-explicit-snap-fix',b'id="sq163-cad-engine"',b'id="sq163-pdfjs-worker"',b'id="sq162-wasm-binary"'):
+                  if marker not in html:raise SystemExit('V168 APK HTML marker missing: '+marker.decode())
+              for abi in ('lib/x86/','lib/x86_64/'):
+                  if any(n.startswith(abi) for n in names):raise SystemExit('Unexpected x86 ABI payload remains: '+abi)
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 runtime missing')
+          print('PASS V168 APK package inspection: V168 PDF raster ZIP, axis retention, explicit point selection, V167 orientation, save bridge, PDF worker and LibreDWG WASM are present.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_ALIGNED.apk"
+          FINAL="$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_ANDROID_PDF_ACCESS_AXES_SNAP.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='168'.*versionName='1.0.168'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_UNSIGNED.apk"
+
+      - name: Package source, changelog, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$V168_RELEASE_DIR/V168_CHANGELOG_AR.md" <<'TXT'
+          # SurveyQuant v1.0.168
+          - إصلاح PDF-to-DXF: إنشاء DXF R2000 مكتمل الروابط لعناصر IMAGE وIMAGEDEF وIMAGEDEF_REACTOR وRASTERVARIABLES، وحفظ PNG جانبي باسم ثابت ASCII داخل ZIP.
+          - إضافة فتح ZIP الناتج من PDF مباشرة في مشروع فتح/توجيه اللوحات، وعرض صورة الصفحة الأصلية المرفقة دون تتبع أو إعادة رسم.
+          - الاحتفاظ بخطوط XLINE/RAY الموجودة داخل البلوكات عند توسيع INSERT، مع استمرار عرض أسماء المحاور ونصوصها بعد التوجيه.
+          - منع تحويل كيانات TEXT وINSERT/البلوكات غير المفسرة إلى POINT وهمي، وإيقاف رسم كل POINT على هيئة علامة + قسرية.
+          - إضافة أربعة أزرار اختيار مستقلة لنقاط المصدر والمرجع. لا تُثبت أي نقطة إلا بعد اختيار خانتها، كما لا يؤدي التكبير بإصبعين إلى تسجيل نقطة.
+          - خفض مدى الالتقاط إلى 8 بكسل شاشة لتقليل التقاط عناصر مجاورة بالخطأ.
+          - الحفاظ على تحويل العرض فقط، مع عدم كتابة أو استبدال ملف DWG الأصلي.
+          - اختبارات Node للكيانات والمنحنيات والبلوكات والمحاور والالتقاط، وفحص DXF raster وZIP؛ واختبار محلي لملف PDF الحقيقي اجتاز ezdxf audit بصفر أخطاء وصفر إصلاحات.
+          - DXF raster لا يضمّن PNG داخل ملف DXF نفسه. عند فتحه خارج SurveyQuant يجب فك ZIP وإبقاء SQ_PDF_PAGE.dxf وSQ_PDF_PAGE.png في المجلد نفسه.
+          - لا يدّعي هذا البناء دعم كل كائنات DWG/Civil 3D المتخصصة أو اختبار APK على جهاز فعلي. يلزم إكمال تشغيل GitHub Actions والتجربة على الهاتف.
+          TXT
+          cp "$V168_KIT/README_V168_AR.md" "$V168_RELEASE_DIR/README_V168_AR.md"
+          cp "$V168_KIT/V168_TEST_REPORT_AR.txt" "$V168_RELEASE_DIR/V168_TEST_REPORT_AR.txt"
+          cp "$V168_KIT/THIRD_PARTY_NOTICES.md" "$V168_RELEASE_DIR/THIRD_PARTY_NOTICES.md"
+          (cd "$V168_SOURCE_DIR" && zip -qr "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_ANDROID_PDF_ACCESS_AXES_SNAP.apk" "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_SOURCE_PATCH.zip" > "$V168_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V168_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V168 APK and source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.168-FREE-PDF-ACCESS-AXES-POINT-SNAP-FIX
+          path: |
+            ${{ runner.temp }}/v168-release/SurveyQuant_v1.0.168_FREE_ANDROID_PDF_ACCESS_AXES_SNAP.apk
+            ${{ runner.temp }}/v168-release/SurveyQuant_v1.0.168_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v168-release/V168_CHANGELOG_AR.md
+            ${{ runner.temp }}/v168-release/README_V168_AR.md
+            ${{ runner.temp }}/v168-release/V168_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v168-release/THIRD_PARTY_NOTICES.md
+            ${{ runner.temp }}/v168-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V168 release without overwriting immutable assets
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.168 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v1.0.168 already exists; APK and source patch remain in Actions artifact."
+          else
+            gh release create v1.0.168 \
+              "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_ANDROID_PDF_ACCESS_AXES_SNAP.apk" \
+              "$V168_RELEASE_DIR/SurveyQuant_v1.0.168_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.168 - PDF Access, Axes, Phantom Points and Explicit Snap Fix" \
+              --notes-file "$V168_RELEASE_DIR/V168_CHANGELOG_AR.md"
+          fi
+          echo "Release page, if created: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.168"
