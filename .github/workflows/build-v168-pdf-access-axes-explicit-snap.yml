@@ -41,34 +41,45 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Extract V168 fix kit (standalone ZIP or nested upload bundle)
+      - name: Extract V168 fix kit (accept GitHub duplicate -1 suffix)
         shell: bash
         run: |
           set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE:-$PWD}"
           KIT="$RUNNER_TEMP/v168-kit"
           BUNDLE_DIR="$RUNNER_TEMP/v168-upload-bundle"
           rm -rf "$KIT" "$BUNDLE_DIR"
           mkdir -p "$KIT"
+          KIT_ZIP=""
 
-          if [ -s "SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip" ]; then
-            KIT_ZIP="$PWD/SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip"
-            echo "Using standalone V168 fix kit."
-          elif [ -s "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" ]; then
-            echo "Standalone V168 fix kit not found; extracting it from the upload bundle."
-            mkdir -p "$BUNDLE_DIR"
-            unzip -t "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" | tail -2
-            unzip -q "SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip" -d "$BUNDLE_DIR"
-            KIT_ZIP="$(find "$BUNDLE_DIR" -type f -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT.zip' -print -quit)"
-            if [ -z "$KIT_ZIP" ] || [ ! -s "$KIT_ZIP" ]; then
-              echo "ERROR: V168 fix kit is missing both as a standalone ZIP and inside SurveyQuant_v1.0.168_UPLOAD_BUNDLE.zip."
-              echo "Bundle contents:"
-              find "$BUNDLE_DIR" -maxdepth 3 -type f -printf '%P (%s bytes)\n' | sort
+          # GitHub may rename a duplicate upload to *-1.zip, *-2.zip, etc.
+          mapfile -d '' KIT_CANDIDATES < <(find "$ROOT" -maxdepth 2 -type f \
+            -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' -size +0c -print0 | sort -z)
+          if [ "${#KIT_CANDIDATES[@]}" -gt 0 ]; then
+            KIT_ZIP="${KIT_CANDIDATES[0]}"
+            echo "Using standalone V168 fix kit: $(basename "$KIT_ZIP")"
+          else
+            mapfile -d '' BUNDLE_CANDIDATES < <(find "$ROOT" -maxdepth 2 -type f \
+              -name 'SurveyQuant_v1.0.168_UPLOAD_BUNDLE*.zip' -size +0c -print0 | sort -z)
+            if [ "${#BUNDLE_CANDIDATES[@]}" -eq 0 ]; then
+              echo "ERROR: No V168 fix kit or upload bundle found (including duplicate -1/-2 filenames)."
+              find "$ROOT" -maxdepth 2 -type f -iname '*168*zip' -printf '%P (%s bytes)\n' | sort || true
               exit 1
             fi
-          else
-            echo "ERROR: No V168 fix kit or upload bundle exists in the repository root."
-            ls -lah
-            exit 1
+
+            BUNDLE_ZIP="${BUNDLE_CANDIDATES[0]}"
+            echo "Extracting V168 fix kit from: $(basename "$BUNDLE_ZIP")"
+            mkdir -p "$BUNDLE_DIR"
+            unzip -t "$BUNDLE_ZIP" | tail -2
+            unzip -q "$BUNDLE_ZIP" -d "$BUNDLE_DIR"
+            mapfile -d '' KIT_CANDIDATES < <(find "$BUNDLE_DIR" -type f \
+              -name 'SurveyQuant_v1.0.168_PDF_ACCESS_AXIS_SNAP_FIX_KIT*.zip' -size +0c -print0 | sort -z)
+            if [ "${#KIT_CANDIDATES[@]}" -eq 0 ]; then
+              echo "ERROR: Upload bundle does not contain the V168 fix kit. Contents:"
+              find "$BUNDLE_DIR" -maxdepth 4 -type f -printf '%P (%s bytes)\n' | sort
+              exit 1
+            fi
+            KIT_ZIP="${KIT_CANDIDATES[0]}"
           fi
 
           unzip -t "$KIT_ZIP" | tail -2
@@ -90,7 +101,7 @@ jobs:
             fi
           done
           echo "V168_KIT=$KIT" >> "$GITHUB_ENV"
-          echo "PASS: V168 kit extracted and all required files verified."
+          echo "PASS: V168 kit extracted; all 12 required files verified."
 
       - name: Set up Python and Node
         uses: actions/setup-python@v5
@@ -149,15 +160,27 @@ jobs:
           python3 -m pip install --quiet ezdxf
           python3 - <<'PYDXF'
           import ezdxf, zipfile
-          d=ezdxf.readfile('/tmp/sq-v167-raster-smoke.dxf')
+          from pathlib import Path
+          dxf_path=Path('/tmp/sq-v168-pdf-package-smoke.dxf')
+          zip_path=Path('/tmp/sq-v168-pdf-package-smoke.zip')
+          assert dxf_path.is_file() and dxf_path.stat().st_size > 0, 'V168 DXF fixture was not generated'
+          assert zip_path.is_file() and zip_path.stat().st_size > 0, 'V168 PDF ZIP fixture was not generated'
+          d=ezdxf.readfile(dxf_path)
           audit=d.audit()
-          assert not audit.errors and not audit.fixes
-          assert len(d.modelspace().query('IMAGE'))==1
-          assert len(d.objects.query('IMAGEDEF'))==1
-          with zipfile.ZipFile('/tmp/sq-v167-raster-smoke.zip') as z:
+          assert not audit.errors and not audit.fixes, (len(audit.errors),len(audit.fixes))
+          images=d.modelspace().query('IMAGE')
+          defs=d.objects.query('IMAGEDEF')
+          assert len(images)==1, f'Expected one IMAGE, found {len(images)}'
+          assert len(defs)==1, f'Expected one IMAGEDEF, found {len(defs)}'
+          image_path=str(defs[0].dxf.filename).replace('\\','/')
+          assert image_path.endswith('SQ_PDF_PAGE.png'), image_path
+          with zipfile.ZipFile(zip_path) as z:
               assert z.testzip() is None
-              assert set(z.namelist())=={'SQ_PDF_PAGE.dxf','SQ_PDF_PAGE.png'}
-          print('PASS V168 DXF IMAGE/IMAGEDEF audit and portable PDF PNG ZIP')
+              assert set(z.namelist())=={'SQ_PDF_PAGE.dxf','SQ_PDF_PAGE.png'}, z.namelist()
+              assert z.read('SQ_PDF_PAGE.dxf')==dxf_path.read_bytes(), 'ZIP DXF differs from tested DXF'
+              png=z.read('SQ_PDF_PAGE.png')
+              assert png.startswith(b'\x89PNG\r\n\x1a\n') and len(png)>32, 'PNG sidecar is invalid'
+          print('PASS V168 DXF IMAGE/IMAGEDEF audit, correct relative PNG link, and exact PDF ZIP filenames')
           PYDXF
           node "$V168_KIT/SurveyQuant_v1.0.168_APP_REGRESSION_TEST.js" \
             "$V168_SOURCE_DIR/index.html" \
