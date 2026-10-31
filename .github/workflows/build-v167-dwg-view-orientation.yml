@@ -1,0 +1,271 @@
+name: Build SurveyQuant v1.0.167 DWG View-only Orientation and Arc Budget Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V164 APK and source artifact run ID"
+        required: true
+        type: string
+        default: "41046602097"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v167-dwg-view-orientation.yml"
+      - "SurveyQuant_v1.0.167_DWG_VIEW_ORIENTATION_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v167-dwg-view-orientation
+  cancel-in-progress: false
+
+jobs:
+  build_v167:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41046602097' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract V167 fix kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s SurveyQuant_v1.0.167_DWG_VIEW_ORIENTATION_KIT.zip
+          KIT="$RUNNER_TEMP/v167-kit"
+          rm -rf "$KIT"
+          mkdir -p "$KIT"
+          unzip -t SurveyQuant_v1.0.167_DWG_VIEW_ORIENTATION_KIT.zip | tail -2
+          unzip -q SurveyQuant_v1.0.167_DWG_VIEW_ORIENTATION_KIT.zip -d "$KIT"
+          echo "V167_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download successful V164 APK and complete source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v164-base"
+          SOURCE_DIR="$RUNNER_TEMP/v167-source"
+          RELEASE_DIR="$RUNNER_TEMP/v167-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.164-FREE-OUTPUT-SAVE-AXIS-LABELS-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.164_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V164 signed APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V164 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V167_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V167_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V167_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Inject V167 CAD engine without changing the V164 save bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V167_KIT/SurveyQuant_v1.0.166_PATCH.py" \
+            --html "$V167_SOURCE_DIR/index.html" \
+            --engine "$V167_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js"
+          python3 "$V167_KIT/SurveyQuant_v1.0.167_PATCH.py" \
+            --html "$V167_SOURCE_DIR/index.html" \
+            --engine "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          python3 "$V167_KIT/SurveyQuant_v1.0.167_PATCH.py" \
+            --html "$V167_SOURCE_DIR/index.html" \
+            --engine "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js" --check-only
+
+      - name: Run V167 DWG-view orientation, CAD, WASM and PDF regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE_TEST.js"
+          python3 - <<'PYRASTER'
+          import zipfile
+          p='/tmp/sq-v167-raster-smoke.zip'
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              assert set(z.namelist()) == {'page.dxf','page-original.png'}
+              dxf=z.read('page.dxf').decode('latin1')
+              assert 'IMAGEDEF' in dxf and 'IMAGE' in dxf and 'page-original.png' in dxf
+          print('PASS V167 raster ZIP: DXF IMAGE/IMAGEDEF and exact PNG sidecar verified.')
+          PYRASTER
+          node "$V167_KIT/SurveyQuant_v1.0.167_APP_REGRESSION_TEST.js" \
+            "$V167_SOURCE_DIR/index.html" \
+            "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          node "$V167_SOURCE_DIR/SurveyQuant_v1.0.164_DOWNLOAD_TEST.js" "$V167_SOURCE_DIR/index.html"
+          node "$V167_SOURCE_DIR/SurveyQuant_v1.0.163_DWG_OVERLAY_PIPELINE_TEST.js" "$V167_SOURCE_DIR/index.html"
+          node "$V167_SOURCE_DIR/SurveyQuant_v1.0.163_PDF_WORKER_BOOTSTRAP_TEST.js" "$V167_SOURCE_DIR/index.html"
+          node "$V167_SOURCE_DIR/SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js" \
+            "$V167_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js" \
+            "$V167_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          python3 -m py_compile "$V167_KIT/SurveyQuant_v1.0.166_PATCH.py" "$V167_KIT/SurveyQuant_v1.0.167_PATCH.py" "$V167_KIT/SurveyQuant_v1.0.167_PACKAGE_FREE_APK.py"
+          node --check "$V167_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js"
+          node --check "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js"
+          node --check "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE_TEST.js"
+          node --check "$V167_KIT/SurveyQuant_v1.0.167_APP_REGRESSION_TEST.js"
+          node --check "$V167_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          python3 - "$V167_SOURCE_DIR/index.html" "$RUNNER_TEMP/v167-inline-check" <<'PY'
+          from pathlib import Path
+          import re,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          out=Path(sys.argv[2]);out.mkdir(parents=True,exist_ok=True)
+          count=0
+          for i,m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              typ=re.search(r'\btype\s*=\s*["\']([^"\']+)',attrs,re.I)
+              if not body.strip() or (typ and typ.group(1).lower() not in ('text/javascript','application/javascript','module')):continue
+              (out/f'inline-{i}.js').write_text(body,encoding='utf-8');count+=1
+          if not count:raise SystemExit('No executable inline JavaScript found')
+          print(f'Extracted {count} inline JavaScript blocks for syntax verification')
+          PY
+          for js in "$RUNNER_TEMP"/v167-inline-check/*.js; do node --check "$js"; done
+
+      - name: Prepare complete V167 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$V167_KIT/SurveyQuant_v1.0.166_CAD_ENGINE.js" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.166_PATCH.py" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE.js" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.167_CAD_ENGINE_TEST.js" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.167_APP_REGRESSION_TEST.js" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.167_PATCH.py" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/SurveyQuant_v1.0.167_PACKAGE_FREE_APK.py" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/README_V167_DWG_VIEW_ORIENTATION_AR.md" "$V167_SOURCE_DIR/"
+          cp "$V167_KIT/THIRD_PARTY_NOTICES.md" "$V167_SOURCE_DIR/"
+          rm -rf "$V167_SOURCE_DIR/__pycache__"
+          python3 -m py_compile "$V167_SOURCE_DIR/SurveyQuant_v1.0.167_PACKAGE_FREE_APK.py"
+
+      - name: Package V167 APK from verified V164 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V167_KIT/SurveyQuant_v1.0.167_PACKAGE_FREE_APK.py" \
+            --apk-input "$V167_BASE_APK" \
+            --apk-output "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V167_SOURCE_DIR/index.html" \
+            --wasm-loader "$V167_SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_UNSIGNED.apk"
+          python3 - "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_UNSIGNED.apk" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          apk=Path(sys.argv[1])
+          with zipfile.ZipFile(apk) as z:
+              names=z.namelist();html=z.read('assets/index.html')
+              for marker in (b'sq164-cad-output-axis-fix',b'sq166-readonly-source-and-exact-pdf-raster',b'sq167-dwg-orientation-view-transform',b'id="sq163-cad-engine"',b'id="sq163-pdfjs-worker"',b'id="sq162-wasm-binary"'):
+                  if marker not in html:raise SystemExit('V167 APK HTML marker missing: '+marker.decode())
+              for abi in ('lib/x86/','lib/x86_64/'):
+                  if any(n.startswith(abi) for n in names):raise SystemExit('Unexpected x86 ABI payload remains: '+abi)
+              if not any(n.startswith('lib/arm64-v8a/') for n in names):raise SystemExit('ARM64 runtime missing')
+          print('PASS V167 APK package inspection: V167 view-only DWG orientation, named save, PDF worker and LibreDWG WASM are present.')
+          PY
+
+      - name: Sign, align, and verify final Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_ALIGNED.apk"
+          FINAL="$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_ANDROID_DWG_VIEW_ORIENTATION.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='167'.*versionName='1.0.167'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_UNSIGNED.apk"
+
+      - name: Package source, changelog, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$V167_RELEASE_DIR/V167_CHANGELOG_AR.md" <<'TXT'
+          # SurveyQuant v1.0.167
+          - إصلاح احتياطي لقراءة DWG: تمرير نسخة WASM إلى عامل القراءة دون Transferable ثم تجربة قارئ WASM داخل الصفحة عند تعطل العامل.
+          - إصلاح استهلاك حدّ المقاطع: عينات الأقواس لا تستهلك حدّ خطوط LINE، وتُرسم نقاط POINT مع بقية اللوحة.
+          - إعادة تفعيل اختيار أربع نقاط متناظرة وتطبيق انتقال/دوران/مقياس على هندسة العرض فقط. لا تُكتب تغييرات في ملف DWG الأصلي ولا يتم إنشاء ملف CAD بديل.
+          - منع إظهار عناصر POINT المنفصلة كأنها لوحة كاملة إذا لم يرجع القارئ خطوطًا أو منحنيات أو نصوصًا قابلة للعرض.
+          - استبدال تتبع ImageTracer في PDF/الصورة بملف PNG مطابق لبكسلات معاينة الصفحة، مع ربطه بكيان IMAGE/IMAGEDEF داخل DXF وتسليم الملفين في ZIP.
+          - إضافة تهيئة احتياطية لعامل PDF.js عند غياب workerSrc، وتحديد الصفحة إلى 6 ملايين بكسل لتقليل ضغط ذاكرة WebView.
+          - الاحتفاظ بمسار حفظ V164: نافذة تسمية الملف، Android.saveFile وإشعار Android.
+          - اختبارات آلية لمسار تحويل DWG، التوجيه في المعاينة فقط، بقاء مصدر DWG، PDF raster وواجهة حفظ الملفات.
+          - اختبار محلي على ملف DWG فعلي: 11,454 مقطعًا و2,757 منحنى و1,738 نصًا و2,164 نقطة. اختبار التوجيه الرياضي للنقطتين نجح بخطأ صفري، وبصمة الملف الأصلي لم تتغير.
+          - هذه ليست نسخة 1:1 لكل عناصر DWG. HATCH/DIMENSION وبعض خصائص الكتل والكائنات المتخصصة لا تظهر كلها في العارض الحالي؛ يلزم محرك DWG متخصص للتطابق الكامل.
+          - DXF الناتج من PDF يحتوي صورة Raster غير قابلة لتحرير النصوص والخطوط ككيانات CAD؛ وهو مطابق بصريًا لمعاينة الصفحة بعد تحديد دقتها الآمنة.
+          TXT
+          cp "$V167_KIT/README_V167_DWG_VIEW_ORIENTATION_AR.md" "$V167_RELEASE_DIR/README_V167_DWG_VIEW_ORIENTATION_AR.md"
+          cp "$V167_KIT/V167_TEST_REPORT_AR.txt" "$V167_RELEASE_DIR/V167_TEST_REPORT_AR.txt"
+          cp "$V167_KIT/THIRD_PARTY_NOTICES.md" "$V167_RELEASE_DIR/THIRD_PARTY_NOTICES.md"
+          (cd "$V167_SOURCE_DIR" && zip -qr "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_ANDROID_DWG_VIEW_ORIENTATION.apk" "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_SOURCE_PATCH.zip" > "$V167_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V167_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload verified V167 APK and source patch
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.167-FREE-DWG-VIEW-ORIENTATION-FIX
+          path: |
+            ${{ runner.temp }}/v167-release/SurveyQuant_v1.0.167_FREE_ANDROID_DWG_VIEW_ORIENTATION.apk
+            ${{ runner.temp }}/v167-release/SurveyQuant_v1.0.167_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v167-release/V167_CHANGELOG_AR.md
+            ${{ runner.temp }}/v167-release/README_V167_DWG_VIEW_ORIENTATION_AR.md
+            ${{ runner.temp }}/v167-release/V167_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v167-release/THIRD_PARTY_NOTICES.md
+            ${{ runner.temp }}/v167-release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V167 release without overwriting immutable assets
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.167 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v1.0.167 already exists; APK and source patch remain in Actions artifact."
+          else
+            gh release create v1.0.167 \
+              "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_ANDROID_DWG_VIEW_ORIENTATION.apk" \
+              "$V167_RELEASE_DIR/SurveyQuant_v1.0.167_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.167 - DWG View-only Orientation and Arc Budget Fix" \
+              --notes-file "$V167_RELEASE_DIR/V167_CHANGELOG_AR.md"
+          fi
+          echo "Release page, if created: https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.0.167"
