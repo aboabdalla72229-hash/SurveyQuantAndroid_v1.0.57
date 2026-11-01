@@ -171,10 +171,12 @@ jobs:
               msp.add_text(name.upper(),height=2,dxfattribs={'layer':layer}).set_placement((offset,offset+5))
               doc.saveas(f'{root}/v177_{name}_blocks.dxf')
           PY
+          # V176 patch lives in the extracted fix-kit directory, not in the source tree.
+          # V177 patch and APK packager are copied into the source tree in the previous step.
           python3 -m py_compile \
-            SurveyQuant_v1.0.176_PATCH.py \
-            SurveyQuant_v1.0.177_PATCH.py \
-            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py
+            "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            "$V177_SOURCE_DIR/SurveyQuant_v1.0.177_PATCH.py" \
+            "$V177_SOURCE_DIR/SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py"
           node --check SurveyQuant_v1.0.177_CAD_ENGINE.js
           node --check SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js
           node --check SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js
