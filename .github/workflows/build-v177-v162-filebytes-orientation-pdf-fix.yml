@@ -1,0 +1,374 @@
+name: Build SurveyQuant v1.0.177 V162 File Bytes, Orientation and PDF DXF Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V162 base APK/source artifact run ID"
+        required: true
+        type: string
+        default: "40919113310"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v177-v162-filebytes-orientation-pdf-fix.yml"
+      - "SurveyQuant_v1.0.177_FIX_KIT.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v177-v162-filebytes-orientation-pdf-fix
+  cancel-in-progress: false
+
+jobs:
+  build_v177:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40919113310' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Extract and validate V177 fix kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT_ZIP="$GITHUB_WORKSPACE/SurveyQuant_v1.0.177_FIX_KIT.zip"
+          test -s "$KIT_ZIP" || { echo "ERROR: Upload SurveyQuant_v1.0.177_FIX_KIT.zip to the repository root"; exit 1; }
+          KIT="$RUNNER_TEMP/sq177-kit"
+          rm -rf "$KIT" && mkdir -p "$KIT"
+          unzip -q "$KIT_ZIP" -d "$KIT"
+          for f in \
+            SurveyQuant_v1.0.176_PATCH.py \
+            SurveyQuant_v1.0.176_CAD_ENGINE.js \
+            SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE.js \
+            SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            SurveyQuant_v1.0.177_POINT_PARSER_TEST.js \
+            SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            SurveyQuant_v1.0.177_APP_PROJECT_TEST.js \
+            SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js \
+            SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js \
+            SurveyQuant_v1.0.177_IMAGETRACER.js \
+            SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js \
+            pdfjs-v3.11.174.min.js \
+            pdfjs-worker-v3.11.174.min.js \
+            V177_VECTOR_TEST.pdf; do
+            test -s "$KIT/$f" || { echo "ERROR: Missing kit file $f"; exit 1; }
+          done
+          echo "SQ177_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download the exact V162 base APK and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v162-base"
+          SOURCE_DIR="$RUNNER_TEMP/v177-source"
+          RELEASE_DIR="$RUNNER_TEMP/v177-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.162-FREE-DWG-WASM-PROJECTION-FIX" --dir "$BASE_DIR"
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V162 APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V162 source patch missing from run $SOURCE_RUN_ID"; exit 1; }
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+          echo "V177_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V177_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V177_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply V176 base CAD/PDF repair stage on clean V162 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            --html "$V177_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.176_CAD_ENGINE.js" \
+            --pdfjs "$SQ177_KIT/pdfjs-v3.11.174.min.js" \
+            --pdf-worker "$SQ177_KIT/pdfjs-worker-v3.11.174.min.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt"
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            --html "$V177_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.176_CAD_ENGINE.js" \
+            --pdfjs "$SQ177_KIT/pdfjs-v3.11.174.min.js" \
+            --pdf-worker "$SQ177_KIT/pdfjs-worker-v3.11.174.min.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt" --check-only
+
+      - name: Apply V177 exact-file-bytes, canvas identity and R12 PDF correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.177_PATCH.py" \
+            --html "$V177_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.177_CAD_ENGINE.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt"
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.177_PATCH.py" \
+            --html "$V177_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.177_CAD_ENGINE.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt" --check-only
+          for f in \
+            SurveyQuant_v1.0.177_CAD_ENGINE.js \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            SurveyQuant_v1.0.177_POINT_PARSER_TEST.js \
+            SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            SurveyQuant_v1.0.177_APP_PROJECT_TEST.js \
+            SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js \
+            SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js \
+            SurveyQuant_v1.0.177_IMAGETRACER.js \
+            pdfjs-v3.11.174.min.js \
+            pdfjs-worker-v3.11.174.min.js \
+            V177_VECTOR_TEST.pdf; do
+            cp "$SQ177_KIT/$f" "$V177_SOURCE_DIR/"
+          done
+
+      - name: Run point, Android bytes, orientation, board merge, PDF and WASM tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V177_SOURCE_DIR"
+          python3 -m pip install --disable-pip-version-check ezdxf==1.4.4
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import ezdxf,sys
+          root=sys.argv[1]
+          for name,block,layer,offset in [('target','TARGET_SYMBOL','TARGET_LAYER',0),('source','SOURCE_SYMBOL','SOURCE_LAYER',100)]:
+              doc=ezdxf.new('R12');msp=doc.modelspace();doc.layers.new(layer)
+              blk=doc.blocks.new(block,base_point=(0,0))
+              blk.add_line((0,0),(5,5),dxfattribs={'layer':layer})
+              blk.add_text(block,height=1,dxfattribs={'layer':layer}).set_placement((0,2))
+              msp.add_blockref(block,(offset,offset),dxfattribs={'layer':layer})
+              msp.add_polyline2d([(offset,offset),(offset+10,offset)],dxfattribs={'layer':layer})
+              msp.add_text(name.upper(),height=2,dxfattribs={'layer':layer}).set_placement((offset,offset+5))
+              doc.saveas(f'{root}/v177_{name}_blocks.dxf')
+          PY
+          python3 -m py_compile \
+            SurveyQuant_v1.0.176_PATCH.py \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py
+          node --check SurveyQuant_v1.0.177_CAD_ENGINE.js
+          node --check SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js
+          node --check SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js
+          node --check libredwg-writer/wasm/libredwg-web.js
+          node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html
+          node SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js index.html
+          node SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js \
+            "$RUNNER_TEMP/v177_target_blocks.dxf" "$RUNNER_TEMP/v177_source_blocks.dxf" \
+            "$V177_RELEASE_DIR/V177_MERGED_BLOCKS_TEST.dxf"
+          node SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            "$V177_RELEASE_DIR/V177_MERGED_BOARDS_TEST.dxf" \
+            "$V177_RELEASE_DIR/V177_ORIENTED_BOARD_TEST.dxf"
+          node SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            "$V177_RELEASE_DIR/V177_ORIENTATION_BOARD_FILE_TEST.dxf"
+          node SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            "$V177_SOURCE_DIR/pdfjs-v3.11.174.min.js" \
+            "$V177_SOURCE_DIR/pdfjs-worker-v3.11.174.min.js" \
+            "$V177_SOURCE_DIR/V177_VECTOR_TEST.pdf" \
+            "$V177_RELEASE_DIR/V177_PDF_VECTOR_TEST_OUT.dxf"
+          node SurveyQuant_v1.0.177_APP_PROJECT_TEST.js index.html
+          node SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js \
+            libredwg-writer/wasm/libredwg-web.js \
+            libredwg-writer/wasm/libredwg-web.wasm
+          python3 - "$V177_RELEASE_DIR" <<'PY'
+          import ezdxf,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          specs={
+            'V177_MERGED_BOARDS_TEST.dxf':('two-board merge',2,0),
+            'V177_MERGED_BLOCKS_TEST.dxf':('block and insert preservation',2,2),
+            'V177_ORIENTED_BOARD_TEST.dxf':('orientation transform',1,0),
+            'V177_ORIENTATION_BOARD_FILE_TEST.dxf':('different source/target board files',1,0),
+            'V177_PDF_VECTOR_TEST_OUT.dxf':('PDF vector conversion',5,1),
+          }
+          for filename,(kind,min_poly,min_text) in specs.items():
+              path=root/filename
+              if not path.is_file() or path.stat().st_size<100: raise SystemExit(f'Missing or empty {filename}')
+              doc=ezdxf.readfile(path); msp=doc.modelspace()
+              polys=len(msp.query('POLYLINE')); texts=len(msp.query('TEXT'))
+              images=len(msp.query('IMAGE'))+len(msp.query('IMAGEDEF'))
+              if doc.dxfversion!='AC1009' or polys<min_poly or texts<min_text or images:
+                  raise SystemExit(f'{filename}: invalid DXF output: version={doc.dxfversion}, POLYLINE={polys}, TEXT={texts}, IMAGE/IMAGEDEF={images}')
+              if filename=='V177_MERGED_BLOCKS_TEST.dxf':
+                  names={b.name.upper() for b in doc.blocks}
+                  if 'SOURCE_SYMBOL' not in names or 'SOURCE_LAYER' not in doc.layers or len(msp.query('INSERT'))<2:
+                      raise SystemExit('Merged board block, INSERT, or layer record missing')
+              audit=doc.audit()
+              if audit.errors or audit.fixes: raise SystemExit(f'{filename}: DXF audit failed: errors={len(audit.errors)}, fixes={len(audit.fixes)}')
+              roundtrip=root/(path.stem+'_ROUNDTRIP.dxf')
+              doc.saveas(roundtrip)
+              reopened=ezdxf.readfile(roundtrip); again=reopened.audit()
+              if again.errors or again.fixes: raise SystemExit(f'{filename}: save/reopen DXF audit failed')
+              print(f'PASS DWG-compatible R12 DXF {kind}: entities={len(msp)}, POLYLINE={polys}, TEXT={texts}, audit=0, roundtrip=0')
+          PY
+          python3 - "$V177_SOURCE_DIR/index.html" "$RUNNER_TEMP/sq177-inline-scripts" <<'PY'
+          from pathlib import Path
+          import re,subprocess,sys
+          html=Path(sys.argv[1]).read_text(encoding='utf-8')
+          out=Path(sys.argv[2]);out.mkdir(parents=True,exist_ok=True);count=0
+          for i,m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>',html,re.I)):
+              attrs,body=m.group(1),m.group(2)
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/octet-stream|importmap)["\']',attrs,re.I): continue
+              f=out/f'inline-{i:04}.js';f.write_text(body,encoding='utf-8')
+              result=subprocess.run(['node','--check',str(f)],capture_output=True,text=True)
+              if result.returncode: raise SystemExit(f'Inline JavaScript #{i} failed: {result.stderr}')
+              count+=1
+          if count<6: raise SystemExit(f'Expected at least 6 inline JS blocks; found {count}')
+          print(f'PASS inline JavaScript syntax: {count} blocks')
+          PY
+          rm -f "$V177_SOURCE_DIR/pdf.worker.js"
+
+      - name: Package unsigned V177 APK from exact V162 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V177_SOURCE_DIR/SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py" \
+            --apk-input "$V177_BASE_APK" \
+            --apk-output "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V177_SOURCE_DIR/index.html"
+          test -s "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_UNSIGNED.apk"
+          unzip -t "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_UNSIGNED.apk" | tail -2
+
+      - name: Sign and verify V177 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_ALIGNED.apk"
+          FINAL="$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_ANDROID_RAW_CAD_VECTOR_PDF_FIX.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='177'.*versionName='1.0.177'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_UNSIGNED.apk"
+
+      - name: Write V177 report, full source patch, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$V177_SOURCE_DIR/README_V177_AR.md" <<'TXT'
+          # SurveyQuant v1.0.177 | تصحيح قراءة الملفات والتوجيه وPDF
+          - الأساس هو APK ومصدر V162 الأصلي من Actions run 40919113310، وليس V174/V175/V176.
+          - قارئ Android لا يثق في File.size؛ يقرأ بايتات الملف مرة واحدة، ويمرر نفس اللقطة إلى محلل DXF أو عامل DWG. تم اختبار حالة size=0 مع bytes صالحة وعدم إعادة القراءة.
+          - اختيار نقاط التوجيه مرتبط بمعرّف اللوحة التي كانت ظاهرة في Canvas (source/target وfingerprint واسم الملف). تُرفض خريطة عرض قديمة أو نقطة مأخوذة من اللوحة الخطأ.
+          - اختبار ملفين مختلفين: نقاط المصدر (383995.47801163,-138432.85511527) و(489342.02127187,-112468.0996298)، والمرجع (583995.47801163,-238432.85511527) و(558030.72252616,-133086.31185503). الناتج دوران يقارب 90 درجة، مقياس 1، وإزاحة غير صفرية، مع تطابق نقاط الناتج مع المرجع ضمن 1e-5.
+          - مشروع إسقاط لوحتين DXF يدمج سجلات CAD الخام من الملفين بعد لقطة بايت واحدة لكل منهما، ويحافظ على تعريفات البلوكات وINSERT والطبقات؛ DWG يتحول عبر LibreDWG إلى DXF أولًا.
+          - PDF المتجهي ينتج DXF AC1009 (AutoCAD R12) مع POLYLINE/VERTEX وTEXT، ولا يخرج IMAGE أو IMAGEDEF أو JPG جانبي. حفظ الملف لا يعرض نجاحًا عند فشل/إلغاء Android Save.
+          - الاختبارات البلوكات والـINSERT والطبقات المستقلة، وPDF.js 3.11.174 على PDF متجهي تجريبي، ومدقق ezdxf مستقل، وفحص save/reopen، واختبارات النقاط والدمج والتوجيه وملف Android size=0.
+          - لم تتوفر ملفات DWG/PDF الأصلية التي فشلت على هاتف المستخدم؛ لا تدّعي هذه النتائج اختبارها. يلزم تشغيل APK على الهاتف مع نفس الملفات قبل اعتماد الإصدار ميدانيًا.
+          TXT
+          cat > "$V177_RELEASE_DIR/V177_TEST_REPORT_AR.txt" <<'TXT'
+          SurveyQuant V177 automated test report
+          Base: original V162 APK/source artifact, GitHub Actions run 40919113310
+
+          PASS - V177 patch idempotent check-only.
+          PASS - Point parser 5 cases: ID excluded from coordinates; ID,Easting,Northing,Elevation; X=Easting and Y=Northing.
+          PASS - Android DocumentProvider bytes simulation: file.size=0 accepted when bytes exist; supplied bytes used without a second read; fallback read exactly once; typed-array byteOffset preserved.
+          PASS - DWG worker receives the same selected sourceBytes snapshot.
+          PASS - Canvas pick provenance: source/target side and board fingerprints recorded; stale canvas map rejected; all four picks verified against the current displayed board.
+          PASS - Synthetic two-board CAD merge: 2 polylines and preserved layers.
+          PASS - Block preservation: source block definition, INSERT reference, TEXT, and layer imported into merged DXF; independent parser audit and save/reopen with 0 errors / 0 fixes.
+          PASS - Orientation with two different source/reference DXF files: 90-degree rotation, scale 1, non-zero translation; transformed output points match reference points within 1e-5.
+          PASS - Orientation 90-degree / scale 2 engine case; identity/no-op transform rejected.
+          PASS - Native PDF vector extraction with PDF.js 3.11.174: 5 paths, 74 vertices, 1 text object. DXF output 5653 bytes, 5 POLYLINE and 1 TEXT, zero IMAGE/IMAGEDEF.
+          PASS - DXF format AC1009 (AutoCAD R12), ezdxf audit errors=0 / fixes=0 and save/reopen audit errors=0 / fixes=0 for merge, orientation and PDF output.
+          PASS - Project menu: projects 1-8 retained, orientation is separate project 9, PDF-to-DXF is separate project 10.
+          PASS - LibreDWG WASM smoke test, JavaScript syntax, Python syntax, APK ZIP integrity.
+          PASS - APK manifest package versionName=1.0.177 / versionCode=177, signature verified by GitHub Actions.
+
+          LIMITATIONS:
+          - No actual Android handset test was possible in the automated runner.
+          - The user's exact failing DWG/PDF were not attached; generated fixtures verify formats and flows, not every possible source-file feature.
+          - Scanned PDF pages can only be vector-traced approximately; scale and survey coordinates need a known reference.
+          - DWG-specific custom entities depend on LibreDWG conversion support.
+          TXT
+          rm -rf "$V177_SOURCE_DIR/__pycache__"
+          (cd "$V177_SOURCE_DIR" && zip -qr "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_SOURCE_PATCH.zip" | tail -2
+          cp "$V177_SOURCE_DIR/README_V177_AR.md" "$V177_RELEASE_DIR/README_V177_AR.md"
+          sha256sum \
+            "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_ANDROID_RAW_CAD_VECTOR_PDF_FIX.apk" \
+            "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_SOURCE_PATCH.zip" \
+            "$V177_RELEASE_DIR/V177_MERGED_BOARDS_TEST.dxf" \
+            "$V177_RELEASE_DIR/V177_MERGED_BLOCKS_TEST.dxf" \
+            "$V177_RELEASE_DIR/V177_ORIENTED_BOARD_TEST.dxf" \
+            "$V177_RELEASE_DIR/V177_ORIENTATION_BOARD_FILE_TEST.dxf" \
+            "$V177_RELEASE_DIR/V177_PDF_VECTOR_TEST_OUT.dxf" > "$V177_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V177_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed V177 APK, source, DXF samples and test report
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.177-FREE-FILEBYTES-ORIENTATION-PDF-FIX
+          path: |
+            ${{ runner.temp }}/v177-release/SurveyQuant_v1.0.177_FREE_ANDROID_RAW_CAD_VECTOR_PDF_FIX.apk
+            ${{ runner.temp }}/v177-release/SurveyQuant_v1.0.177_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v177-release/README_V177_AR.md
+            ${{ runner.temp }}/v177-release/V177_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v177-release/SHA256SUMS.txt
+            ${{ runner.temp }}/v177-release/V177_MERGED_BOARDS_TEST.dxf
+            ${{ runner.temp }}/v177-release/V177_MERGED_BLOCKS_TEST.dxf
+            ${{ runner.temp }}/v177-release/V177_ORIENTED_BOARD_TEST.dxf
+            ${{ runner.temp }}/v177-release/V177_ORIENTATION_BOARD_FILE_TEST.dxf
+            ${{ runner.temp }}/v177-release/V177_PDF_VECTOR_TEST_OUT.dxf
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish V177 release without replacing immutable assets
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.177 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v1.0.177 already exists; this run's APK and source remain in the Actions artifact."
+          else
+            gh release create v1.0.177 \
+              "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_ANDROID_RAW_CAD_VECTOR_PDF_FIX.apk" \
+              "$V177_RELEASE_DIR/SurveyQuant_v1.0.177_FREE_SOURCE_PATCH.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "SurveyQuant v1.0.177 - File Bytes, Orientation and Vector PDF Fix" \
+              --notes-file "$V177_SOURCE_DIR/README_V177_AR.md"
+          fi
