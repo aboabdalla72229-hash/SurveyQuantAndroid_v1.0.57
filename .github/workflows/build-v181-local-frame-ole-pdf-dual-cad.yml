@@ -1,0 +1,172 @@
+name: Build SurveyQuant v1.0.181 Local Frame + OLE PDF + Dual CAD
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V180 signed APK artifact run ID"
+        required: true
+        type: string
+        default: "41400628957"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v181-local-frame-ole-pdf-dual-cad.yml"
+      - "SurveyQuant_v1.0.181_FIX_KIT.zip"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: surveyquant-v181-local-frame-ole-pdf-dual-cad
+  cancel-in-progress: false
+
+jobs:
+  build_v181:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41400628957' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Extract V181 test and source kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s SurveyQuant_v1.0.181_FIX_KIT.zip || { echo "ERROR: V181_FIX_KIT is missing from repository root"; exit 1; }
+          KIT="$RUNNER_TEMP/v181-kit"
+          rm -rf "$KIT" && mkdir -p "$KIT"
+          unzip -q SurveyQuant_v1.0.181_FIX_KIT.zip -d "$KIT"
+          for f in index.html SurveyQuant_v1.0.181_CAD_ENGINE.js SurveyQuant_v1.0.181_PACKAGE_FREE_APK.py test_v181_engine_regression.js test_orientation_ui.py test_pdf_modes_ui.py test_v181_dual_cad_ui.py test_v181_dual_dwg_mock_ui.py README_V181_AR.md V181_TEST_REPORT_AR.txt; do
+            test -s "$KIT/$f" || { echo "ERROR: missing $f in V181 kit"; exit 1; }
+          done
+          echo "V181_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Download exact successful V180 signed base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/v180-base"
+          OUT="$RUNNER_TEMP/v181-release"
+          SRC="$RUNNER_TEMP/v181-source"
+          rm -rf "$BASE" "$OUT" "$SRC"
+          mkdir -p "$BASE" "$OUT" "$SRC"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.180-FREE-SESSION-HYBRID-PDF-FIX" --dir "$BASE"
+          APK="$(find "$BASE" -type f -name 'SurveyQuant_v1.0.180_FREE_ANDROID_SESSION_HYBRID_PDF_FIX.apk' -print -quit)"
+          test -s "$APK" || { echo "ERROR: signed V180 base APK was not found in run $SOURCE_RUN_ID"; exit 1; }
+          echo "V181_BASE_APK=$APK" >> "$GITHUB_ENV"
+          echo "V181_RELEASE_DIR=$OUT" >> "$GITHUB_ENV"
+          echo "V181_SOURCE_DIR=$SRC" >> "$GITHUB_ENV"
+
+      - name: Install CAD and browser test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check ezdxf==1.4.4 playwright reportlab==4.4.9 pillow
+          python3 -m playwright install --with-deps chromium
+
+      - name: Run V181 orientation, CAD overlay, PDF and UI regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V181_KIT"
+          node test_v181_engine_regression.js | tee "$V181_RELEASE_DIR/V181_ENGINE_TEST_LOG.txt"
+          node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html
+          node SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js index.html
+          python3 test_orientation_ui.py | tee "$V181_RELEASE_DIR/V181_ORIENTATION_TEST_LOG.txt"
+          python3 test_pdf_modes_ui.py | tee "$V181_RELEASE_DIR/V181_PDF_TEST_LOG.txt"
+          python3 test_v181_dual_cad_ui.py | tee "$V181_RELEASE_DIR/V181_DUAL_DXF_TEST_LOG.txt"
+          python3 test_v181_dual_dwg_mock_ui.py | tee "$V181_RELEASE_DIR/V181_DUAL_DWG_MOCK_TEST_LOG.txt"
+          for f in V180_ORIENTATION_UI_OUTPUT.dxf V180_MIXED_UI_OUTPUT.dxf V180_RASTER_UI_OUTPUT.dxf V180_VECTOR_UI_OUTPUT.dxf V181_TWO_DXF_MERGE_UI_TEST.dxf V181_TWO_DWG_MOCK_MERGE_UI_TEST.dxf; do
+            test -s "$f" && cp "$f" "$V181_RELEASE_DIR/"
+          done
+
+      - name: Package V181 APK from signed V180 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V181_KIT/SurveyQuant_v1.0.181_PACKAGE_FREE_APK.py" \
+            --apk-input "$V181_BASE_APK" \
+            --apk-output "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V181_KIT/index.html"
+          test -s "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_UNSIGNED.apk"
+          unzip -t "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_UNSIGNED.apk" | tail -2
+
+      - name: Sign and verify V181 APK with existing release key
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_ALIGNED.apk"
+          FINAL="$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_ANDROID_LOCAL_FRAME_PDF_DUAL_CAD.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -F "versionCode='181' versionName='1.0.181'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_UNSIGNED.apk"
+
+      - name: Build V181 source patch and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a "$V181_KIT/." "$V181_SOURCE_DIR/"
+          cp "$V181_KIT/README_V181_AR.md" "$V181_RELEASE_DIR/README_V181_AR.md"
+          cp "$V181_KIT/V181_TEST_REPORT_AR.txt" "$V181_RELEASE_DIR/V181_TEST_REPORT_AR.txt"
+          mkdir -p "$V181_SOURCE_DIR/libredwg-writer"
+          cp -a "$GITHUB_WORKSPACE/libredwg-writer/." "$V181_SOURCE_DIR/libredwg-writer/" 2>/dev/null || true
+          (cd "$V181_SOURCE_DIR" && zip -qr "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_ANDROID_LOCAL_FRAME_PDF_DUAL_CAD.apk" "$V181_RELEASE_DIR/SurveyQuant_v1.0.181_FREE_SOURCE_PATCH.zip" "$V181_RELEASE_DIR"/*.dxf > "$V181_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V181_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed V181 APK, source, logs and CAD outputs
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.181-FREE-LOCAL-FRAME-OLE-PDF-DUAL-CAD
+          path: |
+            ${{ runner.temp }}/v181-release/SurveyQuant_v1.0.181_FREE_ANDROID_LOCAL_FRAME_PDF_DUAL_CAD.apk
+            ${{ runner.temp }}/v181-release/SurveyQuant_v1.0.181_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v181-release/README_V181_AR.md
+            ${{ runner.temp }}/v181-release/V181_TEST_REPORT_AR.txt
+            ${{ runner.temp }}/v181-release/V181_ENGINE_TEST_LOG.txt
+            ${{ runner.temp }}/v181-release/V181_ORIENTATION_TEST_LOG.txt
+            ${{ runner.temp }}/v181-release/V181_PDF_TEST_LOG.txt
+            ${{ runner.temp }}/v181-release/V181_DUAL_DXF_TEST_LOG.txt
+            ${{ runner.temp }}/v181-release/V181_DUAL_DWG_MOCK_TEST_LOG.txt
+            ${{ runner.temp }}/v181-release/SHA256SUMS.txt
+            ${{ runner.temp }}/v181-release/*.dxf
+          if-no-files-found: error
+          retention-days: 30
