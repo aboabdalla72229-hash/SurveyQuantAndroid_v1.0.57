@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/build-v185-fresh-session-orientation.yml"
+      - ".github/workflows/build-v185-pdf-no-redraw.yml"
       - "SurveyQuant_v1.0.185_SOURCE_PATCH.zip"
+      - ".github/workflows/SurveyQuant_v1.0.185_SOURCE_PATCH.zip"
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -61,8 +62,16 @@ jobs:
           ARCHIVE_DIR="$RUNNER_TEMP/v185-archive"
           KIT="$RUNNER_TEMP/v185-kit"
           mkdir -p "$ARCHIVE_DIR" "$KIT"
-          test -s SurveyQuant_v1.0.185_SOURCE_PATCH.zip || { echo "ERROR: SurveyQuant_v1.0.185_SOURCE_PATCH.zip is missing"; exit 1; }
-          unzip -q SurveyQuant_v1.0.185_SOURCE_PATCH.zip -d "$ARCHIVE_DIR"
+          PATCH_ZIP="$(find . -type f -name 'SurveyQuant_v1.0.185_SOURCE_PATCH.zip' -not -path './.git/*' -print -quit)"
+          if [ -z "$PATCH_ZIP" ] || [ ! -s "$PATCH_ZIP" ]; then
+            echo "ERROR: SurveyQuant_v1.0.185_SOURCE_PATCH.zip was not found in the repository."
+            echo "Upload the ZIP to the repository root (recommended) or .github/workflows/ and commit it."
+            echo "Repository files matching v185:"
+            find . -maxdepth 4 -type f -iname '*v185*' -print | sort || true
+            exit 1
+          fi
+          echo "Using source patch: $PATCH_ZIP"
+          unzip -q "$PATCH_ZIP" -d "$ARCHIVE_DIR"
           PACKAGE_SCRIPT="$(find "$ARCHIVE_DIR" -type f -name 'SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py' -print -quit)"
           test -n "$PACKAGE_SCRIPT" || { echo "ERROR: V185 APK packaging script is missing"; find "$ARCHIVE_DIR" -maxdepth 4 -type f | sort; exit 1; }
           KIT_ROOT="$(dirname "$PACKAGE_SCRIPT")"
