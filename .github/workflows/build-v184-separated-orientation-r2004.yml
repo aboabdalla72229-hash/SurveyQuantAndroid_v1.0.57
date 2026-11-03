@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/build-v184-separated-orientation-r2004.yml"
       - "SurveyQuant_v1.0.184_FIX_BUNDLE.zip"
+      - "SurveyQuant_v1.0.184_SOURCE_PATCH.zip"
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -54,24 +55,73 @@ jobs:
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check ezdxf==1.4.4
 
-      - name: Extract V184 repair bundle and V183 source kit
+      - name: Extract V184 repair bundle or uploaded source patch
         shell: bash
         run: |
           set -euo pipefail
+          ARCHIVE_DIR="$RUNNER_TEMP/v184-archive"
           PAYLOAD="$RUNNER_TEMP/v184-payload"
           KIT="$RUNNER_TEMP/v184-kit"
-          mkdir -p "$PAYLOAD" "$KIT"
-          unzip -q SurveyQuant_v1.0.184_FIX_BUNDLE.zip -d "$RUNNER_TEMP"
-          test -d "$RUNNER_TEMP/v184_payload"
-          test -s SurveyQuant_v1.0.183_FIX_KIT.zip
-          unzip -q SurveyQuant_v1.0.183_FIX_KIT.zip -d "$KIT"
-          cp "$RUNNER_TEMP/v184_payload/SurveyQuant_v1.0.184_FIX.py" "$PAYLOAD/"
-          cp "$RUNNER_TEMP/v184_payload/SurveyQuant_v1.0.184_PACKAGE_FREE_APK.py" "$KIT/"
-          for f in test_v184_engine_regression.js test_v184_orientation.py test_v184_pdf_r2004_output.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf README_V184_AR.md; do
-            test -s "$RUNNER_TEMP/v184_payload/$f"
-            cp "$RUNNER_TEMP/v184_payload/$f" "$KIT/"
+          mkdir -p "$ARCHIVE_DIR" "$PAYLOAD" "$KIT"
+
+          if [ -s SurveyQuant_v1.0.184_FIX_BUNDLE.zip ]; then
+            echo "Using V184 repair bundle"
+            unzip -q SurveyQuant_v1.0.184_FIX_BUNDLE.zip -d "$ARCHIVE_DIR"
+          elif [ -s SurveyQuant_v1.0.184_SOURCE_PATCH.zip ]; then
+            echo "Using uploaded V184 source patch"
+            unzip -q SurveyQuant_v1.0.184_SOURCE_PATCH.zip -d "$ARCHIVE_DIR"
+          else
+            echo "ERROR: V184 input archive is missing. Expected FIX_BUNDLE.zip or SOURCE_PATCH.zip."
+            exit 1
+          fi
+
+          FIX_SCRIPT="$(find "$ARCHIVE_DIR" -type f -name 'SurveyQuant_v1.0.184_FIX.py' -print -quit)"
+          PACKAGE_SCRIPT="$(find "$ARCHIVE_DIR" -type f -name 'SurveyQuant_v1.0.184_PACKAGE_FREE_APK.py' -print -quit)"
+
+          if [ -n "$FIX_SCRIPT" ]; then
+            echo "Repair script found; applying it to the known V183 source kit"
+            test -s SurveyQuant_v1.0.183_FIX_KIT.zip || {
+              echo "ERROR: SurveyQuant_v1.0.183_FIX_KIT.zip is missing"
+              exit 1
+            }
+            unzip -q SurveyQuant_v1.0.183_FIX_KIT.zip -d "$KIT"
+            PAYLOAD="$(dirname "$FIX_SCRIPT")"
+            for f in SurveyQuant_v1.0.184_PACKAGE_FREE_APK.py test_v184_engine_regression.js test_v184_orientation.py test_v184_pdf_r2004_output.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf README_V184_AR.md; do
+              src="$(find "$ARCHIVE_DIR" -type f -name "$f" -print -quit)"
+              test -n "$src" || {
+                echo "ERROR: V184 repair archive is missing $f"
+                exit 1
+              }
+              cp "$src" "$KIT/"
+            done
+            python3 "$FIX_SCRIPT" --kit "$KIT"
+
+          elif [ -n "$PACKAGE_SCRIPT" ]; then
+            echo "Prepared V184 source kit found; using it directly"
+            KIT_ROOT="$(dirname "$PACKAGE_SCRIPT")"
+            cp -a "$KIT_ROOT/." "$KIT/"
+            for f in index.html SurveyQuant_v1.0.184_PACKAGE_FREE_APK.py test_v184_engine_regression.js test_v184_orientation.py test_v184_pdf_r2004_output.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf README_V184_AR.md; do
+              if [ ! -s "$KIT/$f" ]; then
+                src="$(find "$ARCHIVE_DIR" -type f -name "$f" -print -quit)"
+                test -n "$src" || {
+                  echo "ERROR: V184 source patch is incomplete; missing $f"
+                  echo "Archive files:"
+                  find "$ARCHIVE_DIR" -maxdepth 5 -type f | sort | head -200
+                  exit 1
+                }
+                cp "$src" "$KIT/"
+              fi
+            done
+          else
+            echo "ERROR: V184 archive contains neither the repair script nor the APK packaging script."
+            echo "Archive files:"
+            find "$ARCHIVE_DIR" -maxdepth 5 -type f | sort | head -200
+            exit 1
+          fi
+
+          for f in index.html SurveyQuant_v1.0.184_PACKAGE_FREE_APK.py test_v184_engine_regression.js test_v184_orientation.py test_v184_pdf_r2004_output.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf README_V184_AR.md; do
+            test -s "$KIT/$f" || { echo "ERROR: final V184 kit is missing $f"; exit 1; }
           done
-          python3 "$PAYLOAD/SurveyQuant_v1.0.184_FIX.py" --kit "$KIT"
           echo "V184_KIT=$KIT" >> "$GITHUB_ENV"
           echo "V184_PAYLOAD=$PAYLOAD" >> "$GITHUB_ENV"
 
