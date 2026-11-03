@@ -13,6 +13,7 @@ on:
     paths:
       - ".github/workflows/build-v182-session-reset-image-underlay-pdf.yml"
       - "SurveyQuant_v1.0.182_FIX_KIT.zip"
+      - "SurveyQuant_v1.0.182_GITHUB_UPLOAD_BUNDLE.zip"
 
 permissions:
   actions: read
@@ -52,10 +53,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s SurveyQuant_v1.0.182_FIX_KIT.zip || { echo "ERROR: V182_FIX_KIT is missing from repository root"; exit 1; }
+          KIT_ARCHIVE=""
+          BUNDLE_DIR="$RUNNER_TEMP/v182-upload-bundle"
+          if [ -s SurveyQuant_v1.0.182_FIX_KIT.zip ]; then
+            KIT_ARCHIVE="$GITHUB_WORKSPACE/SurveyQuant_v1.0.182_FIX_KIT.zip"
+            echo "Using standalone V182 FIX_KIT from repository root."
+          elif [ -s SurveyQuant_v1.0.182_GITHUB_UPLOAD_BUNDLE.zip ]; then
+            rm -rf "$BUNDLE_DIR" && mkdir -p "$BUNDLE_DIR"
+            unzip -q SurveyQuant_v1.0.182_GITHUB_UPLOAD_BUNDLE.zip -d "$BUNDLE_DIR"
+            KIT_ARCHIVE="$(find "$BUNDLE_DIR" -type f -name 'SurveyQuant_v1.0.182_FIX_KIT.zip' -print -quit)"
+            test -n "$KIT_ARCHIVE" && test -s "$KIT_ARCHIVE" || { echo "ERROR: upload bundle does not contain SurveyQuant_v1.0.182_FIX_KIT.zip"; exit 1; }
+            echo "Extracted standalone V182 FIX_KIT from uploaded bundle."
+          else
+            echo "ERROR: upload V182_FIX_KIT.zip OR V182_GITHUB_UPLOAD_BUNDLE.zip in repository root";
+            exit 1
+          fi
           KIT="$RUNNER_TEMP/v182-kit"
           rm -rf "$KIT" && mkdir -p "$KIT"
-          unzip -q SurveyQuant_v1.0.182_FIX_KIT.zip -d "$KIT"
+          unzip -q "$KIT_ARCHIVE" -d "$KIT"
           for f in index.html SurveyQuant_v1.0.182_CAD_ENGINE.js SurveyQuant_v1.0.182_PACKAGE_FREE_APK.py test_v182_engine_regression.js test_orientation_ui.py test_pdf_modes_ui.py test_v182_dual_cad_ui.py test_v182_dual_dwg_mock_ui.py README_V182_AR.md V182_TEST_REPORT_AR.txt; do
             test -s "$KIT/$f" || { echo "ERROR: missing $f in V182 kit"; exit 1; }
           done
