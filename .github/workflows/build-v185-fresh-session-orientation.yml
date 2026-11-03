@@ -1,0 +1,194 @@
+name: Build SurveyQuant v1.0.185 Clean Session Orientation + R2004 PDF DXF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v185-fresh-session-orientation.yml"
+      - "SurveyQuant_v1.0.185_SOURCE_PATCH.zip"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful V184 signed APK workflow run ID"
+        required: true
+        type: string
+        default: "41633390556"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: surveyquant-v185-clean-session-orientation
+  cancel-in-progress: false
+
+jobs:
+  build_v185:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41633390556' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install DXF template dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check ezdxf==1.4.4
+
+      - name: Extract and validate V185 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE_DIR="$RUNNER_TEMP/v185-archive"
+          KIT="$RUNNER_TEMP/v185-kit"
+          mkdir -p "$ARCHIVE_DIR" "$KIT"
+          test -s SurveyQuant_v1.0.185_SOURCE_PATCH.zip || { echo "ERROR: SurveyQuant_v1.0.185_SOURCE_PATCH.zip is missing"; exit 1; }
+          unzip -q SurveyQuant_v1.0.185_SOURCE_PATCH.zip -d "$ARCHIVE_DIR"
+          PACKAGE_SCRIPT="$(find "$ARCHIVE_DIR" -type f -name 'SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py' -print -quit)"
+          test -n "$PACKAGE_SCRIPT" || { echo "ERROR: V185 APK packaging script is missing"; find "$ARCHIVE_DIR" -maxdepth 4 -type f | sort; exit 1; }
+          KIT_ROOT="$(dirname "$PACKAGE_SCRIPT")"
+          cp -a "$KIT_ROOT/." "$KIT/"
+          for f in index.html SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py SurveyQuant_v1.0.184_CAD_ENGINE.js test_v184_engine_regression.js test_v185_orientation.py test_v185_pdf_no_redraw.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf target_reset_v184.dxf V180_MIXED_ARCHITECTURAL_TEST.pdf V180_RASTER_ONLY_TEST.pdf V180_VECTOR_ONLY_TEST.pdf pdf.worker.js README_V185_AR.md; do
+            test -s "$KIT/$f" || { echo "ERROR: V185 source patch is incomplete; missing $f"; exit 1; }
+          done
+          python3 - "$KIT/SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py" <<'PY'
+          import ast, sys
+          from pathlib import Path
+          ast.parse(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("V185 package script syntax: PASS")
+          PY
+          echo "V185_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "V185_ARCHIVE=$ARCHIVE_DIR" >> "$GITHUB_ENV"
+          echo "V185 session-isolation source patch extracted and validated."
+
+      - name: Install CAD and browser test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check ezdxf==1.4.4 playwright reportlab==4.4.9 pillow
+          python3 -m playwright install --with-deps chromium
+
+      - name: Run orientation, CAD, native-vector PDF and parser regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V185_KIT"
+          node test_v184_engine_regression.js | tee V185_ENGINE_TEST_LOG.txt
+          node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html | tee V185_POINT_PARSER_TEST_LOG.txt
+          node SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js index.html | tee V185_ANDROID_BYTES_TEST_LOG.txt
+          python3 test_v185_orientation.py | tee V185_ORIENTATION_TEST_LOG.json
+          python3 test_v185_pdf_no_redraw.py | tee V185_PDF_TEST_LOG.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import ezdxf, ezdxf.recover, json
+          root=Path('.')
+          files=[root/'V185_ORIENTED_RESULT.dxf',root/'V185_VECTOR_R2004.dxf']
+          report=[]
+          for path in files:
+              doc,_=ezdxf.recover.readfile(path)
+              audit=doc.audit()
+              if doc.dxfversion!='AC1018' or audit.errors or audit.fixes:
+                  raise SystemExit(f'Invalid CAD output: {path.name}; version={doc.dxfversion}; errors={len(audit.errors)}; fixes={len(audit.fixes)}')
+              report.append({'file':path.name,'bytes':path.stat().st_size,'version':doc.dxfversion,'entities':len(doc.modelspace()),'audit_errors':len(audit.errors),'audit_fixes':len(audit.fixes)})
+          (root/'V185_DXF_AUDIT_LOG.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print(json.dumps(report,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Download signed V184 base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/v184-base"
+          OUT="$RUNNER_TEMP/v185-release"
+          mkdir -p "$BASE" "$OUT"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.184-FREE-SEPARATE-ORIENTATION-R2004-PDF-DXF" --dir "$BASE"
+          APK="$(find "$BASE" -type f -name 'SurveyQuant_v1.0.184_FREE_ANDROID_SEPARATE_ORIENTATION_R2004_PDF_DXF.apk' -print -quit)"
+          test -s "$APK" || { echo "ERROR: signed V184 base APK missing from run $SOURCE_RUN_ID"; exit 1; }
+          echo "V185_BASE_APK=$APK" >> "$GITHUB_ENV"
+          echo "V185_RELEASE_DIR=$OUT" >> "$GITHUB_ENV"
+
+      - name: Package v1.0.185 APK with clean board sessions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V185_KIT/SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py" \
+            --apk-input "$V185_BASE_APK" \
+            --apk-output "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_UNSIGNED.apk" \
+            --html-to-inject "$V185_KIT/index.html"
+          test -s "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_UNSIGNED.apk"
+          unzip -t "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_UNSIGNED.apk" | tail -2
+
+      - name: Sign and verify v1.0.185 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V185_RELEASE_DIR/SurveyQuant_v1.0.185_ALIGNED.apk"
+          FINAL="$V185_RELEASE_DIR/SurveyQuant_v1.0.185_FREE_ANDROID_CLEAN_SESSION_ORIENTATION_R2004_PDF_DXF.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -F "versionCode='185' versionName='1.0.185'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_UNSIGNED.apk"
+
+      - name: Build source patch and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="$RUNNER_TEMP/v185-source"
+          mkdir -p "$SOURCE"
+          cp -a "$V185_KIT/." "$SOURCE/"
+          (cd "$SOURCE" && zip -qr "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_FREE_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_FREE_ANDROID_CLEAN_SESSION_ORIENTATION_R2004_PDF_DXF.apk" "$V185_RELEASE_DIR/SurveyQuant_v1.0.185_FREE_SOURCE_PATCH.zip" "$V185_KIT"/*.dxf > "$V185_RELEASE_DIR/SHA256SUMS.txt"
+          cp "$V185_KIT/README_V185_AR.md" "$V185_RELEASE_DIR/README_V185_AR.md"
+          cat "$V185_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed APK, source, tests and verified DXF files
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.185-FREE-CLEAN-SESSION-ORIENTATION-R2004-PDF-DXF
+          path: |
+            ${{ runner.temp }}/v185-release/SurveyQuant_v1.0.185_FREE_ANDROID_CLEAN_SESSION_ORIENTATION_R2004_PDF_DXF.apk
+            ${{ runner.temp }}/v185-release/SurveyQuant_v1.0.185_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v185-release/README_V185_AR.md
+            ${{ runner.temp }}/v185-release/SHA256SUMS.txt
+            ${{ runner.temp }}/v185-kit/V185_*_TEST_LOG.*
+            ${{ runner.temp }}/v185-kit/V185_DXF_AUDIT_LOG.json
+            ${{ runner.temp }}/v185-kit/V185_*.dxf
+            ${{ runner.temp }}/v185-kit/V185_*_R2004.dxf
+          if-no-files-found: error
+          retention-days: 30
