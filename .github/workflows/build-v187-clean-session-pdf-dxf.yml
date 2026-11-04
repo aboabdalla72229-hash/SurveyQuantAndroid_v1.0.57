@@ -1,0 +1,216 @@
+name: Build SurveyQuant v1.0.187 Clean Orientation + PDF DXF Only
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v187-clean-session-pdf-dxf.yml"
+      - "SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful v177 signed base APK workflow run ID"
+        required: true
+        type: string
+        default: "41326866230"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: surveyquant-v187-clean-session-pdf-dxf
+  cancel-in-progress: false
+
+jobs:
+  build_v187:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '41326866230' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install DXF and PDF test dependencies
+        run: python3 -m pip install --disable-pip-version-check ezdxf==1.4.4 reportlab==4.4.4 pillow==11.3.0
+
+      - name: Extract v187 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH_ZIP="SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip"
+          test -s "$PATCH_ZIP" || { echo "ERROR: upload $PATCH_ZIP to the repository root."; exit 1; }
+          KIT="$RUNNER_TEMP/v187-kit"
+          mkdir -p "$KIT"
+          unzip -q "$PATCH_ZIP" -d "$KIT"
+          for f in index.html SurveyQuant_v1.0.177_CAD_ENGINE.js SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py SurveyQuant_v1.0.187_PATCH.py SurveyQuant_v1.0.187_R2000_TEMPLATE.dxf SurveyQuant_v1.0.187_R2000_WRITER.js.txt SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js SurveyQuant_v1.0.177_APP_PROJECT_TEST.js SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js V177_VECTOR_TEST.pdf pdfjs-v3.11.174.min.js pdfjs-worker-v3.11.174.min.js; do
+            test -s "$KIT/$f" || { echo "ERROR: source patch missing $f"; exit 1; }
+          done
+          cp "$KIT/pdfjs-worker-v3.11.174.min.js" "$KIT/pdf.worker.js"
+          python3 "$KIT/SurveyQuant_v1.0.187_PATCH.py" "$KIT"
+          echo "V187_KIT=$KIT" >> "$GITHUB_ENV"
+
+      - name: Create PDF vector and raster regression fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V187_KIT"
+          python3 - <<'PY'
+          from reportlab.pdfgen import canvas
+          from reportlab.lib.colors import Color
+          from PIL import Image, ImageDraw
+          from pathlib import Path
+          p=Path('.')
+          c=canvas.Canvas(str(p/'V187_FILLED_VECTOR_FIXTURE.pdf'),pagesize=(300,220),pageCompression=0)
+          c.setStrokeColorRGB(0.12,0.24,0.76);c.setLineWidth(1.4)
+          c.setFillColorRGB(0.82,0.18,0.10);c.rect(25,35,120,95,stroke=1,fill=1)
+          c.setFillColorRGB(0.04,0.12,0.50);c.setFont('Helvetica',16);c.drawString(30,165,'V187 VECTOR FILL TEST')
+          c.showPage();c.save()
+          im=Image.new('RGB',(40,30),'white');d=ImageDraw.Draw(im);d.rectangle((3,3,35,25),fill=(220,30,30))
+          im.save(p/'V187_RASTER_FIXTURE.png')
+          c=canvas.Canvas(str(p/'V187_RASTER_FIXTURE.pdf'),pagesize=(300,220),pageCompression=0)
+          c.drawImage(str(p/'V187_RASTER_FIXTURE.png'),25,35,width=240,height=150);c.showPage();c.save()
+          (p/'V187_RASTER_FIXTURE.png').unlink()
+          print('PASS: generated vector-fill PDF and embedded-raster PDF fixtures')
+          PY
+
+      - name: Run project, point, orientation and PDF regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V187_KIT"
+          node --check SurveyQuant_v1.0.177_CAD_ENGINE.js
+          node --check SurveyQuant_v1.0.187_REGRESSION_TEST.js
+          node --check SurveyQuant_v1.0.187_PDF_ONLY_TEST.js
+          node SurveyQuant_v1.0.177_APP_PROJECT_TEST.js index.html | tee V187_PROJECT_TEST.txt
+          node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html | tee V187_POINT_TEST.txt
+          node SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js index.html | tee V187_ANDROID_BYTES_TEST.txt
+          node SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js | tee V187_CAD_ENGINE_TEST.txt
+          node SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js | tee V187_ORIENTATION_FILE_TEST.txt
+          node SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js pdfjs-v3.11.174.min.js pdf.worker.js V177_VECTOR_TEST.pdf V187_VECTOR_PDF_TEST.dxf | tee V187_VECTOR_PDF_TEST.txt
+          node SurveyQuant_v1.0.187_REGRESSION_TEST.js . | tee V187_REGRESSION_TEST.txt
+          node SurveyQuant_v1.0.187_PDF_ONLY_TEST.js . | tee V187_PDF_ONLY_TEST.txt
+
+      - name: Audit DXF files with ezdxf
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V187_KIT"
+          python3 - <<'PY'
+          import ezdxf,json
+          from pathlib import Path
+          from ezdxf.lldxf.const import VALID_DXF_LINEWEIGHTS
+          reports=[]
+          for name in ('V187_VECTOR_PDF_TEST.dxf','V187_FILLED_VECTOR_TEST.dxf'):
+              path=Path(name)
+              if not path.is_file() or path.stat().st_size<256: raise SystemExit(f'missing or empty DXF: {name}')
+              doc=ezdxf.readfile(path);audit=doc.audit()
+              types={};true_colors=0;lineweights=[]
+              for e in doc.modelspace():
+                  typ=e.dxftype();types[typ]=types.get(typ,0)+1
+                  if e.dxf.hasattr('true_color'):true_colors+=1
+                  if e.dxf.hasattr('lineweight'):lineweights.append(e.dxf.lineweight)
+                  if typ in ('IMAGE','IMAGEDEF'):raise SystemExit(f'raster image entity in {name}')
+              if doc.dxfversion!='AC1015' or audit.errors or audit.fixes:
+                  raise SystemExit(f'DXF audit failed {name}: version={doc.dxfversion}, errors={len(audit.errors)}, fixes={len(audit.fixes)}')
+              if not any(types.get(t,0) for t in ('LWPOLYLINE','HATCH','TEXT')):raise SystemExit(f'no editable CAD entities in {name}')
+              if not true_colors:raise SystemExit(f'no TrueColor group in {name}')
+              if any(v not in VALID_DXF_LINEWEIGHTS for v in lineweights):raise SystemExit(f'invalid DXF lineweight in {name}')
+              reports.append({'file':name,'version':doc.dxfversion,'entities':types,'true_color_entities':true_colors,'lineweights':lineweights,'audit_errors':len(audit.errors),'audit_fixes':len(audit.fixes)})
+          Path('V187_DXF_AUDIT.json').write_text(json.dumps(reports,ensure_ascii=False,indent=2))
+          print(json.dumps(reports,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Download successful v177 signed base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$RUNNER_TEMP/v177-base"
+          mkdir -p "$BASE"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "SurveyQuant-v1.0.177-FREE-FILEBYTES-ORIENTATION-PDF-FIX" --dir "$BASE"
+          APK="$(find "$BASE" -type f -name 'SurveyQuant_v1.0.177_FREE_ANDROID_RAW_CAD_VECTOR_PDF_FIX.apk' -print -quit)"
+          test -s "$APK" || { echo "ERROR: signed v177 APK missing in source run $SOURCE_RUN_ID"; find "$BASE" -type f; exit 1; }
+          echo "V177_BASE_APK=$APK" >> "$GITHUB_ENV"
+
+      - name: Package v1.0.187 with repaired source
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/v187-release"
+          mkdir -p "$OUT"
+          python3 "$V187_KIT/SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py" \
+            --apk-input "$V177_BASE_APK" \
+            --apk-output "$OUT/SurveyQuant_v1.0.187_UNSIGNED.apk" \
+            --html-to-inject "$V187_KIT/index.html"
+          test -s "$OUT/SurveyQuant_v1.0.187_UNSIGNED.apk"
+          unzip -t "$OUT/SurveyQuant_v1.0.187_UNSIGNED.apk" | tail -2
+          echo "V187_RELEASE_DIR=$OUT" >> "$GITHUB_ENV"
+
+      - name: Sign and verify Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"; fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null; set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V187_RELEASE_DIR/SurveyQuant_v1.0.187_ALIGNED.apk"
+          FINAL="$V187_RELEASE_DIR/SurveyQuant_v1.0.187_FREE_CLEAN_SESSION_PDF_DXF.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign --ks "$STORE" --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD --key-pass env:SURVEYQUANT_KEY_PASSWORD --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -F "versionCode='187' versionName='1.0.187'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_UNSIGNED.apk"
+
+      - name: Build source patch and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$V187_KIT" && zip -qr "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip" . -x 'V187_*.dxf' 'V187_RASTER_FIXTURE.png')
+          unzip -t "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip" | tail -2
+          sha256sum "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_FREE_CLEAN_SESSION_PDF_DXF.apk" "$V187_RELEASE_DIR/SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip" "$V187_KIT"/*.dxf > "$V187_RELEASE_DIR/SHA256SUMS.txt"
+          cp "$V187_KIT/README_V187_AR.md" "$V187_RELEASE_DIR/README_V187_AR.md"
+          cat "$V187_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload signed APK, source and test evidence
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.187-CLEAN-SESSION-PDF-DXF
+          path: |
+            ${{ runner.temp }}/v187-release/SurveyQuant_v1.0.187_FREE_CLEAN_SESSION_PDF_DXF.apk
+            ${{ runner.temp }}/v187-release/SurveyQuant_v1.0.187_CLEAN_SESSION_PDF_DXF_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v187-release/README_V187_AR.md
+            ${{ runner.temp }}/v187-release/SHA256SUMS.txt
+            ${{ runner.temp }}/v187-kit/V187_*.txt
+            ${{ runner.temp }}/v187-kit/V187_*.json
+            ${{ runner.temp }}/v187-kit/V187_*.dxf
+          if-no-files-found: error
+          retention-days: 30
