@@ -62,10 +62,11 @@ jobs:
           ARCHIVE_DIR="$RUNNER_TEMP/v185-archive"
           KIT="$RUNNER_TEMP/v185-kit"
           mkdir -p "$ARCHIVE_DIR" "$KIT"
-          PATCH_ZIP="$(find . -type f -name 'SurveyQuant_v1.0.185_SOURCE_PATCH.zip' -not -path './.git/*' -print -quit)"
+          # Prefer the highest GitHub duplicate suffix because it is usually the
+          # newest upload. Fall back to the unsuffixed name when no duplicate exists.
+          PATCH_ZIP="$(find . -type f -name 'SurveyQuant_v1.0.185_SOURCE_PATCH-*.zip' -not -path './.git/*' -print | sort -V | tail -n 1)"
           if [ -z "$PATCH_ZIP" ]; then
-            # GitHub may append -2, -3, ... when a duplicate filename is uploaded.
-            PATCH_ZIP="$(find . -type f -name 'SurveyQuant_v1.0.185_SOURCE_PATCH-*.zip' -not -path './.git/*' -print | sort -V | tail -n 1)"
+            PATCH_ZIP="$(find . -type f -name 'SurveyQuant_v1.0.185_SOURCE_PATCH.zip' -not -path './.git/*' -print -quit)"
           fi
           if [ -z "$PATCH_ZIP" ] || [ ! -s "$PATCH_ZIP" ]; then
             echo "ERROR: SurveyQuant v1.0.185 source patch ZIP was not found in the repository."
@@ -80,7 +81,7 @@ jobs:
           test -n "$PACKAGE_SCRIPT" || { echo "ERROR: V185 APK packaging script is missing"; find "$ARCHIVE_DIR" -maxdepth 4 -type f | sort; exit 1; }
           KIT_ROOT="$(dirname "$PACKAGE_SCRIPT")"
           cp -a "$KIT_ROOT/." "$KIT/"
-          for f in index.html SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py SurveyQuant_v1.0.184_CAD_ENGINE.js test_v184_engine_regression.js test_v185_orientation.py test_v185_pdf_no_redraw.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf target_reset_v184.dxf V180_MIXED_ARCHITECTURAL_TEST.pdf V180_RASTER_ONLY_TEST.pdf V180_VECTOR_ONLY_TEST.pdf pdf.worker.js README_V185_AR.md; do
+          for f in index.html SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py SurveyQuant_v1.0.184_CAD_ENGINE.js test_v184_engine_regression.js test_v185_orientation.py test_v185_hardening.py test_v185_pdf_no_redraw.py SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js source_v184.dxf target_v184.dxf target_reset_v184.dxf V180_MIXED_ARCHITECTURAL_TEST.pdf V180_RASTER_ONLY_TEST.pdf V180_VECTOR_ONLY_TEST.pdf pdf.worker.js README_V185_AR.md; do
             test -s "$KIT/$f" || { echo "ERROR: V185 source patch is incomplete; missing $f"; exit 1; }
           done
           python3 - "$KIT/SurveyQuant_v1.0.185_PACKAGE_FREE_APK.py" <<'PY'
@@ -109,6 +110,7 @@ jobs:
           node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html | tee V185_POINT_PARSER_TEST_LOG.txt
           node SurveyQuant_v1.0.178_ANDROID_FILE_BYTES_TEST.js index.html | tee V185_ANDROID_BYTES_TEST_LOG.txt
           python3 test_v185_orientation.py | tee V185_ORIENTATION_TEST_LOG.json
+          python3 test_v185_hardening.py | tee V185_HARDENING_TEST_LOG.json
           python3 test_v185_pdf_no_redraw.py | tee V185_PDF_TEST_LOG.json
           python3 - <<'PY'
           from pathlib import Path
