@@ -114,6 +114,34 @@ jobs:
           cp "$KIT/pdfjs-worker-v3.11.174.min.js" "$KIT/pdf.worker.js"
           echo "V189_KIT=$KIT" >> "$GITHUB_ENV"
 
+      - name: Restore standalone ImageTracer module for legacy CAD test compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V189_KIT"
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("index.html").read_text(encoding="utf-8")
+          match = re.search(
+              r"<script\s+id=[\"']sq162-imagetracer[\"']\s*>(.*?)</script>",
+              html,
+              flags=re.IGNORECASE | re.DOTALL,
+          )
+          if not match or not match.group(1).strip():
+              raise SystemExit("ERROR: embedded sq162-imagetracer script is missing or empty")
+          module_path = Path("SurveyQuant_v1.0.177_IMAGETRACER.js")
+          module_path.write_text(match.group(1), encoding="utf-8")
+          print(f"PASS: generated {module_path} from index.html ({module_path.stat().st_size} bytes)")
+          PY
+          node - <<'JS'
+          const tracer = require('./SurveyQuant_v1.0.177_IMAGETRACER.js');
+          for (const method of ['imageToSVG', 'imagedataToSVG', 'imageToTracedata', 'imagedataToTracedata']) {
+            if (typeof tracer[method] !== 'function') throw new Error(`ImageTracer export missing ${method}`);
+          }
+          console.log('PASS: standalone ImageTracer Node compatibility module exports required methods');
+          JS
+
       - name: Create mixed-entity CAD regression fixture
         shell: bash
         run: |
