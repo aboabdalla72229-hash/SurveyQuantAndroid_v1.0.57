@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/build-v189-projection-output-dwg-pdf-save.yml"
-      - "SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH.zip"
+      - "SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH*.zip"
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -55,9 +55,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH_ZIP="SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH.zip"
-          test -s "$PATCH_ZIP" || { echo "ERROR: upload $PATCH_ZIP to repository root."; exit 1; }
+          EXPECTED="SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH.zip"
+          PATCH_ZIP=""
+
+          # GitHub may append -1, -2, ... when a file with the same name
+          # already exists. Prefer the exact name, then numbered duplicates.
+          for candidate in \
+            "$EXPECTED" \
+            "SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH-1.zip" \
+            "SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH-2.zip" \
+            "SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH-3.zip"; do
+            if [ -s "$candidate" ]; then
+              if unzip -tq "$candidate" >/dev/null 2>&1; then
+                if unzip -Z1 "$candidate" | grep -Fxq 'index.html' \
+                  && unzip -Z1 "$candidate" | grep -Fxq 'SurveyQuant_v1.0.189_PROJECTION_IO.js' \
+                  && unzip -Z1 "$candidate" | grep -Fxq 'SurveyQuant_v1.0.189_PACKAGE_FREE_APK.py'; then
+                  PATCH_ZIP="$candidate"
+                  break
+                fi
+              fi
+            fi
+          done
+
+          # Fallback: inspect other similarly named uploads, but accept only
+          # a valid archive containing the required v189 project files.
+          if [ -z "$PATCH_ZIP" ]; then
+            while IFS= read -r candidate; do
+              [ -n "$candidate" ] || continue
+              case "$candidate" in
+                *FIX_TEST*|*TEST_ONLY*) continue ;;
+              esac
+              if unzip -tq "$candidate" >/dev/null 2>&1 \
+                && unzip -Z1 "$candidate" | grep -Fxq 'index.html' \
+                && unzip -Z1 "$candidate" | grep -Fxq 'SurveyQuant_v1.0.189_PROJECTION_IO.js' \
+                && unzip -Z1 "$candidate" | grep -Fxq 'SurveyQuant_v1.0.189_PACKAGE_FREE_APK.py'; then
+                PATCH_ZIP="$candidate"
+                break
+              fi
+            done < <(find . -maxdepth 1 -type f -name 'SurveyQuant_v1.0.189_PROJECTION_OUTPUT_DWG_PDF_SAVE_PATCH*.zip' -print | sort -V)
+          fi
+
+          if [ -z "$PATCH_ZIP" ]; then
+            echo "::error::No valid v189 source ZIP found. Expected $EXPECTED or the GitHub-renamed file ending in -1.zip."
+            echo "Repository root ZIP files:"
+            find . -maxdepth 1 -type f -name '*.zip' -printf '%f (%s bytes)\n' | sort
+            exit 1
+          fi
+
+          echo "PASS: selected validated source archive: $PATCH_ZIP"
+          echo "V189_PATCH_ZIP=$PATCH_ZIP" >> "$GITHUB_ENV"
           KIT="$RUNNER_TEMP/v189-kit"
+          rm -rf "$KIT"
           mkdir -p "$KIT"
           unzip -q "$PATCH_ZIP" -d "$KIT"
           for f in index.html SurveyQuant_v1.0.177_CAD_ENGINE.js SurveyQuant_v1.0.189_PROJECTION_IO.js SurveyQuant_v1.0.189_PACKAGE_FREE_APK.py SurveyQuant_v1.0.188_ORIENTATION_FIDELITY_FIXTURE.py SurveyQuant_v1.0.188_ORIENTATION_FIDELITY_TEST.js SurveyQuant_v1.0.188_ORIENTATION_FIDELITY_AUDIT.py SurveyQuant_v1.0.188_ISOLATION_SAVE_TEST.js SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js SurveyQuant_v1.0.177_APP_PROJECT_TEST.js SurveyQuant_v1.0.177_POINT_PARSER_TEST.js SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js SurveyQuant_v1.0.187_REGRESSION_TEST.js SurveyQuant_v1.0.187_PDF_ONLY_TEST.js SurveyQuant_v1.0.189_PROJECTION_FORMAT_TEST.js V177_VECTOR_TEST.pdf pdfjs-v3.11.174.min.js pdfjs-worker-v3.11.174.min.js; do
