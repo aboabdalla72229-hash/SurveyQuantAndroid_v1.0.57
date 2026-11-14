@@ -184,6 +184,26 @@ jobs:
             cp "$SQ177_KIT/$f" "$V199_SOURCE_DIR/"
           done
 
+      - name: Verify V177 engine export before V199 injection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V199_SOURCE_DIR/index.html" <<'PY'
+          from pathlib import Path
+          import sys
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          checks = {
+              "V177 CAD engine script": 'id="sq176-cad-engine"',
+              "V177 CAD API export": "root.SurveyQuantCAD177 = api",
+              "V177 shared file parser": "function parseFile(file,options={})",
+              "Android safe save bridge": "safeDownloadFile",
+          }
+          missing = [name for name, token in checks.items() if token not in html]
+          if missing:
+              raise SystemExit("V177 base integrity check failed: " + ", ".join(missing))
+          print("PASS V177 runtime engine export and shared bridges verified")
+          PY
+
       - name: Inject V199 single-canvas and data selection addendum
         shell: bash
         run: |
