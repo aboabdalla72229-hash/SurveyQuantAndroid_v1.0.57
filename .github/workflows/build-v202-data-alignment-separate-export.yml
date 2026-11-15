@@ -332,7 +332,10 @@ jobs:
           audit2 = ezdxf.readfile(rt).audit()
           if audit2.errors or audit2.fixes: raise SystemExit('V202 DXF save/reopen audit failed')
           print(f'PASS V202 board DXF with point markers: {counts}, audit=0, roundtrip=0')
-          oriented = path.with_name('V202_ORIENTED_SOURCE_TEST.dxf')
+          # The input board path is `p`; do not reference an undefined `path` variable.
+          oriented = p.parent / 'V202_ORIENTED_SOURCE_TEST.dxf'
+          if not oriented.is_file():
+              raise SystemExit(f'V202 oriented source DXF test output is missing: {oriented}')
           odoc = ezdxf.readfile(oriented)
           oaudit = odoc.audit()
           if odoc.dxfversion != 'AC1009' or oaudit.errors or oaudit.fixes:
