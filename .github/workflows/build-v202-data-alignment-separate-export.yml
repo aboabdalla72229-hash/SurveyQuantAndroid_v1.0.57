@@ -1,0 +1,554 @@
+name: Build SurveyQuant v1.0.202 Separate Data Export and Board Alignment (V177 Base)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Exact V162 base APK/source artifact run ID used by the V177 line"
+        required: true
+        type: string
+        default: "40919113310"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-v202-data-alignment-separate-export.yml"
+      - "SurveyQuant_v1.0.177_FIX_KIT.zip"
+      - "SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_FIX.zip"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: surveyquant-v202-v177-data-alignment-separate-export
+  cancel-in-progress: false
+
+jobs:
+  build_v202:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '40919113310' }}
+      SURVEYQUANT_KEYSTORE_PASSWORD: ${{ secrets.SURVEYQUANT_KEYSTORE_PASSWORD }}
+      SURVEYQUANT_KEY_ALIAS: ${{ secrets.SURVEYQUANT_KEY_ALIAS }}
+      SURVEYQUANT_KEY_PASSWORD: ${{ secrets.SURVEYQUANT_KEY_PASSWORD }}
+      SURVEYQUANT_KEYSTORE_BASE64: ${{ secrets.SURVEYQUANT_KEYSTORE_BASE64 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Extract and validate V177 fix kit and V202 addendum
+        shell: bash
+        run: |
+          set -euo pipefail
+          KIT_ZIP="$GITHUB_WORKSPACE/SurveyQuant_v1.0.177_FIX_KIT.zip"
+          PATCH_ZIP="$GITHUB_WORKSPACE/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_FIX.zip"
+          test -s "$KIT_ZIP" || { echo "ERROR: Missing SurveyQuant_v1.0.177_FIX_KIT.zip in repository root"; exit 1; }
+          test -s "$PATCH_ZIP" || { echo "ERROR: Missing SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_FIX.zip in repository root"; exit 1; }
+
+          echo "V202 data/alignment patch archive selected: $(basename "$PATCH_ZIP")"
+          EXPECTED_PATCH_SHA256="b525726f874a678f0140ae48dd429cd83c510d3f93989410b3766c90260316cd"
+          ACTUAL_PATCH_SHA256="$(sha256sum "$PATCH_ZIP" | awk '{print $1}')"
+          test "$ACTUAL_PATCH_SHA256" = "$EXPECTED_PATCH_SHA256" || {
+            echo "ERROR: V202 addendum checksum mismatch. Expected $EXPECTED_PATCH_SHA256, got $ACTUAL_PATCH_SHA256"
+            exit 1
+          }
+          unzip -tq "$PATCH_ZIP" >/dev/null || { echo "ERROR: V202 addendum ZIP is corrupt"; exit 1; }
+          echo "PASS V202 patch archive name, SHA-256 and ZIP integrity"
+
+          KIT="$RUNNER_TEMP/sq177-kit"
+          ADDON="$RUNNER_TEMP/sq202-addendum"
+          rm -rf "$KIT" "$ADDON"
+          mkdir -p "$KIT" "$ADDON"
+          unzip -q "$KIT_ZIP" -d "$KIT"
+          unzip -q "$PATCH_ZIP" -d "$ADDON"
+
+          for f in \
+            SurveyQuant_v1.0.176_PATCH.py \
+            SurveyQuant_v1.0.176_CAD_ENGINE.js \
+            SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE.js \
+            SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            SurveyQuant_v1.0.177_POINT_PARSER_TEST.js \
+            SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            SurveyQuant_v1.0.177_APP_PROJECT_TEST.js \
+            SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js \
+            SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js \
+            SurveyQuant_v1.0.177_IMAGETRACER.js \
+            SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js \
+            pdfjs-v3.11.174.min.js \
+            pdfjs-worker-v3.11.174.min.js \
+            V177_VECTOR_TEST.pdf; do
+            test -s "$KIT/$f" || { echo "ERROR: Missing V177 fix-kit file: $f"; exit 1; }
+          done
+
+          for f in \
+            SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js \
+            SurveyQuant_v1.0.177_APPLY_SINGLE_CANVAS_DATA_PATCH.py \
+            SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js \
+            SurveyQuant_v1.0.202_TEST_ADDENDUM_PACKAGE.py \
+            SurveyQuant_v1.0.202_TEST_APPLIER.py \
+            SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js \
+            V177_TEST_PIXEL.jpg \
+            README_V202_AR.md; do
+            test -s "$ADDON/$f" || { echo "ERROR: Missing V202 patch file: $f"; exit 1; }
+          done
+
+          echo "SQ177_KIT=$KIT" >> "$GITHUB_ENV"
+          echo "SQ202_ADDON=$ADDON" >> "$GITHUB_ENV"
+
+      - name: Download exact V162 source and APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/v162-base"
+          SOURCE_DIR="$RUNNER_TEMP/v202-source"
+          RELEASE_DIR="$RUNNER_TEMP/v202-release"
+          rm -rf "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+          mkdir -p "$BASE_DIR" "$SOURCE_DIR" "$RELEASE_DIR"
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "SurveyQuant-v1.0.162-FREE-DWG-WASM-PROJECTION-FIX" \
+            --dir "$BASE_DIR"
+
+          BASE_APK="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.162_FREE_ANDROID_WEBVIEW_WASM_FIX.apk' -print -quit)"
+          BASE_PATCH="$(find "$BASE_DIR" -type f -name 'SurveyQuant_v1.0.162_FREE_SOURCE_PATCH.zip' -print -quit)"
+          test -s "$BASE_APK" || { echo "ERROR: V162 APK missing from Actions run $SOURCE_RUN_ID"; exit 1; }
+          test -s "$BASE_PATCH" || { echo "ERROR: V162 source patch missing from Actions run $SOURCE_RUN_ID"; exit 1; }
+
+          unzip -t "$BASE_PATCH" | tail -2
+          unzip -q "$BASE_PATCH" -d "$SOURCE_DIR"
+          test -s "$SOURCE_DIR/index.html"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.js"
+          test -s "$SOURCE_DIR/libredwg-writer/wasm/libredwg-web.wasm"
+
+          echo "V202_BASE_APK=$BASE_APK" >> "$GITHUB_ENV"
+          echo "V202_SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "V202_RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply V176 compatibility stage to clean V162 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.176_CAD_ENGINE.js" \
+            --pdfjs "$SQ177_KIT/pdfjs-v3.11.174.min.js" \
+            --pdf-worker "$SQ177_KIT/pdfjs-worker-v3.11.174.min.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt"
+
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.176_CAD_ENGINE.js" \
+            --pdfjs "$SQ177_KIT/pdfjs-v3.11.174.min.js" \
+            --pdf-worker "$SQ177_KIT/pdfjs-worker-v3.11.174.min.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.176_DROP_FILES_MERGE.js.txt" \
+            --check-only
+
+      - name: Apply V177 file-bytes, canvas identity and PDF/DXF fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.177_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.177_CAD_ENGINE.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt"
+
+          python3 "$SQ177_KIT/SurveyQuant_v1.0.177_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --engine "$SQ177_KIT/SurveyQuant_v1.0.177_CAD_ENGINE.js" \
+            --drop-files-merge "$SQ177_KIT/SurveyQuant_v1.0.177_DROP_FILES_MERGE.js.txt" \
+            --check-only
+
+          for f in \
+            SurveyQuant_v1.0.177_CAD_ENGINE.js \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py \
+            SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            SurveyQuant_v1.0.177_POINT_PARSER_TEST.js \
+            SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            SurveyQuant_v1.0.177_APP_PROJECT_TEST.js \
+            SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js \
+            SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js \
+            SurveyQuant_v1.0.177_IMAGETRACER.js \
+            pdfjs-v3.11.174.min.js \
+            pdfjs-worker-v3.11.174.min.js \
+            V177_VECTOR_TEST.pdf; do
+            cp "$SQ177_KIT/$f" "$V202_SOURCE_DIR/"
+          done
+
+      - name: Verify V177 engine export before V202 injection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V202_SOURCE_DIR/index.html" <<'PY'
+          from pathlib import Path
+          import sys
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          checks = {
+              "V177 CAD engine script": 'id="sq176-cad-engine"',
+              "V177 CAD API export": "root.SurveyQuantCAD177 = api",
+              "V177 shared file parser": "function parseFile(file,options={})",
+              "Android safe save bridge": "safeDownloadFile",
+          }
+          missing = [name for name, token in checks.items() if token not in html]
+          if missing:
+              raise SystemExit("V177 base integrity check failed: " + ", ".join(missing))
+          print("PASS V177 runtime engine export and shared bridges verified")
+          PY
+
+      - name: Inject V202 separate export and source-reference Alignment addendum
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$SQ202_ADDON/SurveyQuant_v1.0.177_APPLY_SINGLE_CANVAS_DATA_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --module "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js"
+
+          python3 "$SQ202_ADDON/SurveyQuant_v1.0.177_APPLY_SINGLE_CANVAS_DATA_PATCH.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --module "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js" \
+            --check-only
+
+          python3 "$SQ202_ADDON/SurveyQuant_v1.0.202_TEST_APPLIER.py"
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js"
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js"
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js"
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js" \
+            "$V202_RELEASE_DIR" \
+            "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js" \
+            "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          python3 "$SQ202_ADDON/SurveyQuant_v1.0.202_TEST_ADDENDUM_PACKAGE.py" \
+            --html "$V202_SOURCE_DIR/index.html" \
+            --module "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js"
+
+      - name: Configure APK package version as 1.0.202 (202)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          if not p.is_file():
+              raise SystemExit(f"APK packager missing: {p}")
+          src = p.read_text(encoding="utf-8")
+          replacements = {
+              "NEW_NAME": "'1.0.202'",
+              "NEW_CODE": "202",
+          }
+          for key, value in replacements.items():
+              pattern = re.compile(rf"(?m)^{key}\s*=\s*[^\r\n]+$")
+              hits = list(pattern.finditer(src))
+              if len(hits) != 1:
+                  raise SystemExit(f"Expected exactly one {key} constant in V177 packager, found {len(hits)}")
+              src = pattern.sub(f"{key} = {value}", src, count=1)
+          if "NEW_NAME = '1.0.202'" not in src or "NEW_CODE = 202" not in src:
+              raise SystemExit("Could not set V202 APK manifest version")
+          src = src.replace("PASS V177 APK integrity:", "PASS V202 APK integrity:")
+          src = src.replace("version bumped to 1.0.177/177", "version bumped to 1.0.202/202")
+          p.write_text(src, encoding="utf-8")
+          compile(src, str(p), "exec")
+          print("PASS APK manifest version constants: versionName=1.0.202, versionCode=202")
+          PY
+
+      - name: Run V177 compatibility, V202 data export and Alignment tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$V202_SOURCE_DIR"
+          python3 -m pip install --disable-pip-version-check ezdxf==1.4.4
+
+          python3 -m py_compile \
+            "$SQ177_KIT/SurveyQuant_v1.0.176_PATCH.py" \
+            SurveyQuant_v1.0.177_PATCH.py \
+            SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py \
+            "$SQ202_ADDON/SurveyQuant_v1.0.177_APPLY_SINGLE_CANVAS_DATA_PATCH.py" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.202_TEST_ADDENDUM_PACKAGE.py" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.202_TEST_APPLIER.py"
+
+          node --check SurveyQuant_v1.0.177_CAD_ENGINE.js
+          node --check SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js
+          node --check SurveyQuant_v1.0.177_BLOCK_PRESERVATION_TEST.js
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js"
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js"
+          node --check "$SQ202_ADDON/SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js"
+          node --check libredwg-writer/wasm/libredwg-web.js
+
+          node SurveyQuant_v1.0.177_POINT_PARSER_TEST.js index.html
+          node SurveyQuant_v1.0.177_ANDROID_FILE_BYTES_TEST.js index.html
+          node SurveyQuant_v1.0.177_CAD_ENGINE_TEST.js \
+            "$V202_RELEASE_DIR/V177_MERGED_BOARDS_TEST.dxf" \
+            "$V202_RELEASE_DIR/V177_ORIENTED_BOARD_TEST.dxf"
+          node SurveyQuant_v1.0.177_ORIENTATION_BOARD_FILE_TEST.js \
+            "$V202_RELEASE_DIR/V177_ORIENTATION_BOARD_FILE_TEST.dxf"
+          node SurveyQuant_v1.0.177_PDF_VECTOR_DXF_TEST.js \
+            pdfjs-v3.11.174.min.js \
+            pdfjs-worker-v3.11.174.min.js \
+            V177_VECTOR_TEST.pdf \
+            "$V202_RELEASE_DIR/V177_PDF_VECTOR_TEST_OUT.dxf"
+          node SurveyQuant_v1.0.177_APP_PROJECT_TEST.js index.html
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js" \
+            "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js" \
+            "$SQ202_ADDON/SurveyQuant_v1.0.177_SINGLE_CANVAS_DATA_EXPORT_MODULE.js" \
+            "$V202_RELEASE_DIR" \
+            "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          python3 - "$V202_RELEASE_DIR/V202_BOARD_WITH_POINTS_TEST.dxf" <<'PY'
+          import ezdxf, sys
+          from pathlib import Path
+          p = Path(sys.argv[1]); d = ezdxf.readfile(p); m = d.modelspace()
+          layers = {x.dxf.name for x in d.layers}
+          if d.dxfversion != 'AC1009' or not {'SURVEY_POINTS','SURVEY_LABELS'}.issubset(layers):
+              raise SystemExit('V202 DXF format or point annotation layers missing')
+          counts = {k: len(m.query(k)) for k in ['POLYLINE','POINT','CIRCLE','TEXT']}
+          if counts['POLYLINE'] < 1 or counts['POINT'] < 3 or counts['CIRCLE'] < 3 or counts['TEXT'] < 3:
+              raise SystemExit(f'V202 board-plus-points entities missing: {counts}')
+          audit = d.audit()
+          if audit.errors or audit.fixes: raise SystemExit(f'V202 DXF audit failed: errors={len(audit.errors)}, fixes={len(audit.fixes)}')
+          rt = p.with_name(p.stem + '_ROUNDTRIP.dxf'); d.saveas(rt)
+          audit2 = ezdxf.readfile(rt).audit()
+          if audit2.errors or audit2.fixes: raise SystemExit('V202 DXF save/reopen audit failed')
+          print(f'PASS V202 board DXF with point markers: {counts}, audit=0, roundtrip=0')
+          oriented = path.with_name('V202_ORIENTED_SOURCE_TEST.dxf')
+          odoc = ezdxf.readfile(oriented)
+          oaudit = odoc.audit()
+          if odoc.dxfversion != 'AC1009' or oaudit.errors or oaudit.fixes:
+              raise SystemExit(f'V202 oriented source DXF audit failed: version={odoc.dxfversion}, errors={len(oaudit.errors)}, fixes={len(oaudit.fixes)}')
+          ort = oriented.with_name(oriented.stem + '_ROUNDTRIP.dxf')
+          odoc.saveas(ort)
+          oaudit2 = ezdxf.readfile(ort).audit()
+          if oaudit2.errors or oaudit2.fixes: raise SystemExit('V202 oriented DXF save/reopen audit failed')
+          print(f'PASS V202 V177 orientation writer DXF: entities={len(odoc.modelspace())}, audit=0, roundtrip=0')
+          PY
+          node SurveyQuant_v1.0.162_DWG_WASM_SMOKE_TEST.js \
+            libredwg-writer/wasm/libredwg-web.js \
+            libredwg-writer/wasm/libredwg-web.wasm
+
+          python3 - "$V202_SOURCE_DIR/index.html" "$RUNNER_TEMP/sq202-inline-scripts" <<'PY'
+          from pathlib import Path
+          import re, subprocess, sys
+          html = Path(sys.argv[1]).read_text(encoding="utf-8")
+          out = Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
+          count = 0
+          for i, m in enumerate(re.finditer(r'<script\b([^>]*)>([\s\S]*?)</script\s*>', html, re.I)):
+              attrs, body = m.group(1), m.group(2)
+              if not body.strip() or re.search(r'type\s*=\s*["\'](?:application/json|application/octet-stream|importmap)["\']', attrs, re.I):
+                  continue
+              f = out / f'inline-{i:04}.js'; f.write_text(body, encoding='utf-8')
+              result = subprocess.run(['node', '--check', str(f)], capture_output=True, text=True)
+              if result.returncode:
+                  raise SystemExit(f'Inline JavaScript #{i} failed:\n{result.stderr}')
+              count += 1
+          if count < 6:
+              raise SystemExit(f'Expected at least 6 inline JS blocks; found {count}')
+          print(f'PASS inline JavaScript syntax: {count} blocks')
+          PY
+          rm -f pdf.worker.js
+
+      - name: Package unsigned V202 APK from exact V162 base APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_PACKAGE_FREE_APK.py" \
+            --apk-input "$V202_BASE_APK" \
+            --apk-output "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk" \
+            --html-to-inject "$V202_SOURCE_DIR/index.html"
+          test -s "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk"
+          unzip -t "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk" | tail -2
+
+      - name: Verify V202 project UI, separate exports and alignment flow inside packaged APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk" "$RUNNER_TEMP/v202-apk-module.js" <<'PY'
+          from pathlib import Path
+          import re, sys, zipfile
+          apk, module_out = Path(sys.argv[1]), Path(sys.argv[2])
+          with zipfile.ZipFile(apk) as archive:
+              try:
+                  html = archive.read("assets/index.html").decode("utf-8")
+              except KeyError:
+                  raise SystemExit("APK is missing assets/index.html")
+          match = re.search(r'<script\s+id="sq177-single-canvas-data-export">([\s\S]*?)</script>', html, re.I)
+          if not match:
+              raise SystemExit("Packaged APK does not contain the V202 addendum script")
+          module = match.group(1)
+          required = [
+              "const MOUNT_STYLE_ID=MODULE_ID+'-style'",
+              "getElementById(MOUNT_STYLE_ID)",
+              "add('sq177-home-orientation'",
+              "add('sq177-home-data-export'",
+              "card.id='sq177OrientationCard'",
+              "card.id='sq177DataExportCard'",
+              "function attachCanvasGestures",
+              "startPinch",
+              'id="sq177-ori-target"',
+              'id="sq177-ori-source"',
+              'id="sq177-ori-view-target"',
+              'id="sq177-ori-view-source"',
+              'id="sq177-ori-align-start"',
+              "function alignmentStage(stage)",
+              "function pointIdForSequence(n)",
+              "function buildBoardDxfBytes",
+              'id="sq177-data-save-board-dxf"',
+              'data-export-point="sdr"',
+              'data-export-point="bnt"',
+              'data-export-point="xlsx"',
+              'data-export-point="pdf"',
+              'data-export-point="csv"',
+              "selectWindow(a,b)",
+          ]
+          missing = [token for token in required if token not in module]
+          if missing or "getElementById(MODULE_ID)" in module or "sideBySideOffset" in module:
+              raise SystemExit("Packaged V202 UI verification failed: " + ", ".join(missing or ["old mount guard or side-by-side preview remains"]))
+          module_out.write_text(module, encoding="utf-8")
+          print("PASS packaged APK: project cards, board switch buttons, source1-reference1-source2-reference2 Alignment and separate board/points saves found")
+          PY
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_RUNTIME_MOUNT_TEST.js" \
+            "$RUNNER_TEMP/v202-apk-module.js" "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          node "$SQ202_ADDON/SurveyQuant_v1.0.202_DATA_ALIGNMENT_EXPORT_TEST.js" \
+            "$RUNNER_TEMP/v202-apk-module.js" "$V202_RELEASE_DIR/V202_APK_DATA_ALIGNMENT_RUNTIME_TEST" \
+            "$V202_SOURCE_DIR/SurveyQuant_v1.0.177_CAD_ENGINE.js"
+          python3 - "$V202_RELEASE_DIR/V202_APK_DATA_ALIGNMENT_RUNTIME_TEST/V202_BOARD_WITH_POINTS_TEST.dxf" <<'PY'
+          import ezdxf, sys
+          from pathlib import Path
+          p=Path(sys.argv[1]); d=ezdxf.readfile(p); m=d.modelspace()
+          c={k:len(m.query(k)) for k in ['POLYLINE','POINT','CIRCLE','TEXT']}
+          if c['POLYLINE']<1 or c['POINT']<3 or c['CIRCLE']<3 or c['TEXT']<3: raise SystemExit(f'Packaged APK DXF incomplete: {c}')
+          a=d.audit()
+          if a.errors or a.fixes: raise SystemExit('Packaged APK generated DXF audit failed')
+          print(f'PASS packaged APK-generated board DXF: {c}, audit=0')
+          oriented=p.with_name('V202_ORIENTED_SOURCE_TEST.dxf')
+          od=ezdxf.readfile(oriented); oa=od.audit()
+          if od.dxfversion!='AC1009' or oa.errors or oa.fixes: raise SystemExit('Packaged APK oriented DXF audit failed')
+          print(f'PASS packaged APK V177 orientation writer: entities={len(od.modelspace())}, audit=0')
+          PY
+
+      - name: Sign, align and verify V202 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SURVEYQUANT_KEYSTORE_BASE64" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_BASE64 secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEYSTORE_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEYSTORE_PASSWORD secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_ALIAS" || { echo "ERROR: missing SURVEYQUANT_KEY_ALIAS secret"; exit 1; }
+          test -n "$SURVEYQUANT_KEY_PASSWORD" || { echo "ERROR: missing SURVEYQUANT_KEY_PASSWORD secret"; exit 1; }
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -path '*/bin/sdkmanager' -print 2>/dev/null | sort -V | tail -n 1)"
+          fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "build-tools;35.0.0" >/dev/null
+
+          STORE="$RUNNER_TEMP/surveyquant-release.jks"
+          ALIGNED="$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_ALIGNED.apk"
+          FINAL="$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_ANDROID_SINGLE_CANVAS_DATA.apk"
+          printf '%s' "$SURVEYQUANT_KEYSTORE_BASE64" | base64 --decode > "$STORE"
+          test -s "$STORE"
+
+          "$SDK_ROOT/build-tools/35.0.0/zipalign" -f -p 4 \
+            "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" sign \
+            --ks "$STORE" \
+            --ks-key-alias "$SURVEYQUANT_KEY_ALIAS" \
+            --ks-pass env:SURVEYQUANT_KEYSTORE_PASSWORD \
+            --key-pass env:SURVEYQUANT_KEY_PASSWORD \
+            --out "$FINAL" "$ALIGNED"
+          "$SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$FINAL"
+          "$SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$FINAL" | grep -E "package: name=.*versionCode='202'.*versionName='1.0.202'"
+          unzip -t "$FINAL" | tail -2
+          rm -f "$ALIGNED" "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_UNSIGNED.apk"
+
+      - name: Package full V202 source patch, report and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$V202_SOURCE_DIR/README_V202_BUILD_AR.md" <<'TXT'
+          SurveyQuant V1.0.202 - Separate Board/Points Export and One-Canvas Alignment
+          APK versionName=1.0.202, versionCode=202.
+          Build lineage: exact V162 source/APK artifact run 40919113310, V176 compatibility stage, V177 CAD/filebytes/PDF stage, then V202 addendum.
+
+          DATA EXPORT:
+          - IDs are numeric 1,2,3,..., without letter prefixes. After deleting a point from the point list, remaining IDs are renumbered in order.
+          - Marker style, marker size, marker/text colors and text height redraw on the canvas immediately and are embedded in DXF annotation entities.
+          - Save choice 1: board DXF with the chosen point markers and labels merged with original raw DXF records. With no points, original board bytes are copied unchanged.
+          - Save choice 2: points only as SDR, BNT ASCII, Excel, PDF, CSV or TXT. Coordinate order: X=Easting, Y=Northing, Z=Elevation.
+          - BNT is emitted as a generic ASCII coordinate table with .bnt extension, not a verified manufacturer-specific Total Station BNT format. A native sample from the target instrument software is needed to certify compatibility.
+          - If preview-deleted entities remain in the current session, board DXF saving is blocked; deletion from raw source records is not yet implemented.
+
+          ORIENTATION:
+          - First file input: oriented reference board. Second input: unoriented source board.
+          - Two buttons show either board in the same canvas. There is no artificial shift or side-by-side preview; each file is shown at its original coordinates.
+          - Alignment sequence is exactly source point 1, reference point 1, source point 2, reference point 2. The canvas switches to the matching file automatically after each pick.
+          - Scale is calculated as reference pair distance divided by source pair distance. Rotation and translation are calculated from the same pairs and applied to the entire source geometry before DXF save.
+
+          TEST LIMITS:
+          - Automated JS/DOM tests, synthetic CAD merge, independent ezdxf audit and save/reopen checks run before signing.
+          - These are automated fixture tests, not a physical Android handset test. User-origin DWG/DXF files were not supplied to this build job.
+          - BNT compatibility with a specific Total Station has not been certified without its native sample/profile.
+          TXT
+
+          cp "$SQ202_ADDON/README_V202_AR.md" "$V202_RELEASE_DIR/README_V202_AR.md"
+          cp "$V202_SOURCE_DIR/README_V202_BUILD_AR.md" "$V202_RELEASE_DIR/README_V202_BUILD_AR.md"
+          rm -rf "$V202_SOURCE_DIR/__pycache__"
+          (cd "$V202_SOURCE_DIR" && zip -qr "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_SOURCE_PATCH.zip" .)
+          unzip -t "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_SOURCE_PATCH.zip" | tail -2
+
+          sha256sum \
+            "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_ANDROID_SINGLE_CANVAS_DATA.apk" \
+            "$V202_RELEASE_DIR/SurveyQuant_v1.0.202_FREE_SOURCE_PATCH.zip" \
+            "$V202_RELEASE_DIR/V177_MERGED_BOARDS_TEST.dxf" \
+            "$V202_RELEASE_DIR/V177_ORIENTED_BOARD_TEST.dxf" \
+            "$V202_RELEASE_DIR/V177_ORIENTATION_BOARD_FILE_TEST.dxf" \
+            "$V202_RELEASE_DIR/V177_PDF_VECTOR_TEST_OUT.dxf" \
+            "$V202_RELEASE_DIR/V202_BOARD_WITH_POINTS_TEST.dxf" \
+            "$V202_RELEASE_DIR/V202_ORIENTED_SOURCE_TEST.dxf" \
+            > "$V202_RELEASE_DIR/SHA256SUMS.txt"
+          cat "$V202_RELEASE_DIR/SHA256SUMS.txt"
+
+      - name: Upload V202 APK, source patch, test DXF and reports
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: SurveyQuant-v1.0.202-DATA-ALIGNMENT-SEPARATE-EXPORT
+          path: |
+            ${{ runner.temp }}/v202-release/SurveyQuant_v1.0.202_FREE_ANDROID_SINGLE_CANVAS_DATA.apk
+            ${{ runner.temp }}/v202-release/SurveyQuant_v1.0.202_FREE_SOURCE_PATCH.zip
+            ${{ runner.temp }}/v202-release/README_V202_AR.md
+            ${{ runner.temp }}/v202-release/README_V202_BUILD_AR.md
+            ${{ runner.temp }}/v202-release/SHA256SUMS.txt
+            ${{ runner.temp }}/v202-release/V177_MERGED_BOARDS_TEST.dxf
+            ${{ runner.temp }}/v202-release/V177_ORIENTED_BOARD_TEST.dxf
+            ${{ runner.temp }}/v202-release/V177_ORIENTATION_BOARD_FILE_TEST.dxf
+            ${{ runner.temp }}/v202-release/V177_PDF_VECTOR_TEST_OUT.dxf
+            ${{ runner.temp }}/v202-release/V202_BOARD_WITH_POINTS_TEST.dxf
+            ${{ runner.temp }}/v202-release/V202_ORIENTED_SOURCE_TEST.dxf
+          if-no-files-found: error
+          retention-days: 30
